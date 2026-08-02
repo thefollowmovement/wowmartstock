@@ -1,19 +1,23 @@
 # 📦 WowMart Stock
 
-Application web de gestion de stock multi-canal pour :
+Application web de gestion de stock pour une boutique qui vend sur plusieurs canaux :
 
 - 🌐 la **boutique en ligne**
 - 🏬 la **boutique physique**
 - 🎥 les **lives TikTok / Whatnot**
 
+## Le principe : un stock partagé
+
+Chaque produit a **un seul stock**, partagé entre tous les canaux : le même mug peut partir en ligne, en boutique ou en live. Chaque vente décompte du même total, mais le **canal de la vente est tracé** dans l'historique et les statistiques (ventes par canal sur 30 jours).
+
 ## Fonctionnalités
 
 - **Fiches produits avec photo** : ajoutez une photo en la glissant-déposant (ou en cliquant) directement dans l'application.
-- **Stock par canal** : chaque produit a un stock séparé pour le web, la boutique et les lives, avec des boutons **+ / −** pour ajuster en un clic (pratique pendant un live).
+- **Boutons de vente par canal** : sur chaque carte produit, un clic sur « En ligne −1 », « Boutique −1 » ou « Live −1 » enregistre une vente sur ce canal (pratique pendant un live). Les boutons **+ / −** servent aux réassorts et corrections.
 - **Import Excel / CSV** : glissez un fichier `.xlsx`, `.xls`, `.csv`, `.tsv` ou `.ods` — les colonnes (nom, SKU, prix, stock…) sont détectées automatiquement et vous pouvez corriger la correspondance avant d'importer. Choix entre *remplacer* ou *ajouter* au stock existant.
 - **Export CSV** de tout le stock (compatible Excel).
 - **Alertes stock bas** : définissez un seuil par produit, les produits en dessous sont signalés.
-- **Historique des mouvements** : chaque entrée/sortie de stock est tracée (date, canal, quantité, motif).
+- **Historique des mouvements** : chaque vente, réassort ou import est tracé (date, canal, quantité, motif).
 - **Recherche** par nom, SKU ou catégorie.
 
 ## Installation
@@ -34,14 +38,14 @@ La première ligne du fichier doit contenir les noms de colonnes. Exemples recon
 | Nom | `Nom`, `Produit`, `Désignation`, `Name`… |
 | SKU | `SKU`, `Réf`, `Référence`, `Code`, `EAN`… |
 | Prix | `Prix`, `Prix de vente`, `Price`… |
-| Stock (unique) | `Stock`, `Quantité`, `Qte`, `Qty`… |
-| Stock par canal | `Stock en ligne`, `Stock boutique`, `Stock live`… |
+| Stock | `Stock`, `Quantité`, `Qte`, `Qty`… |
+| Seuil d'alerte | `Seuil`, `Min`, `Alerte`… |
 
-Si le fichier n'a qu'une seule colonne de stock, vous cochez le ou les canaux auxquels l'affecter au moment de l'import (en ligne, boutique, live) — la même quantité est enregistrée sur chaque canal coché.
+Les produits existants sont reconnus par SKU (ou par nom) : pas de doublons, leur stock est mis à jour.
 
 ## Données
 
 - Base de données SQLite : `data/stock.db` (créée automatiquement)
 - Photos produits : dossier `uploads/`
 
-Pensez à sauvegarder ces deux dossiers.
+Pensez à sauvegarder ces deux dossiers. Une base créée avec l'ancienne version (stock séparé par canal) est migrée automatiquement au démarrage.

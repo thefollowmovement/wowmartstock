@@ -51,13 +51,6 @@
       <div id="mappingGrid" class="mapping-grid"></div>
 
       <div class="import-options">
-        <fieldset class="target-fieldset">
-          <legend>Si le fichier a une seule colonne « Stock », l'affecter à :</legend>
-          <label class="check"><input type="checkbox" name="importTarget" value="online"> 🌐 Boutique en ligne</label>
-          <label class="check"><input type="checkbox" name="importTarget" value="store" checked> 🏬 Boutique physique</label>
-          <label class="check"><input type="checkbox" name="importTarget" value="live"> 🎥 Lives TikTok / Whatnot</label>
-          <p class="muted small">Cochez plusieurs canaux pour enregistrer la même quantité sur chacun.</p>
-        </fieldset>
         <label>Mode :
           <select id="importMode">
             <option value="set">Remplacer le stock existant</option>
@@ -116,15 +109,11 @@
               <label>Prix de vente (€)<input name="price" type="number" step="0.01" min="0" value="0"></label>
               <label>Coût d'achat (€)<input name="cost" type="number" step="0.01" min="0" value="0"></label>
             </div>
-            <fieldset class="stock-fieldset">
-              <legend>Stock par canal</legend>
-              <div class="row3">
-                <label>🌐 En ligne<input name="stock_online" type="number" min="0" value="0"></label>
-                <label>🏬 Boutique<input name="stock_store" type="number" min="0" value="0"></label>
-                <label>🎥 Live<input name="stock_live" type="number" min="0" value="0"></label>
-              </div>
-            </fieldset>
-            <label>Seuil d'alerte stock bas<input name="min_stock" type="number" min="0" value="0"></label>
+            <div class="row2">
+              <label>Stock<input name="stock" type="number" min="0" value="0"></label>
+              <label>Seuil d'alerte stock bas<input name="min_stock" type="number" min="0" value="0"></label>
+            </div>
+            <p class="muted small">Le stock est partagé entre tous vos canaux : une vente en ligne, en boutique ou en live décompte du même total.</p>
           </div>
         </div>
         <div class="actions">

@@ -27,9 +27,7 @@ CREATE TABLE IF NOT EXISTS products (
   price REAL NOT NULL DEFAULT 0,
   cost REAL NOT NULL DEFAULT 0,
   photo TEXT NOT NULL DEFAULT '',
-  stock_online INTEGER NOT NULL DEFAULT 0,
-  stock_store INTEGER NOT NULL DEFAULT 0,
-  stock_live INTEGER NOT NULL DEFAULT 0,
+  stock INTEGER NOT NULL DEFAULT 0,
   min_stock INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
@@ -46,7 +44,33 @@ CREATE TABLE IF NOT EXISTS movements (
 );
 `);
 
-const CHANNELS = { online: 'stock_online', store: 'stock_store', live: 'stock_live' };
+// Migration depuis l'ancien schéma à stock par canal → stock unique partagé.
+// Si les trois canaux ont la même valeur, elle vient d'un import dupliqué :
+// on la garde une seule fois. Sinon on additionne.
+{
+  const cols = db.prepare('PRAGMA table_info(products)').all().map((c) => c.name);
+  if (cols.includes('stock_online')) {
+    db.transaction(() => {
+      if (!cols.includes('stock')) {
+        db.exec(`ALTER TABLE products ADD COLUMN stock INTEGER NOT NULL DEFAULT 0`);
+      }
+      db.exec(`
+        UPDATE products SET stock = CASE
+          WHEN stock_online = stock_store AND stock_store = stock_live THEN stock_online
+          ELSE stock_online + stock_store + stock_live
+        END`);
+      db.exec(`ALTER TABLE products DROP COLUMN stock_online`);
+      db.exec(`ALTER TABLE products DROP COLUMN stock_store`);
+      db.exec(`ALTER TABLE products DROP COLUMN stock_live`);
+    })();
+    console.log('Migration effectuée : stock par canal → stock unique partagé');
+  }
+}
+
+// Canaux de vente (pour tracer d'où vient chaque mouvement) + 'adjust' pour
+// les réassorts / corrections manuelles
+const SALE_CHANNELS = ['online', 'store', 'live'];
+const MOVEMENT_CHANNELS = [...SALE_CHANNELS, 'adjust'];
 
 const now = () => new Date().toISOString();
 
@@ -115,9 +139,7 @@ function readProductBody(body) {
     category: (body.category || '').trim(),
     price: Number(body.price) || 0,
     cost: Number(body.cost) || 0,
-    stock_online: Math.max(0, parseInt(body.stock_online, 10) || 0),
-    stock_store: Math.max(0, parseInt(body.stock_store, 10) || 0),
-    stock_live: Math.max(0, parseInt(body.stock_live, 10) || 0),
+    stock: Math.max(0, parseInt(body.stock, 10) || 0),
     min_stock: Math.max(0, parseInt(body.min_stock, 10) || 0),
   };
 }
@@ -133,16 +155,12 @@ app.post('/api/products', uploadPhoto.single('photo'), (req, res) => {
   const ts = now();
   const info = db
     .prepare(
-      `INSERT INTO products (sku, name, category, price, cost, photo,
-        stock_online, stock_store, stock_live, min_stock, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO products (sku, name, category, price, cost, photo, stock, min_stock, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
-    .run(p.sku, p.name, p.category, p.price, p.cost, photo,
-      p.stock_online, p.stock_store, p.stock_live, p.min_stock, ts, ts);
+    .run(p.sku, p.name, p.category, p.price, p.cost, photo, p.stock, p.min_stock, ts, ts);
   const id = info.lastInsertRowid;
-  for (const [channel, col] of Object.entries(CHANNELS)) {
-    if (p[col] > 0) logMovement(id, channel, p[col], p[col], 'Création du produit');
-  }
+  if (p.stock > 0) logMovement(id, 'adjust', p.stock, p.stock, 'Création du produit');
   res.status(201).json(db.prepare('SELECT * FROM products WHERE id = ?').get(id));
 });
 
@@ -166,17 +184,14 @@ app.put('/api/products/:id', uploadPhoto.single('photo'), (req, res) => {
     photo = `/uploads/${req.file.filename}`;
   }
 
-  for (const [channel, col] of Object.entries(CHANNELS)) {
-    const delta = p[col] - existing[col];
-    if (delta !== 0) logMovement(id, channel, delta, p[col], 'Modification manuelle');
+  if (p.stock !== existing.stock) {
+    logMovement(id, 'adjust', p.stock - existing.stock, p.stock, 'Modification manuelle');
   }
 
   db.prepare(
-    `UPDATE products SET sku=?, name=?, category=?, price=?, cost=?, photo=?,
-       stock_online=?, stock_store=?, stock_live=?, min_stock=?, updated_at=?
+    `UPDATE products SET sku=?, name=?, category=?, price=?, cost=?, photo=?, stock=?, min_stock=?, updated_at=?
      WHERE id=?`
-  ).run(p.sku, p.name, p.category, p.price, p.cost, photo,
-    p.stock_online, p.stock_store, p.stock_live, p.min_stock, now(), id);
+  ).run(p.sku, p.name, p.category, p.price, p.cost, photo, p.stock, p.min_stock, now(), id);
   res.json(db.prepare('SELECT * FROM products WHERE id = ?').get(id));
 });
 
@@ -192,23 +207,31 @@ app.delete('/api/products/:id', (req, res) => {
   res.json({ ok: true });
 });
 
-// Ajustement rapide du stock : { channel: "online"|"store"|"live", delta: -1, reason: "vente" }
+// Mouvement de stock : { channel: "online"|"store"|"live"|"adjust", delta: -1, reason: "vente" }
+// Le stock est partagé : une vente sur n'importe quel canal décompte du même total,
+// le canal sert uniquement à tracer d'où vient la vente.
 app.post('/api/products/:id/stock', (req, res) => {
   const id = Number(req.params.id);
   const existing = db.prepare('SELECT * FROM products WHERE id = ?').get(id);
   if (!existing) return res.status(404).json({ error: 'Produit introuvable' });
   const channel = req.body.channel;
-  const col = CHANNELS[channel];
-  if (!col) return res.status(400).json({ error: 'Canal invalide (online, store ou live)' });
+  if (!MOVEMENT_CHANNELS.includes(channel)) {
+    return res.status(400).json({ error: 'Canal invalide (online, store, live ou adjust)' });
+  }
   const delta = parseInt(req.body.delta, 10);
   if (!Number.isFinite(delta) || delta === 0) {
     return res.status(400).json({ error: 'Quantité invalide' });
   }
-  const after = Math.max(0, existing[col] + delta);
-  const realDelta = after - existing[col];
+  if (delta < 0 && existing.stock <= 0) {
+    return res.status(400).json({ error: 'Stock déjà à zéro' });
+  }
+  const after = Math.max(0, existing.stock + delta);
+  const realDelta = after - existing.stock;
   if (realDelta === 0) return res.json(existing);
-  db.prepare(`UPDATE products SET ${col} = ?, updated_at = ? WHERE id = ?`).run(after, now(), id);
-  logMovement(id, channel, realDelta, after, req.body.reason || 'Ajustement rapide');
+  db.prepare('UPDATE products SET stock = ?, updated_at = ? WHERE id = ?').run(after, now(), id);
+  const defaultReason =
+    realDelta < 0 && SALE_CHANNELS.includes(channel) ? 'Vente' : 'Ajustement rapide';
+  logMovement(id, channel, realDelta, after, req.body.reason || defaultReason);
   res.json(db.prepare('SELECT * FROM products WHERE id = ?').get(id));
 });
 
@@ -219,20 +242,28 @@ app.get('/api/stats', (req, res) => {
   const s = db
     .prepare(
       `SELECT COUNT(*) AS products,
-              COALESCE(SUM(stock_online),0) AS online,
-              COALESCE(SUM(stock_store),0) AS store,
-              COALESCE(SUM(stock_live),0) AS live,
-              COALESCE(SUM((stock_online+stock_store+stock_live)*price),0) AS value
+              COALESCE(SUM(stock),0) AS stock,
+              COALESCE(SUM(stock*price),0) AS value
        FROM products`
     )
     .get();
   const low = db
-    .prepare(
-      `SELECT COUNT(*) AS n FROM products
-       WHERE (stock_online + stock_store + stock_live) <= min_stock AND min_stock > 0`
-    )
+    .prepare('SELECT COUNT(*) AS n FROM products WHERE stock <= min_stock AND min_stock > 0')
     .get();
-  res.json({ ...s, low: low.n });
+  // Ventes des 30 derniers jours, par canal
+  const since = new Date(Date.now() - 30 * 24 * 3600 * 1000).toISOString();
+  const sales = { online: 0, store: 0, live: 0 };
+  for (const row of db
+    .prepare(
+      `SELECT channel, COALESCE(SUM(-delta),0) AS sold
+       FROM movements
+       WHERE delta < 0 AND created_at >= ? AND channel IN ('online','store','live')
+       GROUP BY channel`
+    )
+    .all(since)) {
+    sales[row.channel] = row.sold;
+  }
+  res.json({ ...s, low: low.n, sales });
 });
 
 app.get('/api/movements', (req, res) => {
@@ -263,11 +294,8 @@ const FIELD_PATTERNS = {
   category: /^(cat[ée]gorie|category|type|famille|collection)/i,
   price: /^(prix|price|prix de vente|pv|tarif|selling)/i,
   cost: /^(co[ûu]t|cost|prix d.achat|pa|achat|purchase)/i,
-  stock_online: /(en ligne|online|web|site|shopify|e-?commerce|e-?shop)/i,
-  stock_store: /(boutique|magasin|physique|store|shop\b)/i,
-  stock_live: /(live|tiktok|whatnot)/i,
   min_stock: /(min|seuil|alerte|reorder)/i,
-  stock_total: /^(stock|quantit[ée]|qte|qty|quantity|inventaire|inventory|disponible|available)$/i,
+  stock: /^(stock|quantit[ée]|qte|qty|quantity|inventaire|inventory|disponible|available)/i,
 };
 
 function guessMapping(headers) {
@@ -319,26 +347,20 @@ const toNum = (v) => {
   return Number.isFinite(n) ? n : 0;
 };
 
-// { importId, mapping: { name: "Nom", sku: "Ref", ... }, target: ["store","online","live"], mode: "set"|"add" }
-// target : un ou plusieurs canaux — la colonne « Stock » unique est appliquée à chacun
+// { importId, mapping: { name: "Nom", sku: "Ref", stock: "Stock", ... }, mode: "set"|"add" }
 app.post('/api/import/commit', (req, res) => {
-  const { importId, mapping = {}, target = 'store', mode = 'set' } = req.body || {};
+  const { importId, mapping = {}, mode = 'set' } = req.body || {};
   const pending = pendingImports.get(importId);
   if (!pending) return res.status(410).json({ error: 'Import expiré, merci de renvoyer le fichier' });
   if (!mapping.name && !mapping.sku) {
     return res.status(400).json({ error: 'Associez au moins la colonne Nom ou SKU' });
   }
-  const targetCols = (Array.isArray(target) ? target : [target])
-    .map((t) => CHANNELS[t])
-    .filter(Boolean);
-  if (!targetCols.length) targetCols.push('stock_store');
 
   const findBySku = db.prepare('SELECT * FROM products WHERE sku = ?');
   const findByName = db.prepare('SELECT * FROM products WHERE name = ? COLLATE NOCASE');
   const insert = db.prepare(
-    `INSERT INTO products (sku, name, category, price, cost, photo,
-       stock_online, stock_store, stock_live, min_stock, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, '', ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO products (sku, name, category, price, cost, photo, stock, min_stock, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, '', ?, ?, ?, ?)`
   );
 
   let created = 0;
@@ -355,19 +377,7 @@ app.post('/api/import/commit', (req, res) => {
         continue;
       }
 
-      const stocks = { stock_online: 0, stock_store: 0, stock_live: 0 };
-      let hasChannelCols = false;
-      for (const col of ['stock_online', 'stock_store', 'stock_live']) {
-        if (mapping[col]) {
-          stocks[col] = toInt(get(col));
-          hasChannelCols = true;
-        }
-      }
-      if (!hasChannelCols && mapping.stock_total) {
-        const qty = toInt(get('stock_total'));
-        for (const col of targetCols) stocks[col] = qty;
-      }
-
+      const stockVal = mapping.stock ? toInt(get('stock')) : 0;
       const existing = (sku && findBySku.get(sku)) || (name && findByName.get(name)) || null;
       const ts = now();
 
@@ -381,14 +391,12 @@ app.post('/api/import/commit', (req, res) => {
         if (mapping.cost) { sets.push('cost = ?'); vals.push(toNum(get('cost'))); }
         if (mapping.min_stock) { sets.push('min_stock = ?'); vals.push(toInt(get('min_stock'))); }
 
-        for (const [channel, col] of Object.entries(CHANNELS)) {
-          const touched = mapping[col] || (!hasChannelCols && mapping.stock_total && targetCols.includes(col));
-          if (!touched) continue;
-          const newVal = mode === 'add' ? existing[col] + stocks[col] : stocks[col];
-          if (newVal !== existing[col]) {
-            sets.push(`${col} = ?`);
+        if (mapping.stock) {
+          const newVal = mode === 'add' ? existing.stock + stockVal : stockVal;
+          if (newVal !== existing.stock) {
+            sets.push('stock = ?');
             vals.push(newVal);
-            logMovement(existing.id, channel, newVal - existing[col], newVal, 'Import fichier');
+            logMovement(existing.id, 'adjust', newVal - existing.stock, newVal, 'Import fichier');
           }
         }
         if (sets.length) {
@@ -401,12 +409,9 @@ app.post('/api/import/commit', (req, res) => {
         const info = insert.run(
           sku, name || sku, String(get('category')).trim(),
           toNum(get('price')), toNum(get('cost')),
-          stocks.stock_online, stocks.stock_store, stocks.stock_live,
-          toInt(get('min_stock')), ts, ts
+          stockVal, toInt(get('min_stock')), ts, ts
         );
-        for (const [channel, col] of Object.entries(CHANNELS)) {
-          if (stocks[col] > 0) logMovement(info.lastInsertRowid, channel, stocks[col], stocks[col], 'Import fichier');
-        }
+        if (stockVal > 0) logMovement(info.lastInsertRowid, 'adjust', stockVal, stockVal, 'Import fichier');
         created++;
       }
     }
@@ -426,14 +431,13 @@ app.post('/api/import/commit', (req, res) => {
 // ---------------------------------------------------------------------------
 app.get('/api/export.csv', (req, res) => {
   const rows = db.prepare('SELECT * FROM products ORDER BY name COLLATE NOCASE').all();
-  const header = 'SKU;Nom;Catégorie;Prix;Coût;Stock en ligne;Stock boutique;Stock live;Stock total;Seuil alerte';
+  const header = 'SKU;Nom;Catégorie;Prix;Coût;Stock;Seuil alerte';
   const esc = (v) => {
     const s = String(v ?? '');
     return /[;"\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
   };
   const lines = rows.map((p) =>
-    [p.sku, p.name, p.category, p.price, p.cost, p.stock_online, p.stock_store, p.stock_live,
-      p.stock_online + p.stock_store + p.stock_live, p.min_stock].map(esc).join(';')
+    [p.sku, p.name, p.category, p.price, p.cost, p.stock, p.min_stock].map(esc).join(';')
   );
   res.setHeader('Content-Type', 'text/csv; charset=utf-8');
   res.setHeader('Content-Disposition', 'attachment; filename="stock-wowmart.csv"');

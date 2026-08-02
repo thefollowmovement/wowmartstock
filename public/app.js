@@ -1,21 +1,27 @@
-/* WowMart Stock — interface */
+/* WowMart Stock — interface
+   Stock unique partagé entre les canaux : une vente en ligne, en boutique
+   ou en live décompte du même total ; le canal sert à tracer la vente. */
 
 const $ = (sel) => document.querySelector(sel);
-const CHANNELS = [
-  { key: 'online', col: 'stock_online', label: '🌐 En ligne' },
-  { key: 'store', col: 'stock_store', label: '🏬 Boutique' },
-  { key: 'live', col: 'stock_live', label: '🎥 Live' },
+
+const SALE_CHANNELS = [
+  { key: 'online', label: '🌐 En ligne' },
+  { key: 'store', label: '🏬 Boutique' },
+  { key: 'live', label: '🎥 Live' },
 ];
+const CHANNEL_LABELS = {
+  online: '🌐 En ligne',
+  store: '🏬 Boutique',
+  live: '🎥 Live',
+  adjust: '🔧 Ajustement',
+};
 const MAPPING_FIELDS = [
   { key: 'sku', label: 'SKU / Référence' },
   { key: 'name', label: 'Nom du produit' },
   { key: 'category', label: 'Catégorie' },
   { key: 'price', label: 'Prix de vente' },
   { key: 'cost', label: "Coût d'achat" },
-  { key: 'stock_total', label: 'Stock (colonne unique)' },
-  { key: 'stock_online', label: 'Stock en ligne' },
-  { key: 'stock_store', label: 'Stock boutique' },
-  { key: 'stock_live', label: 'Stock live' },
+  { key: 'stock', label: 'Stock' },
   { key: 'min_stock', label: "Seuil d'alerte" },
 ];
 
@@ -45,8 +51,7 @@ async function api(url, options = {}) {
 }
 
 const euro = (n) => Number(n).toLocaleString('fr-FR', { style: 'currency', currency: 'EUR' });
-const totalStock = (p) => p.stock_online + p.stock_store + p.stock_live;
-const isLow = (p) => p.min_stock > 0 && totalStock(p) <= p.min_stock;
+const isLow = (p) => p.min_stock > 0 && p.stock <= p.min_stock;
 const escapeHtml = (s) =>
   String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
@@ -69,10 +74,11 @@ async function loadStats() {
   const s = await api('/api/stats');
   $('#stats').innerHTML = `
     <div class="stat"><div class="value">${s.products}</div><div class="label">Produits</div></div>
-    <div class="stat"><div class="value">${s.online}</div><div class="label">🌐 Stock en ligne</div></div>
-    <div class="stat"><div class="value">${s.store}</div><div class="label">🏬 Stock boutique</div></div>
-    <div class="stat"><div class="value">${s.live}</div><div class="label">🎥 Stock live</div></div>
+    <div class="stat"><div class="value">${s.stock}</div><div class="label">📦 Stock total</div></div>
     <div class="stat"><div class="value">${euro(s.value)}</div><div class="label">Valeur du stock</div></div>
+    <div class="stat"><div class="value">${s.sales.online}</div><div class="label">🌐 Ventes en ligne (30 j)</div></div>
+    <div class="stat"><div class="value">${s.sales.store}</div><div class="label">🏬 Ventes boutique (30 j)</div></div>
+    <div class="stat"><div class="value">${s.sales.live}</div><div class="label">🎥 Ventes live (30 j)</div></div>
     <div class="stat ${s.low > 0 ? 'alert' : ''}"><div class="value">${s.low}</div><div class="label">⚠ Stock bas</div></div>`;
 }
 
@@ -95,14 +101,10 @@ function renderProducts() {
       const photo = p.photo
         ? `<img class="product-photo" src="${escapeHtml(p.photo)}" alt="" loading="lazy" onclick="openEdit(${p.id})">`
         : `<div class="product-photo placeholder" onclick="openEdit(${p.id})">📷</div>`;
-      const stockRows = CHANNELS.map(
-        (c) => `
-        <div class="stock-row">
-          <span class="chan">${c.label}</span>
-          <button onclick="adjustStock(${p.id}, '${c.key}', -1)" title="Retirer 1">−</button>
-          <span class="qty">${p[c.col]}</span>
-          <button onclick="adjustStock(${p.id}, '${c.key}', 1)" title="Ajouter 1">+</button>
-        </div>`
+      const saleButtons = SALE_CHANNELS.map(
+        (c) =>
+          `<button class="sale-btn" onclick="sell(${p.id}, '${c.key}')" ${p.stock <= 0 ? 'disabled' : ''}
+             title="Vendre 1 (${c.label})">${c.label} −1</button>`
       ).join('');
       return `
       <div class="product-card ${isLow(p) ? 'low' : ''}">
@@ -116,7 +118,13 @@ function renderProducts() {
             <div class="product-price">${euro(p.price)}</div>
           </div>
           ${isLow(p) ? '<span class="badge-low">⚠ Stock bas</span>' : ''}
-          <div class="stock-rows">${stockRows}</div>
+          <div class="stock-row big">
+            <span class="chan">📦 Stock</span>
+            <button onclick="adjust(${p.id}, -1)" title="Retirer 1 (correction)">−</button>
+            <span class="qty ${p.stock <= 0 ? 'zero' : ''}">${p.stock}</span>
+            <button onclick="adjust(${p.id}, 1)" title="Ajouter 1 (réassort)">+</button>
+          </div>
+          <div class="sale-row">${saleButtons}</div>
           <div class="card-actions">
             <button class="btn" onclick="openEdit(${p.id})">✏ Modifier</button>
           </div>
@@ -126,12 +134,12 @@ function renderProducts() {
     .join('');
 }
 
-window.adjustStock = async (id, channel, delta) => {
+async function moveStock(id, channel, delta, reason) {
   try {
     const updated = await api(`/api/products/${id}/stock`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ channel, delta }),
+      body: JSON.stringify({ channel, delta, reason }),
     });
     const i = products.findIndex((p) => p.id === id);
     if (i >= 0) products[i] = updated;
@@ -140,7 +148,12 @@ window.adjustStock = async (id, channel, delta) => {
   } catch (e) {
     toast(e.message, true);
   }
-};
+}
+
+// Vente : décompte 1 du stock partagé, en traçant le canal
+window.sell = (id, channel) => moveStock(id, channel, -1, 'Vente');
+// Réassort / correction manuelle
+window.adjust = (id, delta) => moveStock(id, 'adjust', delta);
 
 let searchTimer;
 $('#search').addEventListener('input', () => {
@@ -189,9 +202,7 @@ window.openEdit = (id) => {
   form.category.value = p.category;
   form.price.value = p.price;
   form.cost.value = p.cost;
-  form.stock_online.value = p.stock_online;
-  form.stock_store.value = p.stock_store;
-  form.stock_live.value = p.stock_live;
+  form.stock.value = p.stock;
   form.min_stock.value = p.min_stock;
   if (p.photo) {
     $('#photoPreview').src = p.photo;
@@ -341,12 +352,6 @@ $('#btnCommitImport').addEventListener('click', async () => {
   document.querySelectorAll('#mappingGrid select').forEach((sel) => {
     if (sel.value) mapping[sel.dataset.field] = sel.value;
   });
-  const targets = Array.from(document.querySelectorAll('input[name=importTarget]:checked')).map((c) => c.value);
-  const hasChannelCols = mapping.stock_online || mapping.stock_store || mapping.stock_live;
-  if (mapping.stock_total && !hasChannelCols && !targets.length) {
-    toast('Cochez au moins un canal pour la colonne Stock', true);
-    return;
-  }
   $('#btnCommitImport').disabled = true;
   try {
     const result = await api('/api/import/commit', {
@@ -355,7 +360,6 @@ $('#btnCommitImport').addEventListener('click', async () => {
       body: JSON.stringify({
         importId: currentImport.importId,
         mapping,
-        target: targets,
         mode: $('#importMode').value,
       }),
     });
@@ -376,8 +380,6 @@ $('#btnCommitImport').addEventListener('click', async () => {
 // ---------------------------------------------------------------------------
 // Historique des mouvements
 // ---------------------------------------------------------------------------
-const CHANNEL_LABELS = { online: '🌐 En ligne', store: '🏬 Boutique', live: '🎥 Live' };
-
 async function loadMovements() {
   const rows = await api('/api/movements');
   $('#movementsTable tbody').innerHTML = rows.length

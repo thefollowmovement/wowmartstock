@@ -180,6 +180,23 @@ body {
   line-height: 1;
 }
 .stock-row button:hover { background: var(--primary); color: #fff; border-color: var(--primary); }
+.stock-row.big { padding: 8px 10px; }
+.stock-row.big .qty { font-size: 1.25rem; min-width: 44px; }
+.stock-row.big .qty.zero { color: var(--danger); }
+
+.sale-row { display: flex; gap: 6px; }
+.sale-btn {
+  flex: 1;
+  padding: 7px 4px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--card);
+  font-size: .78rem;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.sale-btn:hover:not(:disabled) { background: var(--danger); color: #fff; border-color: var(--danger); }
+.sale-btn:disabled { opacity: .45; cursor: not-allowed; }
 
 .card-actions { display: flex; gap: 8px; }
 .card-actions .btn { flex: 1; padding: 7px; text-align: center; font-size: .85rem; }
