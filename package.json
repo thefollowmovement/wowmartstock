@@ -1,0 +1,17 @@
+{
+  "name": "wowmartstock",
+  "version": "1.0.0",
+  "description": "Gestion de stock multi-canal : boutique en ligne, boutique physique et lives TikTok / Whatnot",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "better-sqlite3": "^11.3.0",
+    "express": "^4.19.2",
+    "multer": "^1.4.5-lts.1",
+    "xlsx": "^0.18.5"
+  }
+}
