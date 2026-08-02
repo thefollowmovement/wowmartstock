@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WowMart Stock — Gestion de stock</title>
+  <link rel="stylesheet" href="style.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📦</text></svg>">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">📦 <strong>WowMart Stock</strong></div>
+    <nav class="tabs">
+      <button class="tab active" data-tab="products">Produits</button>
+      <button class="tab" data-tab="import">Importer un fichier</button>
+      <button class="tab" data-tab="movements">Historique</button>
+    </nav>
+    <a class="btn ghost" href="/api/export.csv">⬇ Exporter CSV</a>
+  </header>
+
+  <section id="stats" class="stats"></section>
+
+  <!-- ===================== PRODUITS ===================== -->
+  <main id="tab-products" class="tab-panel">
+    <div class="toolbar">
+      <input id="search" type="search" placeholder="Rechercher un produit, SKU, catégorie…">
+      <label class="check"><input type="checkbox" id="lowOnly"> Stock bas uniquement</label>
+      <button class="btn primary" id="btnAdd">+ Nouveau produit</button>
+    </div>
+    <div id="productList" class="product-grid"></div>
+    <p id="emptyMsg" class="empty" hidden>
+      Aucun produit pour l'instant.<br>
+      Ajoutez votre premier produit ou importez un fichier Excel / CSV.
+    </p>
+  </main>
+
+  <!-- ===================== IMPORT ===================== -->
+  <main id="tab-import" class="tab-panel" hidden>
+    <div class="card">
+      <h2>Importer un fichier Excel ou CSV</h2>
+      <p class="muted">Formats acceptés : .xlsx, .xls, .csv, .tsv, .ods — la première ligne doit contenir les noms de colonnes.</p>
+      <div id="dropzone" class="dropzone">
+        <p><strong>Glissez votre fichier ici</strong><br>ou cliquez pour le choisir</p>
+        <input type="file" id="importFile" accept=".xlsx,.xls,.csv,.tsv,.ods" hidden>
+      </div>
+    </div>
+
+    <div id="importConfig" class="card" hidden>
+      <h3 id="importFileName"></h3>
+      <p class="muted">Vérifiez la correspondance des colonnes (détectée automatiquement) :</p>
+      <div id="mappingGrid" class="mapping-grid"></div>
+
+      <div class="import-options">
+        <label>Si le fichier a une seule colonne « Stock », l'affecter à :
+          <select id="importTarget">
+            <option value="store">🏬 Boutique physique</option>
+            <option value="online">🌐 Boutique en ligne</option>
+            <option value="live">🎥 Lives TikTok / Whatnot</option>
+          </select>
+        </label>
+        <label>Mode :
+          <select id="importMode">
+            <option value="set">Remplacer le stock existant</option>
+            <option value="add">Ajouter au stock existant</option>
+          </select>
+        </label>
+      </div>
+
+      <h4>Aperçu (5 premières lignes)</h4>
+      <div class="table-wrap"><table id="previewTable"></table></div>
+
+      <div class="actions">
+        <button class="btn" id="btnCancelImport">Annuler</button>
+        <button class="btn primary" id="btnCommitImport">Importer <span id="importCount"></span></button>
+      </div>
+    </div>
+
+    <div id="importResult" class="card success" hidden></div>
+  </main>
+
+  <!-- ===================== MOUVEMENTS ===================== -->
+  <main id="tab-movements" class="tab-panel" hidden>
+    <div class="card">
+      <h2>Derniers mouvements de stock</h2>
+      <div class="table-wrap">
+        <table id="movementsTable">
+          <thead>
+            <tr><th>Date</th><th>Produit</th><th>Canal</th><th>Quantité</th><th>Stock après</th><th>Motif</th></tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+  </main>
+
+  <!-- ===================== MODALE PRODUIT ===================== -->
+  <div id="modal" class="modal-overlay" hidden>
+    <div class="modal">
+      <h2 id="modalTitle">Nouveau produit</h2>
+      <form id="productForm">
+        <div class="form-columns">
+          <div class="photo-side">
+            <div id="photoDrop" class="photo-drop">
+              <img id="photoPreview" alt="" hidden>
+              <span id="photoHint">📷<br>Cliquez ou glissez<br>une photo ici</span>
+            </div>
+            <input type="file" id="photoInput" accept="image/*" hidden>
+          </div>
+          <div class="fields-side">
+            <label>Nom du produit *<input name="name" required placeholder="Ex : T-shirt logo noir M"></label>
+            <div class="row2">
+              <label>SKU / Référence<input name="sku" placeholder="Ex : TSH-NOIR-M"></label>
+              <label>Catégorie<input name="category" placeholder="Ex : Vêtements"></label>
+            </div>
+            <div class="row2">
+              <label>Prix de vente (€)<input name="price" type="number" step="0.01" min="0" value="0"></label>
+              <label>Coût d'achat (€)<input name="cost" type="number" step="0.01" min="0" value="0"></label>
+            </div>
+            <fieldset class="stock-fieldset">
+              <legend>Stock par canal</legend>
+              <div class="row3">
+                <label>🌐 En ligne<input name="stock_online" type="number" min="0" value="0"></label>
+                <label>🏬 Boutique<input name="stock_store" type="number" min="0" value="0"></label>
+                <label>🎥 Live<input name="stock_live" type="number" min="0" value="0"></label>
+              </div>
+            </fieldset>
+            <label>Seuil d'alerte stock bas<input name="min_stock" type="number" min="0" value="0"></label>
+          </div>
+        </div>
+        <div class="actions">
+          <button type="button" class="btn danger" id="btnDelete" hidden>Supprimer</button>
+          <span class="spacer"></span>
+          <button type="button" class="btn" id="btnCloseModal">Annuler</button>
+          <button type="submit" class="btn primary" id="btnSave">Enregistrer</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div id="toast" class="toast" hidden></div>
+  <script src="app.js"></script>
+</body>
+</html>
