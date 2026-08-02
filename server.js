@@ -319,7 +319,8 @@ const toNum = (v) => {
   return Number.isFinite(n) ? n : 0;
 };
 
-// { importId, mapping: { name: "Nom", sku: "Ref", ... }, target: "store"|"online"|"live", mode: "set"|"add" }
+// { importId, mapping: { name: "Nom", sku: "Ref", ... }, target: ["store","online","live"], mode: "set"|"add" }
+// target : un ou plusieurs canaux — la colonne « Stock » unique est appliquée à chacun
 app.post('/api/import/commit', (req, res) => {
   const { importId, mapping = {}, target = 'store', mode = 'set' } = req.body || {};
   const pending = pendingImports.get(importId);
@@ -327,7 +328,10 @@ app.post('/api/import/commit', (req, res) => {
   if (!mapping.name && !mapping.sku) {
     return res.status(400).json({ error: 'Associez au moins la colonne Nom ou SKU' });
   }
-  const targetCol = CHANNELS[target] || 'stock_store';
+  const targetCols = (Array.isArray(target) ? target : [target])
+    .map((t) => CHANNELS[t])
+    .filter(Boolean);
+  if (!targetCols.length) targetCols.push('stock_store');
 
   const findBySku = db.prepare('SELECT * FROM products WHERE sku = ?');
   const findByName = db.prepare('SELECT * FROM products WHERE name = ? COLLATE NOCASE');
@@ -360,7 +364,8 @@ app.post('/api/import/commit', (req, res) => {
         }
       }
       if (!hasChannelCols && mapping.stock_total) {
-        stocks[targetCol] = toInt(get('stock_total'));
+        const qty = toInt(get('stock_total'));
+        for (const col of targetCols) stocks[col] = qty;
       }
 
       const existing = (sku && findBySku.get(sku)) || (name && findByName.get(name)) || null;
@@ -377,7 +382,7 @@ app.post('/api/import/commit', (req, res) => {
         if (mapping.min_stock) { sets.push('min_stock = ?'); vals.push(toInt(get('min_stock'))); }
 
         for (const [channel, col] of Object.entries(CHANNELS)) {
-          const touched = mapping[col] || (!hasChannelCols && mapping.stock_total && col === targetCol);
+          const touched = mapping[col] || (!hasChannelCols && mapping.stock_total && targetCols.includes(col));
           if (!touched) continue;
           const newVal = mode === 'add' ? existing[col] + stocks[col] : stocks[col];
           if (newVal !== existing[col]) {

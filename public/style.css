@@ -227,8 +227,19 @@ body {
   border-radius: 8px;
   background: var(--card);
 }
-.import-options { display: flex; gap: 20px; flex-wrap: wrap; margin: 10px 0; font-size: .9rem; }
-.import-options label { display: flex; flex-direction: column; gap: 4px; }
+.import-options { display: flex; gap: 20px; flex-wrap: wrap; margin: 10px 0; font-size: .9rem; align-items: flex-start; }
+.import-options > label { display: flex; flex-direction: column; gap: 4px; }
+.target-fieldset {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px 14px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.target-fieldset legend { font-size: .85rem; color: var(--muted); padding: 0 6px; }
+.target-fieldset .check { color: var(--text); cursor: pointer; }
+.muted.small { font-size: .78rem; margin: 0; }
 
 .table-wrap { overflow-x: auto; }
 table { border-collapse: collapse; width: 100%; font-size: .85rem; }

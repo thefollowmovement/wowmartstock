@@ -341,6 +341,12 @@ $('#btnCommitImport').addEventListener('click', async () => {
   document.querySelectorAll('#mappingGrid select').forEach((sel) => {
     if (sel.value) mapping[sel.dataset.field] = sel.value;
   });
+  const targets = Array.from(document.querySelectorAll('input[name=importTarget]:checked')).map((c) => c.value);
+  const hasChannelCols = mapping.stock_online || mapping.stock_store || mapping.stock_live;
+  if (mapping.stock_total && !hasChannelCols && !targets.length) {
+    toast('Cochez au moins un canal pour la colonne Stock', true);
+    return;
+  }
   $('#btnCommitImport').disabled = true;
   try {
     const result = await api('/api/import/commit', {
@@ -349,7 +355,7 @@ $('#btnCommitImport').addEventListener('click', async () => {
       body: JSON.stringify({
         importId: currentImport.importId,
         mapping,
-        target: $('#importTarget').value,
+        target: targets,
         mode: $('#importMode').value,
       }),
     });

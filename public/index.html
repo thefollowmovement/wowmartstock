@@ -51,13 +51,13 @@
       <div id="mappingGrid" class="mapping-grid"></div>
 
       <div class="import-options">
-        <label>Si le fichier a une seule colonne « Stock », l'affecter à :
-          <select id="importTarget">
-            <option value="store">🏬 Boutique physique</option>
-            <option value="online">🌐 Boutique en ligne</option>
-            <option value="live">🎥 Lives TikTok / Whatnot</option>
-          </select>
-        </label>
+        <fieldset class="target-fieldset">
+          <legend>Si le fichier a une seule colonne « Stock », l'affecter à :</legend>
+          <label class="check"><input type="checkbox" name="importTarget" value="online"> 🌐 Boutique en ligne</label>
+          <label class="check"><input type="checkbox" name="importTarget" value="store" checked> 🏬 Boutique physique</label>
+          <label class="check"><input type="checkbox" name="importTarget" value="live"> 🎥 Lives TikTok / Whatnot</label>
+          <p class="muted small">Cochez plusieurs canaux pour enregistrer la même quantité sur chacun.</p>
+        </fieldset>
         <label>Mode :
           <select id="importMode">
             <option value="set">Remplacer le stock existant</option>

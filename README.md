@@ -37,7 +37,7 @@ La première ligne du fichier doit contenir les noms de colonnes. Exemples recon
 | Stock (unique) | `Stock`, `Quantité`, `Qte`, `Qty`… |
 | Stock par canal | `Stock en ligne`, `Stock boutique`, `Stock live`… |
 
-Si le fichier n'a qu'une seule colonne de stock, vous choisissez à quel canal l'affecter au moment de l'import.
+Si le fichier n'a qu'une seule colonne de stock, vous cochez le ou les canaux auxquels l'affecter au moment de l'import (en ligne, boutique, live) — la même quantité est enregistrée sur chaque canal coché.
 
 ## Données
 
