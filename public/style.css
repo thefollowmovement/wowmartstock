@@ -377,7 +377,16 @@ form input {
 .platform-btn:hover { transform: translateY(-2px); }
 .platform-btn.tiktok:hover { border-color: #000; }
 .platform-btn.whatnot:hover { border-color: #f5c518; }
-.platform-icon { font-size: 2rem; }
+.platform-icon { font-size: 2rem; display: flex; align-items: center; }
+.platform-icon img { width: 2.2rem; height: 2.2rem; }
+
+/* Logo TikTok inline, aligné sur le texte comme un emoji */
+.ico-tiktok {
+  width: 1em;
+  height: 1em;
+  vertical-align: -0.12em;
+  display: inline-block;
+}
 
 /* ---------- Mode live plein écran ---------- */
 .no-scroll { overflow: hidden; }

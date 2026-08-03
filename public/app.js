@@ -5,21 +5,23 @@
 
 const $ = (sel) => document.querySelector(sel);
 
+// Logo TikTok officiel (SVG local) utilisé partout à la place d'un emoji
+const TIKTOK_ICON = '<img src="img/tiktok.svg" class="ico-tiktok" alt="">';
 const SALE_CHANNELS = [
-  { key: 'online', label: '🌐 En ligne' },
-  { key: 'store', label: '🏬 Boutique' },
-  { key: 'tiktok', label: '🎵 TikTok' },
-  { key: 'whatnot', label: '🟡 Whatnot' },
+  { key: 'online', label: '🌐 En ligne', text: 'En ligne' },
+  { key: 'store', label: '🏬 Boutique', text: 'Boutique' },
+  { key: 'tiktok', label: `${TIKTOK_ICON} TikTok`, text: 'TikTok' },
+  { key: 'whatnot', label: '🟡 Whatnot', text: 'Whatnot' },
 ];
 const CHANNEL_LABELS = {
   online: '🌐 En ligne',
   store: '🏬 Boutique',
-  tiktok: '🎵 TikTok',
+  tiktok: `${TIKTOK_ICON} TikTok`,
   whatnot: '🟡 Whatnot',
   live: '🎥 Live',
   adjust: '🔧 Ajustement',
 };
-const PLATFORM_LABELS = { tiktok: '🎵 TikTok', whatnot: '🟡 Whatnot' };
+const PLATFORM_LABELS = { tiktok: `${TIKTOK_ICON} TikTok`, whatnot: '🟡 Whatnot' };
 const MAPPING_FIELDS = [
   { key: 'sku', label: 'SKU / Référence' },
   { key: 'name', label: 'Nom du produit' },
@@ -102,7 +104,7 @@ async function loadStats() {
     <div class="stat"><div class="value">${euro(s.value)}</div><div class="label">Valeur du stock</div></div>
     <div class="stat"><div class="value">${s.sales.online}</div><div class="label">🌐 En ligne (30 j)</div></div>
     <div class="stat"><div class="value">${s.sales.store}</div><div class="label">🏬 Boutique (30 j)</div></div>
-    <div class="stat"><div class="value">${s.sales.tiktok}</div><div class="label">🎵 TikTok (30 j)</div></div>
+    <div class="stat"><div class="value">${s.sales.tiktok}</div><div class="label">${TIKTOK_ICON} TikTok (30 j)</div></div>
     <div class="stat"><div class="value">${s.sales.whatnot}</div><div class="label">🟡 Whatnot (30 j)</div></div>
     <div class="stat ${s.low > 0 ? 'alert' : ''}"><div class="value">${s.low}</div><div class="label">⚠ Stock bas</div></div>`;
 }
@@ -202,7 +204,7 @@ function renderProducts() {
       const saleButtons = SALE_CHANNELS.map(
         (c) =>
           `<button class="sale-btn" onclick="sell(${p.id}, '${c.key}')" ${p.stock <= 0 ? 'disabled' : ''}
-             title="Vendre 1 (${c.label})">${c.label}</button>`
+             title="Vendre 1 (${c.text})">${c.label}</button>`
       ).join('');
       return `
       <div class="product-card ${isLow(p) ? 'low' : ''}">
@@ -298,7 +300,7 @@ function openLiveMode(session, sales) {
     time: m.created_at,
     cancelled: !!m.cancelled,
   }));
-  $('#livePlatformBadge').textContent = PLATFORM_LABELS[session.platform] || session.platform;
+  $('#livePlatformBadge').innerHTML = PLATFORM_LABELS[session.platform] || escapeHtml(session.platform);
   $('#liveOverlay').hidden = false;
   $('#liveSearch').value = '';
   document.body.classList.add('no-scroll');
