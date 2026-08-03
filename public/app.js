@@ -666,6 +666,7 @@ const EXTRA_KIND_LABELS = {
   give_sub: '🎁 Give abonné',
   give_buyer: '🎁 Give acheteur',
   boutique: '🏪 Produit boutique',
+  order: '📦 Commande boutique',
 };
 
 window.showLiveDetail = async (id) => {

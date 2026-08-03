@@ -376,9 +376,12 @@ function setSetting(key, value) {
 // Barème de frais par plateforme, pour estimer les gains nets avant l'import
 // du rapport. Valeurs Whatnot relevées sur un détail de vente réel :
 // commission 6,67 % du prix + frais de traitement 2,42 % + 0,25 €.
+// TikTok Shop : commission ~9 % relevée sur un règlement réel (1,54 € sur
+// 16,99 €) ; les frais d'expédition sont généralement compensés par la
+// participation du client, et la Promotion Smart est optionnelle.
 const DEFAULT_FEES = {
   whatnot: { commission: 6.67, processing: 2.42, fixed: 0.25 },
-  tiktok: { commission: 0, processing: 0, fixed: 0 },
+  tiktok: { commission: 9, processing: 0, fixed: 0 },
 };
 
 function getFees(platform) {
@@ -676,19 +679,20 @@ app.get('/api/lives/:id/export.csv', (req, res) => {
 // les frais, pour calculer la marge.
 // ---------------------------------------------------------------------------
 const REPORT_PATTERNS = {
-  sale_no: /^#$|^#?\s*(n°|no\b|num[ée]ro|order|commande|vente|sale|listing|placement)/i,
+  sale_no: /^#$|^id|^#?\s*(n°|no\b|num[ée]ro|order|commande|vente\b|sale\b|listing|placement|r[ée]f[ée]rence)/i,
   name: /(produit|product|nom|name|titre|title|listing|article|description)/i,
-  sold_price: /(prix de vente|prix vendu|^prix$|total de la commande|sold ?price|sale ?price|final ?price|sous.total|subtotal|price|montant)/i,
-  net_amount: /(gains? nets?|statut? du gain|gains?|earn|net|payout|revers|vers[ée])/i,
-  payment_status: /(statut.*(paiement|commande)|paiement|payment|pay[ée]|status)/i,
-  fees: /(frais de traitement|commission|frais|fee)/i,
+  sold_price: /(prix de vente|prix vendu|^prix$|total de la commande|ventes nettes|sold ?price|sale ?price|final ?price|sous.total|subtotal|price|montant(?! total du r))/i,
+  net_amount: /(gains? nets?|statut? du gain|montant total du r[èe]glement|r[èe]glement|settlement|gains?|earn|net|payout|revers|vers[ée])/i,
+  payment_status: /(statut.*(paiement|commande|r[èe]glement)|motifs? d.absence|paiement|payment|pay[ée]|status)/i,
+  fees: /(frais de traitement|frais de commission|commission|frais|fee)/i,
 };
 
 // Statut de paiement normalisé depuis le texte de la plateforme
+// (« Échec du paiement », « En attente de la livraison », « paid »…)
 function parsePaymentStatus(raw) {
   const s = String(raw || '').toLowerCase();
   if (/(échec|echec|échou|echou|fail|annul|cancel|refus|rembours|refund|impay|non pay)/.test(s)) return 'failed';
-  if (/(attente|pending|processing|en cours|à venir|a venir|hold)/.test(s)) return 'pending';
+  if (/(attente|pending|processing|en cours|à venir|a venir|hold|livraison)/.test(s)) return 'pending';
   return 'paid';
 }
 
@@ -696,12 +700,16 @@ function parsePaymentStatus(raw) {
 // « Vue à l'écran #8 » → vente enregistrée dans l'app (mode live) ;
 // « Give abonné #1 » / « Give acheteur #2 » → give ;
 // « iPad 8 #1 » / autre → produit référencé dans la boutique de la plateforme.
-// Un numéro seul (« #8 » ou « 8 ») est traité comme « Vue à l'écran ».
+// Un numéro court seul (« #8 » ou « 8 ») est traité comme « Vue à l'écran » ;
+// un numéro long (ID de commande TikTok, ex : 576930909311179742) est une
+// commande boutique, jamais un numéro de vente à l'écran.
 function classifyRef(raw) {
   const str = String(raw ?? '').trim();
   const s = str.toLowerCase();
   const numMatch = str.match(/#\s*(\d+)/);
-  const num = numMatch ? parseInt(numMatch[1], 10) : /^\d+$/.test(str) ? parseInt(str, 10) : null;
+  const digits = numMatch ? numMatch[1] : /^\d+$/.test(str) ? str : null;
+  if (digits && digits.length >= 7) return { type: 'order', num: null };
+  const num = digits ? parseInt(digits, 10) : null;
   if (/vue\s*[àa]\s*l|screen|flash/.test(s) || /^#?\s*\d+$/.test(str)) return { type: 'screen', num };
   if (/give|giveaway|cadeau/.test(s)) {
     return { type: /achet|buyer|client/.test(s) ? 'give_buyer' : 'give_sub', num };
@@ -717,8 +725,12 @@ function guessReportMapping(headers, rows = []) {
   // Give abonné #1…). Plus fiable que le nom de la colonne, qui varie.
   let bestRef = null;
   let bestScore = 0;
+  const looksLikeRef = (v) => {
+    const s = String(v).trim();
+    return /#\s*\d+/.test(s) || /^\d{7,}$/.test(s); // « Vue à l'écran #8 » ou ID de commande long
+  };
   for (const h of headers) {
-    const score = rows.filter((r) => /#\s*\d+/.test(String(r[h]))).length;
+    const score = rows.filter((r) => looksLikeRef(r[h])).length;
     if (score > bestScore) {
       bestScore = score;
       bestRef = h;
