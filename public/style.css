@@ -1,56 +1,83 @@
+/* ==========================================================================
+   Thème « Studio Live » — l'énergie des lives, la lisibilité d'un outil
+   de gestion. Titres : Sora · Texte : Manrope (repli system-ui hors ligne)
+   ========================================================================== */
+@import url('https://fonts.googleapis.com/css2?family=Sora:wght@600;700;800&family=Manrope:wght@400;500;600;700;800&display=swap');
+
 * { box-sizing: border-box; margin: 0; padding: 0; }
 
 /* display:flex sur .modal-overlay écraserait l'attribut hidden sans ceci */
 [hidden] { display: none !important; }
 
 :root {
-  --bg: #f4f5f7;
+  --ink: #1c1b2b;          /* encre profonde : topbar, mode live */
+  --ink-soft: #2a2940;
+  --bg: #f6f5f1;           /* papier chaud */
   --card: #ffffff;
-  --text: #1c1e26;
-  --muted: #6b7280;
-  --border: #e2e4e9;
-  --primary: #4f46e5;
-  --primary-dark: #4338ca;
-  --danger: #dc2626;
-  --success: #16a34a;
+  --text: #232135;
+  --muted: #716f88;
+  --border: #e6e3dc;
+  --primary: #5b5bd6;      /* iris électrique */
+  --primary-dark: #4c4ac2;
+  --primary-soft: #eeedfb;
+  --danger: #e5484d;       /* corail live */
+  --success: #2f9e68;
   --warning: #d97706;
-  --radius: 12px;
-  --shadow: 0 1px 3px rgba(0,0,0,.08);
+  --gold: #f5c518;         /* or Whatnot */
+  --radius: 14px;
+  --shadow: 0 1px 2px rgba(28,27,43,.06), 0 4px 14px rgba(28,27,43,.05);
+  --shadow-lift: 0 6px 22px rgba(28,27,43,.12);
+  --font-display: 'Sora', system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-body: 'Manrope', system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
 }
 
 body {
-  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-family: var(--font-body);
   background: var(--bg);
   color: var(--text);
   min-height: 100vh;
 }
 
-/* ---------- Barre du haut ---------- */
+h1, h2, h3, h4, .brand, .modal h2 {
+  font-family: var(--font-display);
+  letter-spacing: -.015em;
+}
+
+/* ---------- Barre du haut (encre sombre, esprit studio) ---------- */
 .topbar {
   display: flex;
   align-items: center;
   gap: 16px;
   padding: 12px 20px;
-  background: var(--card);
-  border-bottom: 1px solid var(--border);
+  background: var(--ink);
+  border-bottom: 3px solid var(--primary);
   position: sticky;
   top: 0;
   z-index: 10;
   flex-wrap: wrap;
 }
-.brand { font-size: 1.15rem; }
+.brand { font-size: 1.15rem; color: #fff; }
 .tabs { display: flex; gap: 4px; flex: 1; }
 .tab {
   border: none;
   background: transparent;
   padding: 8px 14px;
-  border-radius: 8px;
+  border-radius: 999px;
   font-size: .95rem;
+  font-family: var(--font-body);
+  font-weight: 600;
   cursor: pointer;
-  color: var(--muted);
+  color: rgba(255,255,255,.62);
+  transition: background .15s, color .15s;
 }
-.tab:hover { background: var(--bg); }
+.tab:hover { background: rgba(255,255,255,.1); color: #fff; }
 .tab.active { background: var(--primary); color: #fff; }
+.topbar .btn.ghost {
+  background: transparent;
+  border-color: rgba(255,255,255,.28);
+  color: rgba(255,255,255,.85);
+}
+.topbar .btn.ghost:hover { background: rgba(255,255,255,.1); filter: none; }
 
 /* ---------- Statistiques ---------- */
 .stats {
@@ -67,9 +94,13 @@ body {
   border-radius: var(--radius);
   padding: 12px 16px;
   box-shadow: var(--shadow);
+  border-top: 3px solid transparent;
+  transition: border-color .15s;
 }
-.stat .value { font-size: 1.5rem; font-weight: 700; }
-.stat .label { font-size: .8rem; color: var(--muted); }
+.stat:hover { border-top-color: var(--primary); }
+.stat .value { font-size: 1.55rem; font-weight: 800; font-family: var(--font-display); letter-spacing: -.02em; }
+.stat .label { font-size: .8rem; color: var(--muted); font-weight: 600; }
+.stat.alert { border-top-color: var(--danger); }
 .stat.alert .value { color: var(--danger); }
 
 /* ---------- Panneaux ---------- */
@@ -97,16 +128,24 @@ body {
   border: 1px solid var(--border);
   background: var(--card);
   padding: 9px 16px;
-  border-radius: var(--radius);
+  border-radius: 10px;
   font-size: .92rem;
+  font-family: var(--font-body);
+  font-weight: 600;
   cursor: pointer;
   text-decoration: none;
   color: var(--text);
-  transition: filter .15s;
+  transition: filter .15s, transform .1s, box-shadow .15s;
 }
 .btn:hover { filter: brightness(.96); }
-.btn.primary { background: var(--primary); border-color: var(--primary); color: #fff; }
-.btn.primary:hover { background: var(--primary-dark); }
+.btn:active { transform: translateY(1px); }
+.btn.primary {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: #fff;
+  box-shadow: 0 2px 8px rgba(91,91,214,.35);
+}
+.btn.primary:hover { background: var(--primary-dark); filter: none; }
 .btn.danger { background: var(--danger); border-color: var(--danger); color: #fff; }
 .btn.ghost { background: transparent; }
 
@@ -124,7 +163,9 @@ body {
   box-shadow: var(--shadow);
   display: flex;
   flex-direction: column;
+  transition: transform .15s, box-shadow .15s;
 }
+.product-card:hover { transform: translateY(-2px); box-shadow: var(--shadow-lift); }
 .product-card.low { border-color: var(--danger); }
 
 .product-photo {
@@ -144,9 +185,9 @@ body {
 
 .product-body { padding: 12px 14px 14px; display: flex; flex-direction: column; gap: 8px; flex: 1; }
 .product-head { display: flex; justify-content: space-between; gap: 8px; align-items: flex-start; }
-.product-name { font-weight: 600; line-height: 1.25; }
+.product-name { font-weight: 700; line-height: 1.25; }
 .product-sku { font-size: .75rem; color: var(--muted); }
-.product-price { font-weight: 700; white-space: nowrap; }
+.product-price { font-weight: 800; white-space: nowrap; font-family: var(--font-display); letter-spacing: -.02em; color: var(--primary-dark); }
 .badge-low {
   font-size: .72rem;
   background: #fee2e2;
@@ -228,7 +269,7 @@ body {
   cursor: pointer;
   transition: border-color .15s, background .15s;
 }
-.dropzone.over, .dropzone:hover { border-color: var(--primary); background: #eef2ff; }
+.dropzone.over, .dropzone:hover { border-color: var(--primary); background: var(--primary-soft); }
 
 /* ---------- Mapping import ---------- */
 .mapping-grid {
@@ -258,10 +299,22 @@ body {
 .target-fieldset .check { color: var(--text); cursor: pointer; }
 .muted.small { font-size: .78rem; margin: 0; }
 
-.table-wrap { overflow-x: auto; }
+.table-wrap { overflow-x: auto; border-radius: 10px; border: 1px solid var(--border); }
 table { border-collapse: collapse; width: 100%; font-size: .85rem; }
-th, td { border: 1px solid var(--border); padding: 6px 10px; text-align: left; white-space: nowrap; }
-th { background: var(--bg); }
+th, td { border-bottom: 1px solid var(--border); padding: 8px 12px; text-align: left; white-space: nowrap; }
+th {
+  background: var(--ink);
+  color: rgba(255,255,255,.85);
+  font-family: var(--font-body);
+  font-weight: 700;
+  font-size: .78rem;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+}
+tbody tr:last-child td { border-bottom: none; }
+tbody tr:hover td { background: var(--primary-soft); }
+tr.row-missing-report:hover td, tr.row-unpaid:hover td { background: #fef2f2; }
+tr.row-tovalidate:hover td { background: #fffbeb; }
 
 .actions { display: flex; gap: 10px; margin-top: 16px; align-items: center; }
 .actions .spacer { flex: 1; }
@@ -279,12 +332,13 @@ th { background: var(--bg); }
 }
 .modal {
   background: var(--card);
-  border-radius: var(--radius);
-  padding: 22px;
+  border-radius: 18px;
+  padding: 24px;
   width: 100%;
   max-width: 640px;
   max-height: 92vh;
   overflow-y: auto;
+  box-shadow: var(--shadow-lift);
 }
 .modal h2 { margin-bottom: 14px; }
 
@@ -316,9 +370,15 @@ form input {
   border: 1px solid var(--border);
   border-radius: 8px;
   font-size: .95rem;
+  font-family: var(--font-body);
   color: var(--text);
   width: 100%;
   min-width: 0;
+}
+input:focus, select:focus, textarea:focus {
+  outline: none;
+  border-color: var(--primary) !important;
+  box-shadow: 0 0 0 3px rgba(91,91,214,.18);
 }
 .row2 label, .row3 label { min-width: 0; }
 .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
@@ -403,7 +463,8 @@ form input {
   align-items: center;
   gap: 14px;
   padding: 12px 20px;
-  background: #18181b;
+  background: var(--ink);
+  border-bottom: 3px solid var(--danger);
   color: #fff;
   flex-wrap: wrap;
 }
