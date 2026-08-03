@@ -570,6 +570,7 @@ $('#btnEndLive').addEventListener('click', async () => {
     const dur = session.ended_at
       ? Math.round((new Date(session.ended_at) - new Date(session.started_at)) / 60000)
       : 0;
+    document.querySelector('#recapModal h2').textContent = '🏁 Live terminé !';
     $('#recapContent').innerHTML = `
       <div class="recap-grid">
         <div class="stat"><div class="value">${PLATFORM_LABELS[session.platform]}</div><div class="label">Plateforme</div></div>
@@ -1564,6 +1565,138 @@ $('#movChannel').addEventListener('change', () => { movPage = 1; loadMovements()
 $('#movDays').addEventListener('change', () => { movPage = 1; loadMovements(); });
 $('#movPrev').addEventListener('click', () => { movPage--; loadMovements(); });
 $('#movNext').addEventListener('click', () => { movPage++; loadMovements(); });
+
+// ---------------------------------------------------------------------------
+// Mode inventaire : comptage physique (saisie ou scan de codes-barres),
+// puis recalage du stock avec rapport des écarts
+// ---------------------------------------------------------------------------
+const invCounts = new Map(); // product_id -> quantité comptée
+
+function openInventory() {
+  invCounts.clear();
+  $('#invSearch').value = '';
+  renderInventory();
+  $('#inventoryModal').hidden = false;
+  $('#invSearch').focus();
+}
+
+function renderInventory() {
+  const q = $('#invSearch').value.trim().toLowerCase();
+  const list = q
+    ? products.filter(
+        (p) =>
+          (p.sku || '').toLowerCase().includes(q) ||
+          (p.barcode || '').includes(q) ||
+          p.name.toLowerCase().includes(q) ||
+          (p.category || '').toLowerCase().includes(q)
+      )
+    : products;
+  $('#invList').innerHTML = list.length
+    ? list
+        .map((p) => {
+          const counted = invCounts.get(p.id);
+          const done = counted !== undefined;
+          const diff = done ? counted - p.stock : 0;
+          return `<div class="inv-row ${done ? 'counted' : ''}">
+        ${p.photo ? `<img class="inv-photo" src="${escapeHtml(p.photo)}" alt="">` : '<div class="inv-photo placeholder">📷</div>'}
+        <div class="inv-info">
+          <strong>${escapeHtml(p.name)}</strong>
+          <span class="product-sku">${escapeHtml(p.sku || '')}${p.barcode ? ` · ∥ ${escapeHtml(p.barcode)}` : ''}</span>
+        </div>
+        <span class="inv-stock" title="Stock théorique dans l'app">app : ${p.stock}</span>
+        <input class="inv-input" type="number" min="0" inputmode="numeric" placeholder="—"
+          value="${done ? counted : ''}" onchange="invSet(${p.id}, this.value)">
+        ${done ? `<span class="inv-diff ${diff === 0 ? 'ok' : 'ko'}">${diff === 0 ? '✓' : (diff > 0 ? '+' : '') + diff}</span>` : '<span class="inv-diff"></span>'}
+      </div>`;
+        })
+        .join('')
+    : '<p class="empty">Aucun produit ne correspond</p>';
+  $('#invCount').textContent = invCounts.size
+    ? `${invCounts.size} produit(s) compté(s) · ${[...invCounts].filter(([id, c]) => {
+        const p = products.find((x) => x.id === id);
+        return p && c !== p.stock;
+      }).length} écart(s)`
+    : 'Aucun produit compté pour l’instant';
+}
+
+window.invSet = (id, value) => {
+  if (value === '') invCounts.delete(id);
+  else invCounts.set(id, Math.max(0, parseInt(value, 10) || 0));
+  renderInventory();
+};
+
+// Scan douchette : le code tapé + Entrée → +1 au comptage du produit
+$('#invSearch').addEventListener('keydown', (e) => {
+  if (e.key !== 'Enter') return;
+  e.preventDefault();
+  const q = $('#invSearch').value.trim().toLowerCase();
+  if (!q) return;
+  const exact = products.find(
+    (p) => (p.barcode || '').toLowerCase() === q || (p.sku || '').toLowerCase() === q
+  );
+  const candidates = exact
+    ? [exact]
+    : products.filter(
+        (p) =>
+          (p.sku || '').toLowerCase().includes(q) ||
+          (p.barcode || '').includes(q) ||
+          p.name.toLowerCase().includes(q)
+      );
+  if (candidates.length === 1) {
+    const p = candidates[0];
+    invCounts.set(p.id, (invCounts.get(p.id) || 0) + 1);
+    $('#invSearch').value = '';
+    renderInventory();
+    toast(`📋 ${p.name} : ${invCounts.get(p.id)} compté(s)`);
+  } else if (!candidates.length) {
+    toast('Aucun produit ne correspond à ce code', true);
+  } else {
+    toast('Plusieurs produits correspondent — précisez', true);
+  }
+});
+$('#invSearch').addEventListener('input', renderInventory);
+
+$('#btnInventory').addEventListener('click', openInventory);
+$('#btnCloseInventory').addEventListener('click', () => { $('#inventoryModal').hidden = true; });
+
+$('#btnCommitInventory').addEventListener('click', async () => {
+  if (!invCounts.size) return toast('Comptez au moins un produit', true);
+  const gaps = [...invCounts].filter(([id, c]) => {
+    const p = products.find((x) => x.id === id);
+    return p && c !== p.stock;
+  }).length;
+  if (!confirm(`Valider l'inventaire ? ${invCounts.size} produit(s) compté(s), ${gaps} écart(s) — le stock sera recalé sur vos comptages.`)) return;
+  try {
+    const result = await api('/api/inventory', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ counts: [...invCounts].map(([id, counted]) => ({ id, counted })) }),
+    });
+    $('#inventoryModal').hidden = true;
+    await loadProducts();
+    const rows = result.discrepancies
+      .map(
+        (d) => `<tr>
+        <td>${escapeHtml(d.name)}${d.sku ? ` <span class="product-sku">(${escapeHtml(d.sku)})</span>` : ''}</td>
+        <td>${d.before}</td><td>${d.counted}</td>
+        <td class="${d.diff > 0 ? 'delta-pos' : 'delta-neg'}">${d.diff > 0 ? '+' : ''}${d.diff}</td>
+      </tr>`
+      )
+      .join('');
+    $('#recapContent').innerHTML = `
+      <p><strong>${result.counted}</strong> produit(s) compté(s) — <strong>${result.adjusted}</strong> écart(s) corrigé(s).</p>
+      ${rows
+        ? `<div class="table-wrap"><table>
+            <thead><tr><th>Produit</th><th>Avant</th><th>Compté</th><th>Écart</th></tr></thead>
+            <tbody>${rows}</tbody></table></div>`
+        : '<p>🎉 Aucun écart : votre stock était juste !</p>'}
+      <p class="muted small">Les écarts sont tracés dans l'Historique (motif « Inventaire »).</p>`;
+    document.querySelector('#recapModal h2').textContent = '📋 Inventaire terminé';
+    $('#recapModal').hidden = false;
+  } catch (e) {
+    toast(e.message, true);
+  }
+});
 
 // ---------------------------------------------------------------------------
 loadSettings();

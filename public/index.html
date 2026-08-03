@@ -29,6 +29,7 @@
     <div class="toolbar">
       <input id="search" type="search" placeholder="Rechercher un produit, SKU, code-barres, catégorie…">
       <label class="check"><input type="checkbox" id="lowOnly"> Stock bas uniquement</label>
+      <button class="btn" id="btnInventory" title="Recompter physiquement le stock et recaler la base">📋 Inventaire</button>
       <button class="btn primary" id="btnAdd">+ Nouveau produit</button>
     </div>
     <div id="productList" class="product-grid"></div>
@@ -464,6 +465,23 @@
       <div class="actions">
         <span class="spacer"></span>
         <button class="btn primary" id="btnCloseRecap">Fermer</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================== MODE INVENTAIRE ===================== -->
+  <div id="inventoryModal" class="modal-overlay" hidden>
+    <div class="modal inv-modal">
+      <h2>📋 Inventaire physique</h2>
+      <p class="muted">Comptez vos produits et saisissez les quantités réelles — ou <strong>scannez les codes-barres</strong> :
+        chaque scan ajoute +1 au comptage du produit. Seuls les produits comptés seront recalés.</p>
+      <input id="invSearch" class="live-search" placeholder="🔍 Scanner un code-barres, ou chercher par réf / nom…" autocomplete="off">
+      <div id="invList" class="inv-list"></div>
+      <div class="actions inv-actions">
+        <span id="invCount" class="muted"></span>
+        <span class="spacer"></span>
+        <button type="button" class="btn" id="btnCloseInventory">Annuler</button>
+        <button type="button" class="btn primary" id="btnCommitInventory">✅ Valider l'inventaire</button>
       </div>
     </div>
   </div>

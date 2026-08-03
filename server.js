@@ -996,6 +996,36 @@ app.get('/api/movements', (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
+// Inventaire physique : on envoie les quantités comptées, le stock est recalé
+// et chaque écart est tracé dans l'historique. Seuls les produits comptés
+// sont ajustés (inventaire partiel possible).
+// ---------------------------------------------------------------------------
+app.post('/api/inventory', (req, res) => {
+  const counts = Array.isArray(req.body.counts) ? req.body.counts : [];
+  if (!counts.length) return res.status(400).json({ error: 'Aucun produit compté' });
+  const report = [];
+  try {
+    withTransaction(() => {
+      for (const c of counts) {
+        const counted = Math.max(0, parseInt(c.counted, 10) || 0);
+        const p = db.prepare('SELECT * FROM products WHERE id = ?').get(Number(c.id));
+        if (!p) continue;
+        const diff = counted - p.stock;
+        report.push({ id: p.id, name: p.name, sku: p.sku, before: p.stock, counted, diff });
+        if (diff !== 0) {
+          db.prepare('UPDATE products SET stock = ?, updated_at = ? WHERE id = ?').run(counted, now(), p.id);
+          logMovement(p.id, 'adjust', diff, counted, `Inventaire (écart ${diff > 0 ? '+' : ''}${diff})`);
+        }
+      }
+    });
+  } catch (e) {
+    return res.status(500).json({ error: `Erreur pendant l'inventaire : ${e.message}` });
+  }
+  const discrepancies = report.filter((r) => r.diff !== 0);
+  res.json({ counted: report.length, adjusted: discrepancies.length, discrepancies });
+});
+
+// ---------------------------------------------------------------------------
 // Import Excel / CSV
 // ---------------------------------------------------------------------------
 const pendingImports = new Map(); // importId -> { rows, headers, expires }

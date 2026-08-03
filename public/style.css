@@ -808,6 +808,51 @@ tr.row-unpaid td { background: #fef2f2; }
 .ai-report ul { margin: 6px 0 6px 22px; display: flex; flex-direction: column; gap: 4px; }
 .ai-report p { margin: 6px 0; }
 
+/* ---------- Mode inventaire ---------- */
+.inv-modal { max-width: 820px; width: 94vw; display: flex; flex-direction: column; max-height: 88vh; }
+.inv-modal .live-search { margin: 10px 0 12px; }
+.inv-list {
+  flex: 1;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  min-height: 220px;
+}
+.inv-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+}
+.inv-row:last-child { border-bottom: none; }
+.inv-row.counted { background: var(--primary-soft); }
+.inv-photo {
+  width: 40px;
+  height: 40px;
+  border-radius: 8px;
+  object-fit: cover;
+  flex: none;
+}
+.inv-photo.placeholder { display: flex; align-items: center; justify-content: center; background: var(--bg); }
+.inv-info { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.inv-info strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.inv-stock { color: var(--muted); font-size: .82rem; flex: none; }
+.inv-input {
+  width: 76px;
+  padding: 7px 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  text-align: center;
+  font-weight: 700;
+  font-size: 1rem;
+  flex: none;
+}
+.inv-diff { width: 44px; text-align: center; font-weight: 800; font-family: var(--font-display); flex: none; }
+.inv-diff.ok { color: var(--success); }
+.inv-diff.ko { color: var(--danger); }
+.inv-actions { margin-top: 14px; align-items: center; }
+
 /* ---------- Frais d'envoi et retours ---------- */
 .ship-input {
   width: 74px;
