@@ -66,6 +66,7 @@ L'onglet **Lives** garde l'historique de toutes vos sessions : date et heure, pl
 ## Fonctionnalités
 
 - **Fiches produits avec photo** : ajoutez une photo en la glissant-déposant (ou en cliquant) directement dans l'application.
+- **Code-barres (EAN)** : champ facultatif sur chaque fiche, importable depuis vos fichiers (colonne `Code barre`, `EAN`…), inclus dans l'export CSV et cherchable partout (recherche produits, mode live, cadeaux) — prévu pour servir plus tard à la préparation des colis au scanner.
 - **Boutons de vente par canal** : sur chaque carte produit, un clic sur « En ligne », « Boutique », « TikTok » ou « Whatnot » enregistre une vente sur ce canal. Les boutons **+ / −** servent aux réassorts et corrections.
 - **Import Excel / CSV** : glissez un fichier `.xlsx`, `.xls`, `.csv`, `.tsv` ou `.ods` — les colonnes (nom, SKU, prix, stock…) sont détectées automatiquement et vous pouvez corriger la correspondance avant d'importer. Choix entre *remplacer* ou *ajouter* au stock existant.
 - **Export CSV** de tout le stock (compatible Excel).
@@ -90,7 +91,8 @@ La première ligne du fichier doit contenir les noms de colonnes. Exemples recon
 | Colonne | Noms détectés |
 |---|---|
 | Nom | `Nom`, `Produit`, `Désignation`, `Name`… |
-| SKU | `SKU`, `Réf`, `Référence`, `Code`, `EAN`… |
+| SKU | `SKU`, `Réf`, `Référence`, `Code`… |
+| Code-barres | `Code barre`, `Barcode`, `EAN`, `UPC`, `Gencod`, `GTIN`… |
 | Prix | `Prix`, `Prix de vente`, `Price`… |
 | Stock | `Stock`, `Quantité`, `Qte`, `Qty`… |
 | Seuil d'alerte | `Seuil`, `Min`, `Alerte`… |

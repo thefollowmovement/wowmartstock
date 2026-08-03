@@ -27,7 +27,7 @@
   <!-- ===================== PRODUITS ===================== -->
   <main id="tab-products" class="tab-panel">
     <div class="toolbar">
-      <input id="search" type="search" placeholder="Rechercher un produit, SKU, catégorie…">
+      <input id="search" type="search" placeholder="Rechercher un produit, SKU, code-barres, catégorie…">
       <label class="check"><input type="checkbox" id="lowOnly"> Stock bas uniquement</label>
       <button class="btn primary" id="btnAdd">+ Nouveau produit</button>
     </div>
@@ -218,7 +218,7 @@
       <div class="tuto-body">
         <p>Deux façons de remplir votre catalogue :</p>
         <ul>
-          <li><strong>À la main</strong> — onglet <em>Produits</em> → bouton <span class="tuto-btn">+ Nouveau produit</span>. Glissez la photo directement dans la fiche, renseignez le nom, le SKU, le prix de vente et le stock.</li>
+          <li><strong>À la main</strong> — onglet <em>Produits</em> → bouton <span class="tuto-btn">+ Nouveau produit</span>. Glissez la photo directement dans la fiche, renseignez le nom, le SKU, le code-barres (EAN, si disponible — il servira à la préparation des colis), le prix de vente et le stock.</li>
           <li><strong>Par fichier</strong> — onglet <em>Importer</em> : glissez votre fichier Excel ou CSV, tout est détecté automatiquement (voir la section Importer ci-dessous).</li>
         </ul>
         <p>Deux champs souvent oubliés mais très importants :</p>
@@ -351,6 +351,10 @@
               <label>SKU / Référence<input name="sku" placeholder="Ex : TSH-NOIR-M"></label>
               <label>Catégorie<input name="category" placeholder="Ex : Vêtements"></label>
             </div>
+            <label>Code-barres (EAN)
+              <input name="barcode" placeholder="Ex : 3401234567890" inputmode="numeric" autocomplete="off">
+              <span class="muted small">Facultatif — scannez ou tapez le code du produit, il servira à la préparation des colis.</span>
+            </label>
             <div class="row2">
               <label>Prix de vente (€)<input name="price" type="number" step="0.01" min="0" value="0"></label>
               <label>Coût d'achat (€)<input name="cost" type="number" step="0.01" min="0" value="0"></label>

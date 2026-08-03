@@ -24,6 +24,7 @@ const CHANNEL_LABELS = {
 const PLATFORM_LABELS = { tiktok: `${TIKTOK_ICON} TikTok`, whatnot: '🟡 Whatnot' };
 const MAPPING_FIELDS = [
   { key: 'sku', label: 'SKU / Référence' },
+  { key: 'barcode', label: 'Code-barres (EAN)' },
   { key: 'name', label: 'Nom du produit' },
   { key: 'category', label: 'Catégorie' },
   { key: 'price', label: 'Prix de vente' },
@@ -218,7 +219,7 @@ function renderProducts() {
           <div class="product-head">
             <div>
               <div class="product-name">${escapeHtml(p.name)}</div>
-              <div class="product-sku">${escapeHtml(p.sku || '')}${p.category ? ' · ' + escapeHtml(p.category) : ''}</div>
+              <div class="product-sku">${escapeHtml(p.sku || '')}${p.category ? ' · ' + escapeHtml(p.category) : ''}${p.barcode ? ` · <span class="product-barcode" title="Code-barres">∥ ${escapeHtml(p.barcode)}</span>` : ''}</div>
             </div>
             <div class="product-price">${euro(p.price)}</div>
           </div>
@@ -349,6 +350,7 @@ function renderLiveResults() {
     ? products.filter(
         (p) =>
           (p.sku || '').toLowerCase().includes(q) ||
+          (p.barcode || '').includes(q) ||
           p.name.toLowerCase().includes(q) ||
           (p.category || '').toLowerCase().includes(q)
       )
@@ -494,6 +496,7 @@ function renderGiftResults() {
     ? products.filter(
         (p) =>
           (p.sku || '').toLowerCase().includes(q) ||
+          (p.barcode || '').includes(q) ||
           p.name.toLowerCase().includes(q) ||
           (p.category || '').toLowerCase().includes(q)
       )
@@ -1282,6 +1285,7 @@ window.openEdit = (id) => {
   $('#modalTitle').textContent = 'Modifier le produit';
   form.name.value = p.name;
   form.sku.value = p.sku || '';
+  form.barcode.value = p.barcode || '';
   form.category.value = p.category;
   form.price.value = p.price;
   form.cost.value = p.cost;

@@ -36,6 +36,7 @@ db.exec(`
 CREATE TABLE IF NOT EXISTS products (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   sku TEXT UNIQUE,
+  barcode TEXT NOT NULL DEFAULT '',
   name TEXT NOT NULL,
   category TEXT NOT NULL DEFAULT '',
   price REAL NOT NULL DEFAULT 0,
@@ -134,6 +135,7 @@ CREATE TABLE IF NOT EXISTS settings (
 // on la garde une seule fois. Sinon on additionne.
 {
   const cols = db.prepare('PRAGMA table_info(products)').all().map((c) => c.name);
+  if (!cols.includes('barcode')) db.exec(`ALTER TABLE products ADD COLUMN barcode TEXT NOT NULL DEFAULT ''`);
   if (cols.includes('stock_online')) {
     withTransaction(() => {
       if (!cols.includes('stock')) {
@@ -229,10 +231,10 @@ app.get('/api/products', (req, res) => {
     rows = db
       .prepare(
         `SELECT * FROM products
-         WHERE name LIKE ? OR sku LIKE ? OR category LIKE ?
+         WHERE name LIKE ? OR sku LIKE ? OR category LIKE ? OR barcode LIKE ?
          ORDER BY name COLLATE NOCASE`
       )
-      .all(like, like, like);
+      .all(like, like, like, like);
   } else {
     rows = db.prepare('SELECT * FROM products ORDER BY name COLLATE NOCASE').all();
   }
@@ -242,6 +244,7 @@ app.get('/api/products', (req, res) => {
 function readProductBody(body) {
   return {
     sku: (body.sku || '').trim() || null,
+    barcode: (body.barcode || '').trim(),
     name: (body.name || '').trim(),
     category: (body.category || '').trim(),
     price: Number(body.price) || 0,
@@ -262,10 +265,10 @@ app.post('/api/products', uploadPhoto.single('photo'), (req, res) => {
   const ts = now();
   const info = db
     .prepare(
-      `INSERT INTO products (sku, name, category, price, cost, photo, stock, min_stock, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO products (sku, barcode, name, category, price, cost, photo, stock, min_stock, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
-    .run(p.sku, p.name, p.category, p.price, p.cost, photo, p.stock, p.min_stock, ts, ts);
+    .run(p.sku, p.barcode, p.name, p.category, p.price, p.cost, photo, p.stock, p.min_stock, ts, ts);
   const id = info.lastInsertRowid;
   if (p.stock > 0) logMovement(id, 'adjust', p.stock, p.stock, 'Création du produit');
   res.status(201).json(db.prepare('SELECT * FROM products WHERE id = ?').get(id));
@@ -296,9 +299,9 @@ app.put('/api/products/:id', uploadPhoto.single('photo'), (req, res) => {
   }
 
   db.prepare(
-    `UPDATE products SET sku=?, name=?, category=?, price=?, cost=?, photo=?, stock=?, min_stock=?, updated_at=?
+    `UPDATE products SET sku=?, barcode=?, name=?, category=?, price=?, cost=?, photo=?, stock=?, min_stock=?, updated_at=?
      WHERE id=?`
-  ).run(p.sku, p.name, p.category, p.price, p.cost, photo, p.stock, p.min_stock, now(), id);
+  ).run(p.sku, p.barcode, p.name, p.category, p.price, p.cost, photo, p.stock, p.min_stock, now(), id);
   res.json(db.prepare('SELECT * FROM products WHERE id = ?').get(id));
 });
 
@@ -921,8 +924,11 @@ setInterval(() => {
 }, 60 * 1000).unref();
 
 // Détection automatique des colonnes selon leur nom (français / anglais)
+// barcode est testé avant sku : une colonne « Code barre » / « EAN » doit lui
+// revenir, sinon le motif `code` du SKU la capturerait.
 const FIELD_PATTERNS = {
-  sku: /^(sku|ref|r[ée]f[ée]rence|code|barcode|ean|upc)/i,
+  barcode: /^(code.?barres?|barcode|ean|upc|gencod|gtin)/i,
+  sku: /^(sku|ref|r[ée]f[ée]rence|code)/i,
   name: /^(nom|name|produit|product|titre|title|d[ée]signation|article|libell[ée])/i,
   category: /^(cat[ée]gorie|category|type|famille|collection)/i,
   price: /^(prix|price|prix de vente|pv|tarif|selling)/i,
@@ -990,10 +996,11 @@ app.post('/api/import/commit', (req, res) => {
   }
 
   const findBySku = db.prepare('SELECT * FROM products WHERE sku = ?');
+  const findByBarcode = db.prepare(`SELECT * FROM products WHERE barcode = ? AND barcode != ''`);
   const findByName = db.prepare('SELECT * FROM products WHERE name = ? COLLATE NOCASE');
   const insert = db.prepare(
-    `INSERT INTO products (sku, name, category, price, cost, photo, stock, min_stock, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, '', ?, ?, ?, ?)`
+    `INSERT INTO products (sku, barcode, name, category, price, cost, photo, stock, min_stock, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?)`
   );
 
   let created = 0;
@@ -1004,6 +1011,7 @@ app.post('/api/import/commit', (req, res) => {
     for (const row of pending.rows) {
       const get = (field) => (mapping[field] != null && mapping[field] !== '' ? row[mapping[field]] : '');
       const sku = String(get('sku')).trim() || null;
+      const barcode = String(get('barcode')).trim();
       const name = String(get('name')).trim();
       if (!sku && !name) {
         skipped++;
@@ -1011,7 +1019,8 @@ app.post('/api/import/commit', (req, res) => {
       }
 
       const stockVal = mapping.stock ? toInt(get('stock')) : 0;
-      const existing = (sku && findBySku.get(sku)) || (name && findByName.get(name)) || null;
+      const existing =
+        (sku && findBySku.get(sku)) || (barcode && findByBarcode.get(barcode)) || (name && findByName.get(name)) || null;
       const ts = now();
 
       if (existing) {
@@ -1019,6 +1028,7 @@ app.post('/api/import/commit', (req, res) => {
         const vals = [];
         if (name && name !== existing.name) { sets.push('name = ?'); vals.push(name); }
         if (sku && sku !== existing.sku) { sets.push('sku = ?'); vals.push(sku); }
+        if (barcode && barcode !== existing.barcode) { sets.push('barcode = ?'); vals.push(barcode); }
         if (mapping.category) { sets.push('category = ?'); vals.push(String(get('category')).trim()); }
         if (mapping.price) { sets.push('price = ?'); vals.push(toNum(get('price'))); }
         if (mapping.cost) { sets.push('cost = ?'); vals.push(toNum(get('cost'))); }
@@ -1040,7 +1050,7 @@ app.post('/api/import/commit', (req, res) => {
         updated++;
       } else {
         const info = insert.run(
-          sku, name || sku, String(get('category')).trim(),
+          sku, barcode, name || sku, String(get('category')).trim(),
           toNum(get('price')), toNum(get('cost')),
           stockVal, toInt(get('min_stock')), ts, ts
         );
@@ -1417,13 +1427,13 @@ Sois direct et concret, cite les chiffres, pas de blabla. Maximum 400 mots.`;
 // ---------------------------------------------------------------------------
 app.get('/api/export.csv', (req, res) => {
   const rows = db.prepare('SELECT * FROM products ORDER BY name COLLATE NOCASE').all();
-  const header = 'SKU;Nom;Catégorie;Prix;Coût;Stock;Seuil alerte';
+  const header = 'SKU;Code barre;Nom;Catégorie;Prix;Coût;Stock;Seuil alerte';
   const esc = (v) => {
     const s = String(v ?? '');
     return /[;"\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
   };
   const lines = rows.map((p) =>
-    [p.sku, p.name, p.category, p.price, p.cost, p.stock, p.min_stock].map(esc).join(';')
+    [p.sku, p.barcode, p.name, p.category, p.price, p.cost, p.stock, p.min_stock].map(esc).join(';')
   );
   res.setHeader('Content-Type', 'text/csv; charset=utf-8');
   res.setHeader('Content-Disposition', 'attachment; filename="stock-wowmart.csv"');
