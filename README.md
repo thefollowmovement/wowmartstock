@@ -63,6 +63,14 @@ L'onglet **Lives** garde l'historique de toutes vos sessions : date et heure, pl
 - **À commander chez le fournisseur** : liste quotidienne des produits sous leur seuil, avec quantité conseillée calculée d'après les ventes des 30 derniers jours, exportable en **bon de commande CSV**.
 - **Conseils de l'IA** : Claude analyse vos chiffres réels et rédige un rapport actionnable — produits à mettre en avant (et sur quelle plateforme), produits à gros volume mais faible marge, réassorts prioritaires, idées de bundles. Utilise la même clé API que les ventes par photos.
 
+## 🕐 Meilleurs créneaux de live
+
+L'onglet Stats compare tous vos lives terminés : **CA et marge moyens par jour de la semaine et par heure de début** (filtrable par plateforme), et le **rythme des ventes par tranche de 15 minutes** pour repérer le moment où un live s'essouffle.
+
+## 💾 Sauvegarde automatique
+
+Dans l'onglet Importer : choisissez un dossier (iCloud Drive, Dropbox, disque externe…) — une copie de la base et des photos y est faite **chaque jour automatiquement** (14 jours conservés), avec sauvegarde manuelle et **restauration en un clic** (l'app redémarre sur la sauvegarde choisie).
+
 ## Fonctionnalités
 
 - **Fiches produits avec photo** : ajoutez une photo en la glissant-déposant (ou en cliquant) directement dans l'application.
@@ -70,8 +78,13 @@ L'onglet **Lives** garde l'historique de toutes vos sessions : date et heure, pl
 - **Boutons de vente par canal** : sur chaque carte produit, un clic sur « En ligne », « Boutique », « TikTok » ou « Whatnot » enregistre une vente sur ce canal. Les boutons **+ / −** servent aux réassorts et corrections.
 - **Import Excel / CSV** : glissez un fichier `.xlsx`, `.xls`, `.csv`, `.tsv` ou `.ods` — les colonnes (nom, SKU, prix, stock…) sont détectées automatiquement et vous pouvez corriger la correspondance avant d'importer. Choix entre *remplacer* ou *ajouter* au stock existant.
 - **Export CSV** de tout le stock (compatible Excel).
+- **Variantes** : un « groupe de variantes » (ex : T-shirt logo) regroupe tailles et couleurs en une carte, chaque variante gardant son stock, son SKU et ses boutons de vente.
+- **Mode inventaire** : bouton 📋 dans l'onglet Produits — comptez (ou scannez, +1 par scan) vos produits, le stock est recalé avec un rapport des écarts, tracés dans l'historique.
+- **Retours / remboursements** : bouton ↩ sur une vente (Historique ou détail du live) — l'article revient en stock et la vente est exclue du CA et de la marge.
+- **Frais d'envoi** : saisissables par vente dans le détail du live, déduits de la marge partout.
 - **Alertes stock bas** : définissez un seuil par produit, les produits en dessous sont signalés.
-- **Historique des mouvements** : chaque vente, réassort ou import est tracé (date, canal, quantité, motif).
+- **Historique des mouvements** : chaque vente, réassort ou import est tracé — **filtrable** par produit, canal et période, avec pagination.
+- **Rapport IA automatique** : option ☕ dans l'onglet Stats pour générer les conseils de l'IA chaque matin.
 - **Recherche** par nom, SKU ou catégorie.
 - **Onglet Aide** : tutoriel intégré à l'application, section par section (démarrage, produits, import, mode live, vérification des rapports, ventes par photos, stats, sauvegardes).
 

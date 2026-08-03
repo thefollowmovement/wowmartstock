@@ -17,7 +17,8 @@ fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 // Base de données
 // ---------------------------------------------------------------------------
 // SQLite intégré à Node.js (>= 22.5) : aucune compilation nécessaire
-const db = new DatabaseSync(path.join(DATA_DIR, 'stock.db'));
+const DB_PATH = path.join(DATA_DIR, 'stock.db');
+const db = new DatabaseSync(DB_PATH);
 db.exec('PRAGMA journal_mode = WAL');
 
 function withTransaction(fn) {
@@ -1637,6 +1638,152 @@ async function maybeAutoReport() {
 }
 setInterval(maybeAutoReport, 10 * 60 * 1000).unref();
 setTimeout(maybeAutoReport, 15 * 1000).unref();
+
+// ---------------------------------------------------------------------------
+// Sauvegarde automatique : chaque jour, une copie cohérente de la base
+// (VACUUM INTO) + les photos sont écrites dans le dossier choisi par
+// l'utilisateur (iCloud Drive, Dropbox, disque externe…). 14 jours conservés.
+// ---------------------------------------------------------------------------
+const BACKUP_KEEP = 14;
+const BACKUP_PREFIX = 'sauvegarde-';
+const localDay = () => new Date().toLocaleDateString('sv-SE'); // YYYY-MM-DD local
+
+function backupRoot() {
+  const dir = getSetting('backup_dir', '');
+  return dir ? path.join(dir, 'WowMart-sauvegardes') : '';
+}
+
+function listBackups() {
+  const root = backupRoot();
+  if (!root || !fs.existsSync(root)) return [];
+  return fs
+    .readdirSync(root)
+    .filter((n) => n.startsWith(BACKUP_PREFIX) && fs.existsSync(path.join(root, n, 'stock.db')))
+    .sort()
+    .reverse()
+    .map((n) => {
+      const dbFile = path.join(root, n, 'stock.db');
+      return { name: n, date: n.slice(BACKUP_PREFIX.length), size: fs.statSync(dbFile).size };
+    });
+}
+
+function runBackup() {
+  const root = backupRoot();
+  if (!root) throw new Error('Aucun dossier de sauvegarde configuré');
+  const target = path.join(root, `${BACKUP_PREFIX}${localDay()}`);
+  fs.mkdirSync(target, { recursive: true });
+
+  // Copie cohérente de la base, même en cours d'utilisation
+  const dbCopy = path.join(target, 'stock.db');
+  if (fs.existsSync(dbCopy)) fs.rmSync(dbCopy);
+  db.exec(`VACUUM INTO '${dbCopy.replace(/'/g, "''")}'`);
+
+  // Photos : copie incrémentale (les fichiers déjà copiés sont ignorés)
+  if (fs.existsSync(UPLOADS_DIR)) {
+    fs.cpSync(UPLOADS_DIR, path.join(target, 'uploads'), { recursive: true, force: false, errorOnExist: false });
+  }
+
+  // Rétention : on garde les 14 sauvegardes les plus récentes
+  const all = fs
+    .readdirSync(root)
+    .filter((n) => n.startsWith(BACKUP_PREFIX))
+    .sort()
+    .reverse();
+  for (const old of all.slice(BACKUP_KEEP)) {
+    fs.rmSync(path.join(root, old), { recursive: true, force: true });
+  }
+
+  setSetting('last_backup', now());
+  setSetting('last_backup_day', localDay());
+  return { folder: target, backups: listBackups() };
+}
+
+app.get('/api/backup', (req, res) => {
+  res.json({
+    dir: getSetting('backup_dir', ''),
+    last_backup: getSetting('last_backup', '') || null,
+    backups: listBackups(),
+  });
+});
+
+app.put('/api/backup', (req, res) => {
+  const dir = String(req.body.dir || '').trim();
+  if (!dir) {
+    db.prepare('DELETE FROM settings WHERE key = ?').run('backup_dir');
+    return res.json({ dir: '', last_backup: null, backups: [] });
+  }
+  if (!path.isAbsolute(dir)) {
+    return res.status(400).json({ error: 'Indiquez un chemin absolu (ex : /Users/vous/Documents/Sauvegardes)' });
+  }
+  try {
+    fs.mkdirSync(path.join(dir, 'WowMart-sauvegardes'), { recursive: true });
+    const probe = path.join(dir, 'WowMart-sauvegardes', '.test-ecriture');
+    fs.writeFileSync(probe, 'ok');
+    fs.rmSync(probe);
+  } catch (e) {
+    return res.status(400).json({ error: `Dossier inutilisable : ${e.message}` });
+  }
+  setSetting('backup_dir', dir);
+  res.json({ dir, last_backup: getSetting('last_backup', '') || null, backups: listBackups() });
+});
+
+app.post('/api/backup/run', (req, res) => {
+  try {
+    const result = runBackup();
+    res.json({ ok: true, last_backup: getSetting('last_backup'), backups: result.backups });
+  } catch (e) {
+    res.status(500).json({ error: `Sauvegarde impossible : ${e.message}` });
+  }
+});
+
+// Restauration : la base et les photos sont remplacées par la sauvegarde,
+// puis l'application s'arrête (elle doit être relancée avec npm start).
+app.post('/api/backup/restore', (req, res) => {
+  const name = String(req.body.name || '');
+  if (!/^sauvegarde-\d{4}-\d{2}-\d{2}$/.test(name)) {
+    return res.status(400).json({ error: 'Sauvegarde invalide' });
+  }
+  const source = path.join(backupRoot(), name);
+  if (!fs.existsSync(path.join(source, 'stock.db'))) {
+    return res.status(404).json({ error: 'Sauvegarde introuvable' });
+  }
+  try {
+    db.close();
+    for (const suffix of ['', '-wal', '-shm']) {
+      const f = `${DB_PATH}${suffix}`;
+      if (fs.existsSync(f)) fs.rmSync(f);
+    }
+    fs.copyFileSync(path.join(source, 'stock.db'), DB_PATH);
+    const uploadsBackup = path.join(source, 'uploads');
+    if (fs.existsSync(uploadsBackup)) {
+      fs.cpSync(uploadsBackup, UPLOADS_DIR, { recursive: true, force: true });
+    }
+  } catch (e) {
+    // La base est peut-être déjà fermée : on répond puis on s'arrête, la
+    // sauvegarde source reste intacte pour réessayer après redémarrage.
+    res.status(500).json({ error: `Restauration échouée : ${e.message} — relancez l'application et réessayez` });
+    console.error(`Restauration échouée : ${e.message}`);
+    setTimeout(() => process.exit(1), 400);
+    return;
+  }
+  res.json({ ok: true, message: 'Sauvegarde restaurée — relancez l’application (npm start)' });
+  console.log(`Sauvegarde ${name} restaurée — arrêt de l'application, relancez avec npm start`);
+  setTimeout(() => process.exit(0), 400);
+});
+
+// Une sauvegarde par jour, dès que l'app tourne (vérification toutes les 30 min)
+function maybeAutoBackup() {
+  try {
+    if (!getSetting('backup_dir', '')) return;
+    if (getSetting('last_backup_day', '') === localDay()) return;
+    runBackup();
+    console.log(`Sauvegarde automatique effectuée (${localDay()})`);
+  } catch (e) {
+    console.error(`Sauvegarde automatique impossible : ${e.message}`);
+  }
+}
+setInterval(maybeAutoBackup, 30 * 60 * 1000).unref();
+setTimeout(maybeAutoBackup, 20 * 1000).unref();
 
 // ---------------------------------------------------------------------------
 // Export CSV

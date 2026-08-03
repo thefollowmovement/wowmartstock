@@ -192,6 +192,22 @@
     </div>
 
     <div id="importResult" class="card success" hidden></div>
+
+    <div class="card">
+      <h2>💾 Sauvegarde automatique</h2>
+      <p class="muted">Une copie de votre base (produits, ventes, lives) et de vos photos est faite <strong>chaque jour automatiquement</strong>
+        dans le dossier de votre choix — mettez-y un dossier synchronisé (iCloud Drive, Dropbox…) ou un disque externe.
+        Les 14 dernières sauvegardes sont conservées.</p>
+      <div class="backup-row">
+        <input id="backupDir" type="text" placeholder="Ex : /Users/vous/Library/Mobile Documents/com~apple~CloudDocs" autocomplete="off">
+        <button class="btn primary" id="btnSaveBackupDir">Enregistrer</button>
+        <button class="btn" id="btnBackupNow">Sauvegarder maintenant</button>
+      </div>
+      <p class="muted small">💡 Sur Mac, glissez un dossier du Finder dans le Terminal pour obtenir son chemin, ou utilisez
+        <code>/Users/votrenom/Library/Mobile Documents/com~apple~CloudDocs</code> pour iCloud Drive.</p>
+      <div id="backupStatus" class="muted"></div>
+      <div id="backupList"></div>
+    </div>
   </main>
 
   <!-- ===================== MOUVEMENTS ===================== -->
@@ -282,7 +298,9 @@
           <li>Cliquez sur la carte pour <strong>modifier la fiche</strong> (photo, prix, coût, seuil…).</li>
         </ul>
         <p>En haut : recherche par nom, SKU ou catégorie, et une case <em>« Stock bas uniquement »</em> pour ne voir que les produits à recommander.</p>
-        <p>Chaque opération est enregistrée dans l'onglet <em>Historique</em> : date, produit, canal, quantité, stock après, motif.</p>
+        <p><strong>Variantes</strong> : renseignez un <em>« Groupe de variantes »</em> (ex : T-shirt logo) sur plusieurs produits — ils s'affichent regroupés en une carte, chaque taille/couleur gardant son stock, son SKU et ses boutons de vente.</p>
+        <p><strong>📋 Inventaire</strong> : le bouton en haut de l'onglet Produits ouvre le mode comptage — saisissez les quantités réelles ou scannez les codes-barres (+1 par scan), validez, et le stock est recalé avec un rapport des écarts.</p>
+        <p>Chaque opération est enregistrée dans l'onglet <em>Historique</em> — filtrable par produit, canal et période. C'est aussi là que le bouton <span class="tuto-btn">↩ Retour</span> enregistre un retour/remboursement : l'article revient en stock et la vente est retirée du CA et de la marge.</p>
       </div>
     </details>
 
@@ -331,7 +349,7 @@
           <li><strong>Vérifiez</strong> : les paiements en échec sont listés et exclus du CA — le bouton <span class="tuto-btn">↩ Restock</span> annule la vente et remet l'article en stock.</li>
           <li><strong>Validez</strong> le live : la ligne passe au vert et l'alerte du tableau de bord disparaît.</li>
         </ol>
-        <p>Le détail affiche aussi <strong>CA TTC, CA HT et TVA collectée</strong> (taux réglable dans l'onglet Lives), et la <strong>marge nette</strong> : gains nets − coût d'achat (cadeaux inclus).</p>
+        <p>Le détail affiche aussi <strong>CA TTC, CA HT et TVA collectée</strong> (taux réglable dans l'onglet Lives), et la <strong>marge nette</strong> : gains nets − coût d'achat (cadeaux inclus). La colonne <strong>📮 Envoi</strong> permet de saisir vos frais d'expédition/emballage par vente — ils sont déduits de la marge. Et le petit bouton <span class="tuto-btn">↩</span> à côté d'une vente enregistre un <strong>retour/remboursement</strong>.</p>
         <p class="tuto-note">💶 Avant l'import du rapport, la marge est <strong>estimée</strong> avec les frais des plateformes (réglables via <em>⚙ Frais des plateformes</em> : Whatnot 6,67 % + 2,42 % + 0,25 € par défaut). Après l'import, ce sont les <strong>chiffres réels</strong> qui comptent.</p>
       </div>
     </details>
@@ -357,7 +375,8 @@
         <ul>
           <li><strong>🏆 Qu'est-ce qui rapporte vraiment ?</strong> Classement par <strong>marge nette</strong> (pas par volume !) — filtrable par période et par plateforme. Vendre 100 câbles pour 20 € de bénéfice compte moins que 30 batteries pour 300 €.</li>
           <li><strong>📦 Que commander aujourd'hui ?</strong> Liste quotidienne des produits sous leur seuil, avec une quantité conseillée calculée d'après vos ventes des 30 derniers jours — exportable en <strong>bon de commande CSV</strong> pour votre fournisseur.</li>
-          <li><strong>🤖 Que mettre en avant ?</strong> Le bouton <span class="tuto-btn">✨ Générer le rapport</span> demande à Claude d'analyser vos chiffres réels : produits à pousser (et sur quelle plateforme), produits à gros volume mais faible marge, réassorts prioritaires, idées de bundles.</li>
+          <li><strong>🕐 Quand faire vos lives ?</strong> CA et marge moyens par jour de la semaine et par heure de début, et le rythme des ventes par tranche de 15 min pour voir quand un live s'essouffle.</li>
+          <li><strong>🤖 Que mettre en avant ?</strong> Le bouton <span class="tuto-btn">✨ Générer le rapport</span> demande à Claude d'analyser vos chiffres réels : produits à pousser (et sur quelle plateforme), produits à gros volume mais faible marge, réassorts prioritaires, idées de bundles. Cochez <em>« ☕ Générer automatiquement chaque matin »</em> pour l'avoir prêt au réveil.</li>
         </ul>
       </div>
     </details>
@@ -370,7 +389,7 @@
           <li><code>data/stock.db</code> — la base de données (produits, ventes, lives, réglages) ;</li>
           <li><code>uploads/</code> — les photos des produits et des ventes.</li>
         </ul>
-        <p>Pensez à <strong>copier ces deux dossiers régulièrement</strong> (clé USB, Time Machine, cloud personnel…) : c'est votre sauvegarde complète.</p>
+        <p><strong>💾 Sauvegarde automatique</strong> : dans l'onglet <em>Importer</em>, indiquez un dossier de sauvegarde (idéalement synchronisé : iCloud Drive, Dropbox… ou un disque externe). Une copie complète (base + photos) y est faite <strong>chaque jour automatiquement</strong>, les 14 dernières sont conservées, et le bouton <span class="tuto-btn">↩ Restaurer</span> permet de revenir à n'importe laquelle en un clic.</p>
       </div>
     </details>
   </main>

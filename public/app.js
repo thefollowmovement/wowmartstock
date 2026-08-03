@@ -87,6 +87,7 @@ document.querySelectorAll('.tab').forEach((btn) => {
     if (btn.dataset.tab === 'movements') loadMovements();
     if (btn.dataset.tab === 'lives') loadLives();
     if (btn.dataset.tab === 'stats') loadStatsPage();
+    if (btn.dataset.tab === 'import') loadBackup();
   });
 });
 
@@ -1714,6 +1715,82 @@ $('#movChannel').addEventListener('change', () => { movPage = 1; loadMovements()
 $('#movDays').addEventListener('change', () => { movPage = 1; loadMovements(); });
 $('#movPrev').addEventListener('click', () => { movPage--; loadMovements(); });
 $('#movNext').addEventListener('click', () => { movPage++; loadMovements(); });
+
+// ---------------------------------------------------------------------------
+// Sauvegarde automatique (dossier au choix, quotidienne, restauration)
+// ---------------------------------------------------------------------------
+function renderBackup(data) {
+  $('#backupDir').value = data.dir || '';
+  $('#backupStatus').innerHTML = data.dir
+    ? data.last_backup
+      ? `✅ Dernière sauvegarde : <strong>${dateFr(data.last_backup)}</strong>`
+      : '⏳ Première sauvegarde dans quelques secondes…'
+    : '⚠ Aucun dossier configuré : <strong>vos données ne sont pas sauvegardées</strong>.';
+  $('#backupList').innerHTML = data.backups && data.backups.length
+    ? `<div class="table-wrap"><table>
+        <thead><tr><th>Sauvegarde</th><th>Base</th><th></th></tr></thead>
+        <tbody>${data.backups
+          .map(
+            (b) => `<tr>
+          <td>📁 ${escapeHtml(b.date)}</td>
+          <td>${(b.size / 1024).toFixed(0)} Ko</td>
+          <td><button class="btn small" onclick="restoreBackup('${escapeHtml(b.name)}')" title="Remplace la base et les photos actuelles par cette sauvegarde">↩ Restaurer</button></td>
+        </tr>`
+          )
+          .join('')}</tbody></table></div>`
+    : '';
+}
+
+async function loadBackup() {
+  try {
+    renderBackup(await api('/api/backup'));
+  } catch (e) {
+    /* pas bloquant */
+  }
+}
+
+$('#btnSaveBackupDir').addEventListener('click', async () => {
+  try {
+    const data = await api('/api/backup', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ dir: $('#backupDir').value.trim() }),
+    });
+    renderBackup(data);
+    toast(data.dir ? '💾 Dossier de sauvegarde enregistré' : 'Sauvegarde désactivée');
+  } catch (e) {
+    toast(e.message, true);
+  }
+});
+
+$('#btnBackupNow').addEventListener('click', async () => {
+  const btn = $('#btnBackupNow');
+  btn.disabled = true;
+  try {
+    await api('/api/backup/run', { method: 'POST' });
+    await loadBackup();
+    toast('💾 Sauvegarde effectuée');
+  } catch (e) {
+    toast(e.message, true);
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+window.restoreBackup = async (name) => {
+  if (!confirm(`Restaurer la sauvegarde du ${name.replace('sauvegarde-', '')} ?\n\nVos données ACTUELLES (base + photos) seront remplacées par cette sauvegarde. L'application s'arrêtera ensuite : relancez-la avec npm start.`)) return;
+  try {
+    const r = await api('/api/backup/restore', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name }),
+    });
+    document.body.innerHTML = `<div class="restore-done"><h1>✅ ${escapeHtml(r.message)}</h1>
+      <p>Retournez dans le Terminal et relancez <code>npm start</code>, puis rechargez cette page.</p></div>`;
+  } catch (e) {
+    toast(e.message, true);
+  }
+};
 
 // ---------------------------------------------------------------------------
 // Mode inventaire : comptage physique (saisie ou scan de codes-barres),

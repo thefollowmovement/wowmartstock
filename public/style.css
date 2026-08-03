@@ -808,6 +808,29 @@ tr.row-unpaid td { background: #fef2f2; }
 .ai-report ul { margin: 6px 0 6px 22px; display: flex; flex-direction: column; gap: 4px; }
 .ai-report p { margin: 6px 0; }
 
+/* ---------- Sauvegarde ---------- */
+.backup-row { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
+.backup-row input {
+  flex: 1;
+  min-width: 260px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: .9rem;
+}
+#backupStatus { margin: 8px 0 12px; }
+.restore-done {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 80vh;
+  gap: 14px;
+  text-align: center;
+  padding: 24px;
+  font-family: var(--font-body);
+}
+
 /* ---------- Meilleurs créneaux de live ---------- */
 .slots-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 26px; margin-bottom: 18px; }
 .slots-grid h4, #liveSlots h4 { margin: 10px 0 10px; }
