@@ -47,6 +47,8 @@
           <h2>Historique des lives</h2>
           <p class="muted">Chaque live est enregistré avec sa date, sa plateforme et toutes les ventes horodatées.<br>
           Après chaque live, <strong>importez le rapport CSV de la plateforme</strong> pour vérifier les paiements, puis validez le live.</p>
+          <button class="btn primary" id="btnPhotoSales">📸 Ventes par photos</button>
+          <span class="muted small">Importez les photos de vos produits vendus (étiquette #N) — même pour un live oublié : créez-le après coup avec sa vraie date.</span>
         </div>
         <div class="settings-side">
           <label class="vat-setting">Taux de TVA
@@ -359,10 +361,12 @@
       <div class="tuto-body">
         <p>Vous photographiez chaque produit vendu avec son étiquette <strong>#numéro</strong> pendant le live ? L'app peut créer les ventes à partir des photos :</p>
         <ol class="tuto-steps">
-          <li>Onglet <em>Lives</em> → détail du live → section <strong>« Ventes par photos »</strong>.</li>
+          <li>Onglet <em>Lives</em> → bouton <span class="tuto-btn">📸 Ventes par photos</span>.</li>
+          <li>Choisissez le live concerné — et si vous avez <strong>oublié de le lancer dans l'app</strong>, créez-le après coup avec sa vraie date et ses horaires (<span class="tuto-btn">➕ Créer un live passé</span>).</li>
           <li>Importez toutes les photos d'un coup (elles sont compressées automatiquement avant envoi).</li>
           <li><strong>Claude (IA vision)</strong> lit le numéro sur l'étiquette et reconnaît le produit dans votre catalogue.</li>
           <li>Vous <strong>vérifiez la liste</strong> (numéro et produit modifiables), puis validez : les ventes sont créées, le stock décompté, et chaque vente garde sa photo.</li>
+          <li>Un cadeau à rattacher après coup ? Le bouton <strong>🎁</strong> devant chaque vente du détail du live marche aussi sur un live terminé.</li>
         </ol>
         <p class="tuto-note">🔑 Nécessite une <strong>clé API Anthropic</strong> (console.anthropic.com), à coller une seule fois dans la section — elle reste stockée uniquement sur votre ordinateur. Deux modèles au choix : <strong>Claude Opus 5</strong> (précis, ≈ 2-3 centimes/photo) ou <strong>Claude Haiku 4.5</strong> (économique, ≈ 0,3 centime/photo). La même clé sert aux conseils de l'IA dans l'onglet Stats.</p>
       </div>
@@ -507,6 +511,69 @@
       <div class="actions">
         <span class="spacer"></span>
         <button class="btn primary" id="btnCloseRecap">Fermer</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================== VENTES PAR PHOTOS ===================== -->
+  <div id="photoSalesModal" class="modal-overlay" hidden>
+    <div class="modal photo-sales-modal">
+      <h2>📸 Ventes par photos</h2>
+      <p class="muted">Pendant le live, vous photographiez chaque produit vendu avec son étiquette <strong>#numéro</strong>.
+        Choisissez le live concerné (ou créez-le s'il n'existe pas), importez toutes les photos d'un coup :
+        l'IA lit le numéro et reconnaît le produit, vous vérifiez, les ventes sont créées.</p>
+
+      <div class="ps-step">
+        <strong>1. Le live concerné</strong>
+        <div class="ps-live-row">
+          <select id="psLive"></select>
+          <button class="btn" id="btnPsNewLive">➕ Créer un live passé</button>
+        </div>
+        <div id="psCreate" class="ps-create" hidden>
+          <p class="muted small">Vous avez oublié de lancer le live dans l'app ? Créez-le ici avec sa vraie date — vous pourrez ensuite y ajouter les ventes par photos, les cadeaux et le rapport de la plateforme.</p>
+          <div class="ps-create-grid">
+            <label>Plateforme
+              <select id="psPlatform">
+                <option value="tiktok">TikTok</option>
+                <option value="whatnot">🟡 Whatnot</option>
+              </select>
+            </label>
+            <label>Date<input type="date" id="psDate"></label>
+            <label>Début<input type="time" id="psStart" value="20:00"></label>
+            <label>Fin<input type="time" id="psEnd" value="22:00"></label>
+          </div>
+          <button class="btn primary" id="btnPsCreateLive">Créer ce live</button>
+        </div>
+      </div>
+
+      <div class="ps-step">
+        <strong>2. Les photos</strong>
+        <details class="api-key-setup" id="psKeySetup">
+          <summary>🔑 Clé API Anthropic</summary>
+          <p class="muted small">Créez une clé sur <a href="https://console.anthropic.com" target="_blank" rel="noopener">console.anthropic.com</a>
+            (API Keys), puis collez-la ici. Elle est stockée uniquement dans votre base locale.</p>
+          <div class="key-row">
+            <input type="password" id="apiKeyInput" placeholder="sk-ant-…" autocomplete="off">
+            <button class="btn primary" onclick="saveApiKey()">Enregistrer</button>
+          </div>
+        </details>
+        <div class="photos-actions">
+          <label class="muted small">Modèle d'analyse :
+            <select id="visionModel" onchange="saveVisionModel(this.value)">
+              <option value="claude-opus-5">Claude Opus 5 — précis (≈ 2-3 c€ / photo)</option>
+              <option value="claude-haiku-4-5">Claude Haiku 4.5 — économique (≈ 0,3 c€ / photo)</option>
+            </select>
+          </label>
+          <button class="btn primary" id="btnPsPhotos">📸 Choisir les photos</button>
+          <input type="file" id="livePhotos" accept="image/*" multiple hidden>
+        </div>
+        <div id="photoProgress" class="photo-progress" hidden></div>
+        <div id="photoReview" hidden></div>
+      </div>
+
+      <div class="actions">
+        <span class="spacer"></span>
+        <button type="button" class="btn" id="btnClosePhotoSales">Fermer</button>
       </div>
     </div>
   </div>

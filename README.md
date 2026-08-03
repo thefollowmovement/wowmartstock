@@ -42,12 +42,14 @@ Après le live, importez le rapport dans le **détail du live** (onglet Lives �
 
 ### 📸 Ventes par photos (IA)
 
-Pendant le live, prenez en photo chaque produit vendu avec son étiquette **#numéro**. Ensuite, dans le détail du live (onglet Lives → Détail → « Ventes par photos ») :
+Pendant le live, prenez en photo chaque produit vendu avec son étiquette **#numéro**. Ensuite, onglet Lives → bouton **« 📸 Ventes par photos »** (interface dédiée) :
 
-1. importez toutes les photos d'un coup (elles sont réduites automatiquement avant envoi) ;
-2. **Claude (API Anthropic, vision)** lit le numéro de vente sur l'étiquette et identifie le produit dans votre catalogue ;
-3. vous **vérifiez** la liste (numéro et produit modifiables, photos non reconnues assignables à la main) ;
-4. les ventes sont créées : stock décompté, numéros #N conservés, **photo attachée à chaque vente**.
+1. choisissez le live concerné — **live oublié ?** créez-le après coup avec sa vraie date et ses horaires (« ➕ Créer un live passé ») ;
+2. importez toutes les photos d'un coup (elles sont réduites automatiquement avant envoi) ;
+3. **Claude (API Anthropic, vision)** lit le numéro de vente sur l'étiquette et identifie le produit dans votre catalogue ;
+4. vous **vérifiez** la liste (numéro et produit modifiables, photos non reconnues assignables à la main) ;
+5. les ventes sont créées : stock décompté, numéros #N conservés, ventes datées dans la fenêtre du live, **photo attachée à chaque vente** ;
+6. les **🎁 cadeaux** peuvent être rattachés après coup à chaque vente depuis le détail du live (même terminé).
 
 Nécessite une **clé API Anthropic** (console.anthropic.com), enregistrée dans l'app (stockée uniquement dans votre base locale, ou via la variable d'environnement `ANTHROPIC_API_KEY`). Deux modèles au choix : **Claude Opus 5** (précis, ≈ 2-3 centimes/photo) ou **Claude Haiku 4.5** (économique, ≈ 0,3 centime/photo).
 

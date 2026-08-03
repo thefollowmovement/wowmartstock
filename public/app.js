@@ -541,9 +541,11 @@ window.liveUndo = async (movementId) => {
 // Sélecteur de cadeau (🎁 rattaché à une vente du live)
 // ---------------------------------------------------------------------------
 let giftForSaleNo = null;
+let giftLiveId = null; // live ciblé depuis le détail (null = live en cours)
 
-window.openGiftPicker = (saleNo) => {
+window.openGiftPicker = (saleNo, liveId = null) => {
   giftForSaleNo = saleNo;
+  giftLiveId = liveId;
   $('#giftTitle').textContent = `🎁 Ajouter un cadeau à la vente #${saleNo}`;
   $('#giftSearch').value = '';
   renderGiftResults();
@@ -552,9 +554,16 @@ window.openGiftPicker = (saleNo) => {
 };
 
 function closeGiftPicker() {
+  const fromDetail = giftLiveId;
   giftForSaleNo = null;
+  giftLiveId = null;
   $('#giftModal').hidden = true;
-  if (liveSession) setTimeout(() => $('#liveSearch').focus(), 100);
+  if (fromDetail) {
+    // Cadeau(x) ajouté(s) depuis le détail d'un live : on rafraîchit l'affichage
+    loadLives().then(() => showLiveDetail(fromDetail));
+  } else if (liveSession) {
+    setTimeout(() => $('#liveSearch').focus(), 100);
+  }
 }
 
 $('#btnCloseGift').addEventListener('click', closeGiftPicker);
@@ -599,31 +608,35 @@ function renderGiftResults() {
 }
 
 window.giveGift = async (productId) => {
-  if (!liveSession || giftForSaleNo == null) return;
+  const targetLiveId = giftLiveId || (liveSession && liveSession.id);
+  if (!targetLiveId || giftForSaleNo == null) return;
   const p = products.find((x) => x.id === productId);
   try {
-    const result = await api(`/api/lives/${liveSession.id}/gift`, {
+    const result = await api(`/api/lives/${targetLiveId}/gift`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ sale_no: giftForSaleNo, product_id: productId }),
     });
     updateLocalProduct(result.product);
-    liveSalesLog.unshift({
-      movement_id: result.movement_id,
-      sale_no: result.sale_no,
-      product_id: productId,
-      name: p.name,
-      sku: p.sku,
-      price: 0,
-      is_gift: true,
-      time: new Date().toISOString(),
-      cancelled: false,
-    });
+    if (!giftLiveId) {
+      // Cadeau pendant le live en cours : mise à jour du journal à l'écran
+      liveSalesLog.unshift({
+        movement_id: result.movement_id,
+        sale_no: result.sale_no,
+        product_id: productId,
+        name: p.name,
+        sku: p.sku,
+        price: 0,
+        is_gift: true,
+        time: new Date().toISOString(),
+        cancelled: false,
+      });
+      renderLiveResults();
+      renderLiveSales();
+      updateLiveCounters();
+    }
     renderProducts();
-    renderLiveResults();
     renderGiftResults();
-    renderLiveSales();
-    updateLiveCounters();
     loadStats();
     toast(`🎁 ${p.name} ajouté à la vente #${giftForSaleNo}`);
     // le sélecteur reste ouvert pour ajouter un autre cadeau à la même vente
@@ -791,7 +804,9 @@ window.showLiveDetail = async (id) => {
             const margin = saleMargin(m) - (m.shipping_cost || 0);
             const failed = m.payment_status === 'failed' && !m.cancelled;
             return `<tr class="${m.cancelled ? 'row-cancelled' : ''} ${failed || refunded ? 'row-unpaid' : ''}">
-          <td><strong>${m.is_gift ? '🎁 ' : ''}${m.sale_no ? '#' + m.sale_no : ''}</strong></td>
+          <td>${!m.is_gift && !m.cancelled && m.sale_no
+            ? `<button class="live-gift-btn" onclick="openGiftPicker(${m.sale_no}, ${l.id})" title="Ajouter un cadeau à la vente #${m.sale_no}">🎁</button>`
+            : ''}<strong>${m.is_gift ? '🎁 ' : ''}${m.sale_no ? '#' + m.sale_no : ''}</strong></td>
           <td>${timeFr(m.created_at)}</td>
           <td>${m.photo ? `<a href="${escapeHtml(m.photo)}" target="_blank" rel="noopener"><img class="sale-photo-thumb" src="${escapeHtml(m.photo)}" alt=""></a> ` : ''}${escapeHtml(m.product_name)}${m.product_sku ? ` <span class="product-sku">(${escapeHtml(m.product_sku)})</span>` : ''}</td>
           <td>${euro(m.product_price)}</td>
@@ -902,32 +917,8 @@ window.showLiveDetail = async (id) => {
 
       <div class="report-import photos-import">
         <strong>📸 Ventes par photos</strong>
-        <p class="muted small">Pendant le live, vous photographiez chaque produit vendu avec son étiquette
-          <strong>#numéro</strong>. Importez toutes les photos d'un coup : l'IA lit le numéro de vente et identifie
-          le produit dans votre catalogue, vous vérifiez, puis les ventes sont créées (stock décompté, photo conservée).</p>
-        <details class="api-key-setup" ${hasApiKey ? '' : 'open'}>
-          <summary>🔑 Clé API Anthropic ${hasApiKey ? '— configurée ✓' : '— requise pour l\'analyse'}</summary>
-          <p class="muted small">Créez une clé sur <a href="https://console.anthropic.com" target="_blank" rel="noopener">console.anthropic.com</a>
-            (API Keys), puis collez-la ici. Elle est stockée uniquement dans votre base locale.</p>
-          <div class="key-row">
-            <input type="password" id="apiKeyInput" placeholder="sk-ant-…" autocomplete="off">
-            <button class="btn primary" onclick="saveApiKey(${l.id})">Enregistrer</button>
-          </div>
-        </details>
-        <div class="photos-actions">
-          <label class="muted small">Modèle d'analyse :
-            <select id="visionModel" onchange="saveVisionModel(this.value)">
-              <option value="claude-opus-5" ${visionModel === 'claude-opus-5' ? 'selected' : ''}>Claude Opus 5 — précis (≈ 2-3 c€ / photo)</option>
-              <option value="claude-haiku-4-5" ${visionModel === 'claude-haiku-4-5' ? 'selected' : ''}>Claude Haiku 4.5 — économique (≈ 0,3 c€ / photo)</option>
-            </select>
-          </label>
-          <button class="btn primary" onclick="document.getElementById('livePhotos').click()" ${hasApiKey ? '' : 'disabled title="Enregistrez d\'abord votre clé API"'}>
-            📸 Choisir les photos
-          </button>
-          <input type="file" id="livePhotos" accept="image/*" multiple hidden onchange="analyzeLivePhotos(${l.id}, this.files)">
-        </div>
-        <div id="photoProgress" class="photo-progress" hidden></div>
-        <div id="photoReview" hidden></div>
+        <p class="muted small">Vous avez les photos des produits vendus avec leur étiquette #numéro ?
+          <button class="btn small" onclick="openPhotoSales(${l.id})">📸 Importer les photos de ce live</button></p>
       </div>
 
       ${productRows ? `
@@ -1284,7 +1275,7 @@ $('#btnAiReport').addEventListener('click', async () => {
 // ---------------------------------------------------------------------------
 let photoAnalysis = null; // { liveId, results: [...] }
 
-window.saveApiKey = async (liveId) => {
+window.saveApiKey = async () => {
   const key = $('#apiKeyInput').value.trim();
   if (!key) {
     toast('Collez votre clé API (sk-ant-…)', true);
@@ -1298,7 +1289,7 @@ window.saveApiKey = async (liveId) => {
     });
     hasApiKey = !!s.has_api_key;
     toast('🔑 Clé API enregistrée');
-    showLiveDetail(liveId);
+    refreshPhotoSalesUi();
   } catch (e) {
     toast(e.message, true);
   }
@@ -1400,6 +1391,86 @@ function renderPhotoReview() {
   $('#photoReview').hidden = false;
 }
 
+// ---- Modale « Ventes par photos » : choix / création du live, puis analyse ----
+let psLives = []; // lives proposés dans le sélecteur
+
+function refreshPhotoSalesUi() {
+  const setup = $('#psKeySetup');
+  setup.querySelector('summary').textContent = hasApiKey
+    ? '🔑 Clé API Anthropic — configurée ✓'
+    : '🔑 Clé API Anthropic — requise pour l’analyse';
+  setup.open = !hasApiKey;
+  $('#btnPsPhotos').disabled = !hasApiKey;
+  $('#btnPsPhotos').title = hasApiKey ? '' : 'Enregistrez d’abord votre clé API';
+  $('#visionModel').value = visionModel;
+}
+
+window.openPhotoSales = async (preselectId = null) => {
+  try {
+    psLives = (await api('/api/lives')).filter((l) => l.ended_at).slice(0, 30);
+  } catch (e) {
+    psLives = [];
+  }
+  $('#psLive').innerHTML = psLives.length
+    ? psLives
+        .map(
+          (l) => `<option value="${l.id}" ${preselectId === l.id ? 'selected' : ''}>
+            ${dateFr(l.started_at)} — ${l.platform === 'tiktok' ? 'TikTok' : 'Whatnot'} (${l.items} article${l.items > 1 ? 's' : ''})
+          </option>`
+        )
+        .join('')
+    : '<option value="">— aucun live : créez-le ci-contre —</option>';
+  $('#psCreate').hidden = psLives.length > 0;
+  $('#psDate').value = new Date().toLocaleDateString('sv-SE');
+  $('#photoReview').hidden = true;
+  $('#photoProgress').hidden = true;
+  photoAnalysis = null;
+  refreshPhotoSalesUi();
+  $('#photoSalesModal').hidden = false;
+};
+
+$('#btnPhotoSales').addEventListener('click', () => openPhotoSales());
+$('#btnClosePhotoSales').addEventListener('click', () => { $('#photoSalesModal').hidden = true; });
+$('#btnPsNewLive').addEventListener('click', () => { $('#psCreate').hidden = !$('#psCreate').hidden; });
+
+// Création d'un live passé (oublié) avec sa vraie date et ses horaires
+$('#btnPsCreateLive').addEventListener('click', async () => {
+  const date = $('#psDate').value;
+  const start = $('#psStart').value;
+  const end = $('#psEnd').value;
+  if (!date || !start || !end) return toast('Renseignez la date et les horaires', true);
+  // Un live peut finir après minuit : si l'heure de fin est avant celle de
+  // début, elle est comptée le lendemain
+  const started = new Date(`${date}T${start}`);
+  let ended = new Date(`${date}T${end}`);
+  if (ended <= started) ended = new Date(ended.getTime() + 24 * 3600 * 1000);
+  try {
+    const live = await api('/api/lives', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        platform: $('#psPlatform').value,
+        started_at: started.toISOString(),
+        ended_at: ended.toISOString(),
+      }),
+    });
+    toast(`✅ Live du ${dateFr(live.started_at)} créé`);
+    await loadLives();
+    await openPhotoSales(live.id);
+  } catch (e) {
+    toast(e.message, true);
+  }
+});
+
+$('#btnPsPhotos').addEventListener('click', () => {
+  if (!Number($('#psLive').value)) return toast('Choisissez ou créez d’abord le live concerné', true);
+  $('#livePhotos').click();
+});
+$('#livePhotos').addEventListener('change', function () {
+  const liveId = Number($('#psLive').value);
+  if (liveId) analyzeLivePhotos(liveId, this.files);
+});
+
 window.commitPhotoSales = async () => {
   if (!photoAnalysis) return;
   const sales = [];
@@ -1426,8 +1497,10 @@ window.commitPhotoSales = async () => {
     toast(msg);
     const liveId = photoAnalysis.liveId;
     photoAnalysis = null;
+    $('#photoSalesModal').hidden = true;
     await loadProducts();
     await loadLives();
+    document.querySelector('[data-tab=lives]').click();
     await showLiveDetail(liveId);
   } catch (e) {
     toast(e.message, true);

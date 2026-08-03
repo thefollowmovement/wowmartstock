@@ -648,11 +648,31 @@ function sessionSummary(session) {
 }
 
 // Démarrer un live : { platform: "tiktok"|"whatnot", name? }
+// Avec started_at + ended_at : crée un live PASSÉ, déjà terminé (pour un live
+// qu'on a oublié de lancer dans l'app — les ventes seront ajoutées après coup,
+// par photos ou via le rapport de la plateforme).
 app.post('/api/lives', (req, res) => {
   const platform = req.body.platform;
   if (!LIVE_PLATFORMS.includes(platform)) {
     return res.status(400).json({ error: 'Plateforme invalide (tiktok ou whatnot)' });
   }
+
+  if (req.body.started_at) {
+    const started = new Date(req.body.started_at);
+    const ended = new Date(req.body.ended_at || NaN);
+    if (Number.isNaN(started.getTime()) || Number.isNaN(ended.getTime())) {
+      return res.status(400).json({ error: 'Dates invalides' });
+    }
+    if (ended <= started) return res.status(400).json({ error: 'La fin du live doit être après son début' });
+    if (started > new Date()) return res.status(400).json({ error: 'La date de début doit être dans le passé' });
+    const info = db
+      .prepare('INSERT INTO live_sessions (platform, name, started_at, ended_at) VALUES (?, ?, ?, ?)')
+      .run(platform, (req.body.name || '').trim(), started.toISOString(), ended.toISOString());
+    return res
+      .status(201)
+      .json(sessionSummary(db.prepare('SELECT * FROM live_sessions WHERE id = ?').get(info.lastInsertRowid)));
+  }
+
   const open = db.prepare('SELECT * FROM live_sessions WHERE ended_at IS NULL').get();
   if (open) {
     return res.status(409).json({ error: 'Un live est déjà en cours, terminez-le d’abord', session: sessionSummary(open) });
@@ -703,7 +723,6 @@ app.post('/api/lives/:id/validate', (req, res) => {
 app.post('/api/lives/:id/gift', (req, res) => {
   const session = db.prepare('SELECT * FROM live_sessions WHERE id = ?').get(Number(req.params.id));
   if (!session) return res.status(404).json({ error: 'Live introuvable' });
-  if (session.ended_at) return res.status(400).json({ error: 'Ce live est déjà terminé' });
   const saleNo = parseInt(req.body.sale_no, 10);
   const sale = db
     .prepare('SELECT id FROM movements WHERE session_id = ? AND sale_no = ? AND is_gift = 0 AND delta < 0')
@@ -719,6 +738,15 @@ app.post('/api/lives/:id/gift', (req, res) => {
     db.prepare('UPDATE products SET stock = ?, updated_at = ? WHERE id = ?').run(after, now(), product.id);
     movementId = logMovement(product.id, session.platform, -1, after, `Cadeau (vente #${saleNo})`, session.id, saleNo);
     db.prepare('UPDATE movements SET is_gift = 1, sold_price = 0 WHERE id = ?').run(movementId);
+    // Cadeau ajouté après le live : daté comme la vente à laquelle il est rattaché
+    if (session.ended_at) {
+      const saleTs = db
+        .prepare('SELECT created_at FROM movements WHERE id = ?')
+        .get(sale.id).created_at;
+      db.prepare('UPDATE movements SET created_at = ? WHERE id = ?').run(saleTs, movementId);
+    }
+    // Un cadeau ajouté après coup change la marge : le live devra être re-validé
+    if (session.validated_at) db.prepare('UPDATE live_sessions SET validated_at = NULL WHERE id = ?').run(session.id);
   });
   res.json({
     product: db.prepare('SELECT * FROM products WHERE id = ?').get(product.id),
@@ -1363,6 +1391,15 @@ app.post('/api/lives/:id/photo-sales', (req, res) => {
       db.prepare('UPDATE products SET stock = ?, updated_at = ? WHERE id = ?').run(after, now(), product.id);
       const movementId = logMovement(product.id, session.platform, -1, after, 'Vente live (photo)', session.id, saleNo);
       if (s.photo) db.prepare('UPDATE movements SET photo = ? WHERE id = ?').run(String(s.photo), movementId);
+      // Live déjà terminé (ex : live passé créé après coup) : la vente est
+      // datée dans la fenêtre du live (début + n° de vente en minutes,
+      // approximation — l'ordre des numéros est respecté)
+      if (session.ended_at) {
+        const start = new Date(session.started_at).getTime();
+        const end = new Date(session.ended_at).getTime();
+        const ts = new Date(Math.min(start + saleNo * 60000, end)).toISOString();
+        db.prepare('UPDATE movements SET created_at = ? WHERE id = ?').run(ts, movementId);
+      }
       existingNos.add(saleNo);
       created++;
     }
