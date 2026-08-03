@@ -12,10 +12,12 @@
     <div class="brand">📦 <strong>WowMart Stock</strong></div>
     <nav class="tabs">
       <button class="tab active" data-tab="products">Produits</button>
-      <button class="tab" data-tab="import">Importer un fichier</button>
+      <button class="tab" data-tab="lives">Lives</button>
+      <button class="tab" data-tab="import">Importer</button>
       <button class="tab" data-tab="movements">Historique</button>
     </nav>
-    <a class="btn ghost" href="/api/export.csv">⬇ Exporter CSV</a>
+    <button class="btn live-launch" id="btnStartLive">🔴 Lancer un live</button>
+    <a class="btn ghost" href="/api/export.csv">⬇ CSV</a>
   </header>
 
   <section id="stats" class="stats"></section>
@@ -32,6 +34,49 @@
       Aucun produit pour l'instant.<br>
       Ajoutez votre premier produit ou importez un fichier Excel / CSV.
     </p>
+  </main>
+
+  <!-- ===================== LIVES (historique des sessions) ===================== -->
+  <main id="tab-lives" class="tab-panel" hidden>
+    <div class="card">
+      <div class="lives-head">
+        <div>
+          <h2>Historique des lives</h2>
+          <p class="muted">Chaque live est enregistré avec sa date, sa plateforme et toutes les ventes horodatées.<br>
+          Après chaque live, <strong>importez le rapport CSV de la plateforme</strong> pour vérifier les paiements, puis validez le live.</p>
+        </div>
+        <div class="settings-side">
+          <label class="vat-setting">Taux de TVA
+            <span><input id="vatRate" type="number" min="0" max="100" step="0.1" value="20"> %</span>
+          </label>
+          <details class="fees-setting">
+            <summary>⚙ Frais des plateformes</summary>
+            <p class="muted small">Servent à estimer vos gains nets avant l'import du rapport.<br>
+              Whatnot : commission 6,67 % + traitement 2,42 % + 0,25 € par vente.</p>
+            <div class="fees-grid">
+              <strong>🟡 Whatnot</strong>
+              <label>Commission %<input id="feeWnComm" type="number" min="0" max="100" step="0.01"></label>
+              <label>Traitement %<input id="feeWnProc" type="number" min="0" max="100" step="0.01"></label>
+              <label>Fixe €<input id="feeWnFixed" type="number" min="0" max="100" step="0.01"></label>
+              <strong>🎵 TikTok</strong>
+              <label>Commission %<input id="feeTtComm" type="number" min="0" max="100" step="0.01"></label>
+              <label>Traitement %<input id="feeTtProc" type="number" min="0" max="100" step="0.01"></label>
+              <label>Fixe €<input id="feeTtFixed" type="number" min="0" max="100" step="0.01"></label>
+            </div>
+            <button class="btn primary" id="btnSaveFees">Enregistrer les frais</button>
+          </details>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table id="livesTable">
+          <thead>
+            <tr><th>Date</th><th>Plateforme</th><th>Durée</th><th>Articles vendus</th><th>CA TTC</th><th>Marge</th><th>Statut</th><th></th></tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+    <div id="liveDetail" class="card" hidden></div>
   </main>
 
   <!-- ===================== IMPORT ===================== -->
@@ -51,13 +96,6 @@
       <div id="mappingGrid" class="mapping-grid"></div>
 
       <div class="import-options">
-        <label>Si le fichier a une seule colonne « Stock », l'affecter à :
-          <select id="importTarget">
-            <option value="store">🏬 Boutique physique</option>
-            <option value="online">🌐 Boutique en ligne</option>
-            <option value="live">🎥 Lives TikTok / Whatnot</option>
-          </select>
-        </label>
         <label>Mode :
           <select id="importMode">
             <option value="set">Remplacer le stock existant</option>
@@ -116,15 +154,11 @@
               <label>Prix de vente (€)<input name="price" type="number" step="0.01" min="0" value="0"></label>
               <label>Coût d'achat (€)<input name="cost" type="number" step="0.01" min="0" value="0"></label>
             </div>
-            <fieldset class="stock-fieldset">
-              <legend>Stock par canal</legend>
-              <div class="row3">
-                <label>🌐 En ligne<input name="stock_online" type="number" min="0" value="0"></label>
-                <label>🏬 Boutique<input name="stock_store" type="number" min="0" value="0"></label>
-                <label>🎥 Live<input name="stock_live" type="number" min="0" value="0"></label>
-              </div>
-            </fieldset>
-            <label>Seuil d'alerte stock bas<input name="min_stock" type="number" min="0" value="0"></label>
+            <div class="row2">
+              <label>Stock<input name="stock" type="number" min="0" value="0"></label>
+              <label>Seuil d'alerte stock bas<input name="min_stock" type="number" min="0" value="0"></label>
+            </div>
+            <p class="muted small">Le stock est partagé entre tous vos canaux : une vente en ligne, en boutique ou en live décompte du même total.</p>
           </div>
         </div>
         <div class="actions">
@@ -134,6 +168,74 @@
           <button type="submit" class="btn primary" id="btnSave">Enregistrer</button>
         </div>
       </form>
+    </div>
+  </div>
+
+  <!-- ===================== CHOIX DE PLATEFORME ===================== -->
+  <div id="platformModal" class="modal-overlay" hidden>
+    <div class="modal narrow">
+      <h2>🔴 Lancer un live</h2>
+      <p class="muted">Sur quelle plateforme êtes-vous en live ?</p>
+      <div class="platform-buttons">
+        <button class="platform-btn tiktok" data-platform="tiktok">
+          <span class="platform-icon">🎵</span>TikTok
+        </button>
+        <button class="platform-btn whatnot" data-platform="whatnot">
+          <span class="platform-icon">🟡</span>Whatnot
+        </button>
+      </div>
+      <div class="actions">
+        <span class="spacer"></span>
+        <button type="button" class="btn" id="btnClosePlatform">Annuler</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================== MODE LIVE (plein écran) ===================== -->
+  <div id="liveOverlay" class="live-overlay" hidden>
+    <header class="live-header">
+      <span class="live-dot"></span>
+      <span id="livePlatformBadge" class="live-badge"></span>
+      <span id="liveTimer" class="live-timer">00:00</span>
+      <span id="liveCounters" class="live-counters"></span>
+      <span class="spacer"></span>
+      <button class="btn danger" id="btnEndLive">⏹ Terminer le live</button>
+    </header>
+    <div class="live-body">
+      <div class="live-left">
+        <input id="liveSearch" class="live-search" placeholder="🔍 Réf ou nom du produit…" autocomplete="off">
+        <div id="liveResults" class="live-results"></div>
+      </div>
+      <aside class="live-log">
+        <h3>Ventes de ce live</h3>
+        <div id="liveSales" class="live-sales"></div>
+      </aside>
+    </div>
+  </div>
+
+  <!-- ===================== SÉLECTEUR DE CADEAU ===================== -->
+  <div id="giftModal" class="modal-overlay" hidden>
+    <div class="modal narrow gift-modal">
+      <h2 id="giftTitle">🎁 Ajouter un cadeau</h2>
+      <p class="muted">Choisissez le produit offert : il sera rattaché à la vente et déduit du stock.</p>
+      <input id="giftSearch" class="live-search" placeholder="🔍 Réf ou nom du produit…" autocomplete="off">
+      <div id="giftResults" class="live-results gift-results"></div>
+      <div class="actions">
+        <span class="spacer"></span>
+        <button type="button" class="btn" id="btnCloseGift">Fermer</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================== RÉCAP FIN DE LIVE ===================== -->
+  <div id="recapModal" class="modal-overlay" hidden>
+    <div class="modal narrow">
+      <h2>🏁 Live terminé !</h2>
+      <div id="recapContent"></div>
+      <div class="actions">
+        <span class="spacer"></span>
+        <button class="btn primary" id="btnCloseRecap">Fermer</button>
+      </div>
     </div>
   </div>
 
