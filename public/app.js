@@ -1,20 +1,25 @@
 /* WowMart Stock — interface
    Stock unique partagé entre les canaux : une vente en ligne, en boutique
-   ou en live décompte du même total ; le canal sert à tracer la vente. */
+   ou en live décompte du même total ; le canal sert à tracer la vente.
+   Le mode live enregistre chaque vente horodatée dans une session datée. */
 
 const $ = (sel) => document.querySelector(sel);
 
 const SALE_CHANNELS = [
   { key: 'online', label: '🌐 En ligne' },
   { key: 'store', label: '🏬 Boutique' },
-  { key: 'live', label: '🎥 Live' },
+  { key: 'tiktok', label: '🎵 TikTok' },
+  { key: 'whatnot', label: '🟡 Whatnot' },
 ];
 const CHANNEL_LABELS = {
   online: '🌐 En ligne',
   store: '🏬 Boutique',
+  tiktok: '🎵 TikTok',
+  whatnot: '🟡 Whatnot',
   live: '🎥 Live',
   adjust: '🔧 Ajustement',
 };
+const PLATFORM_LABELS = { tiktok: '🎵 TikTok', whatnot: '🟡 Whatnot' };
 const MAPPING_FIELDS = [
   { key: 'sku', label: 'SKU / Référence' },
   { key: 'name', label: 'Nom du produit' },
@@ -29,6 +34,9 @@ let products = [];
 let editingId = null;
 let photoFile = null;
 let currentImport = null;
+let liveSession = null; // session en cours { id, platform, started_at, ... }
+let liveSalesLog = []; // [{ movement_id, product_id, name, sku, price, time, cancelled }]
+let liveTimerInterval = null;
 
 // ---------------------------------------------------------------------------
 // Utilitaires
@@ -52,8 +60,15 @@ async function api(url, options = {}) {
 
 const euro = (n) => Number(n).toLocaleString('fr-FR', { style: 'currency', currency: 'EUR' });
 const isLow = (p) => p.min_stock > 0 && p.stock <= p.min_stock;
+const timeFr = (iso) => new Date(iso).toLocaleTimeString('fr-FR');
+const dateFr = (iso) => new Date(iso).toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short' });
 const escapeHtml = (s) =>
   String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+function updateLocalProduct(product) {
+  const i = products.findIndex((p) => p.id === product.id);
+  if (i >= 0) products[i] = product;
+}
 
 // ---------------------------------------------------------------------------
 // Onglets
@@ -64,6 +79,7 @@ document.querySelectorAll('.tab').forEach((btn) => {
     document.querySelectorAll('.tab-panel').forEach((p) => (p.hidden = true));
     $(`#tab-${btn.dataset.tab}`).hidden = false;
     if (btn.dataset.tab === 'movements') loadMovements();
+    if (btn.dataset.tab === 'lives') loadLives();
   });
 });
 
@@ -76,9 +92,10 @@ async function loadStats() {
     <div class="stat"><div class="value">${s.products}</div><div class="label">Produits</div></div>
     <div class="stat"><div class="value">${s.stock}</div><div class="label">📦 Stock total</div></div>
     <div class="stat"><div class="value">${euro(s.value)}</div><div class="label">Valeur du stock</div></div>
-    <div class="stat"><div class="value">${s.sales.online}</div><div class="label">🌐 Ventes en ligne (30 j)</div></div>
-    <div class="stat"><div class="value">${s.sales.store}</div><div class="label">🏬 Ventes boutique (30 j)</div></div>
-    <div class="stat"><div class="value">${s.sales.live}</div><div class="label">🎥 Ventes live (30 j)</div></div>
+    <div class="stat"><div class="value">${s.sales.online}</div><div class="label">🌐 En ligne (30 j)</div></div>
+    <div class="stat"><div class="value">${s.sales.store}</div><div class="label">🏬 Boutique (30 j)</div></div>
+    <div class="stat"><div class="value">${s.sales.tiktok}</div><div class="label">🎵 TikTok (30 j)</div></div>
+    <div class="stat"><div class="value">${s.sales.whatnot}</div><div class="label">🟡 Whatnot (30 j)</div></div>
     <div class="stat ${s.low > 0 ? 'alert' : ''}"><div class="value">${s.low}</div><div class="label">⚠ Stock bas</div></div>`;
 }
 
@@ -104,7 +121,7 @@ function renderProducts() {
       const saleButtons = SALE_CHANNELS.map(
         (c) =>
           `<button class="sale-btn" onclick="sell(${p.id}, '${c.key}')" ${p.stock <= 0 ? 'disabled' : ''}
-             title="Vendre 1 (${c.label})">${c.label} −1</button>`
+             title="Vendre 1 (${c.label})">${c.label}</button>`
       ).join('');
       return `
       <div class="product-card ${isLow(p) ? 'low' : ''}">
@@ -134,26 +151,22 @@ function renderProducts() {
     .join('');
 }
 
-async function moveStock(id, channel, delta, reason) {
-  try {
-    const updated = await api(`/api/products/${id}/stock`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ channel, delta, reason }),
-    });
-    const i = products.findIndex((p) => p.id === id);
-    if (i >= 0) products[i] = updated;
-    renderProducts();
-    loadStats();
-  } catch (e) {
-    toast(e.message, true);
-  }
+async function moveStock(id, channel, delta, reason, sessionId = null) {
+  const result = await api(`/api/products/${id}/stock`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ channel, delta, reason, session_id: sessionId }),
+  });
+  updateLocalProduct(result.product);
+  renderProducts();
+  loadStats();
+  return result;
 }
 
 // Vente : décompte 1 du stock partagé, en traçant le canal
-window.sell = (id, channel) => moveStock(id, channel, -1, 'Vente');
+window.sell = (id, channel) => moveStock(id, channel, -1, 'Vente').catch((e) => toast(e.message, true));
 // Réassort / correction manuelle
-window.adjust = (id, delta) => moveStock(id, 'adjust', delta);
+window.adjust = (id, delta) => moveStock(id, 'adjust', delta).catch((e) => toast(e.message, true));
 
 let searchTimer;
 $('#search').addEventListener('input', () => {
@@ -161,6 +174,282 @@ $('#search').addEventListener('input', () => {
   searchTimer = setTimeout(loadProducts, 250);
 });
 $('#lowOnly').addEventListener('change', renderProducts);
+
+// ---------------------------------------------------------------------------
+// MODE LIVE
+// ---------------------------------------------------------------------------
+$('#btnStartLive').addEventListener('click', () => {
+  $('#platformModal').hidden = false;
+});
+$('#btnClosePlatform').addEventListener('click', () => {
+  $('#platformModal').hidden = true;
+});
+$('#platformModal').addEventListener('click', (e) => {
+  if (e.target === $('#platformModal')) $('#platformModal').hidden = true;
+});
+
+document.querySelectorAll('.platform-btn').forEach((btn) => {
+  btn.addEventListener('click', async () => {
+    try {
+      const session = await api('/api/lives', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ platform: btn.dataset.platform }),
+      });
+      $('#platformModal').hidden = true;
+      openLiveMode(session, []);
+    } catch (e) {
+      toast(e.message, true);
+    }
+  });
+});
+
+function openLiveMode(session, sales) {
+  liveSession = session;
+  liveSalesLog = sales.map((m) => ({
+    movement_id: m.id,
+    product_id: m.product_id,
+    name: m.product_name,
+    sku: m.product_sku,
+    price: m.product_price,
+    time: m.created_at,
+    cancelled: !!m.cancelled,
+  }));
+  $('#livePlatformBadge').textContent = PLATFORM_LABELS[session.platform] || session.platform;
+  $('#liveOverlay').hidden = false;
+  $('#liveSearch').value = '';
+  document.body.classList.add('no-scroll');
+  renderLiveResults();
+  renderLiveSales();
+  updateLiveCounters();
+  clearInterval(liveTimerInterval);
+  liveTimerInterval = setInterval(updateLiveTimer, 1000);
+  updateLiveTimer();
+  setTimeout(() => $('#liveSearch').focus(), 100);
+}
+
+function updateLiveTimer() {
+  if (!liveSession) return;
+  const sec = Math.max(0, Math.floor((Date.now() - new Date(liveSession.started_at).getTime()) / 1000));
+  const h = Math.floor(sec / 3600);
+  const m = String(Math.floor((sec % 3600) / 60)).padStart(2, '0');
+  const s = String(sec % 60).padStart(2, '0');
+  $('#liveTimer').textContent = h > 0 ? `${h}:${m}:${s}` : `${m}:${s}`;
+}
+
+function liveTotals() {
+  const valid = liveSalesLog.filter((s) => !s.cancelled);
+  return { items: valid.length, revenue: valid.reduce((sum, s) => sum + (Number(s.price) || 0), 0) };
+}
+
+function updateLiveCounters() {
+  const t = liveTotals();
+  $('#liveCounters').textContent = `${t.items} vente(s) · ${euro(t.revenue)}`;
+}
+
+// Recherche rapide par référence ou nom (insensible à la casse)
+function renderLiveResults() {
+  const q = $('#liveSearch').value.trim().toLowerCase();
+  const list = q
+    ? products.filter(
+        (p) =>
+          (p.sku || '').toLowerCase().includes(q) ||
+          p.name.toLowerCase().includes(q) ||
+          (p.category || '').toLowerCase().includes(q)
+      )
+    : products;
+  $('#liveResults').innerHTML = list.length
+    ? list
+        .map((p) => {
+          const photo = p.photo
+            ? `<img src="${escapeHtml(p.photo)}" alt="" loading="lazy">`
+            : '<div class="live-noimg">📷</div>';
+          return `
+        <button class="live-product ${p.stock <= 0 ? 'out' : ''}" onclick="liveSell(${p.id})" ${p.stock <= 0 ? 'disabled' : ''}>
+          ${photo}
+          <span class="live-product-info">
+            <span class="live-product-name">${escapeHtml(p.name)}</span>
+            <span class="live-product-sku">${escapeHtml(p.sku || '')}</span>
+          </span>
+          <span class="live-product-side">
+            <span class="live-product-price">${euro(p.price)}</span>
+            <span class="live-product-stock ${p.stock <= 0 ? 'zero' : ''}">${p.stock <= 0 ? 'Épuisé' : 'Stock : ' + p.stock}</span>
+            <span class="live-product-action">${p.stock <= 0 ? '—' : 'VENDU ✔'}</span>
+          </span>
+        </button>`;
+        })
+        .join('')
+    : '<p class="empty">Aucun produit ne correspond à cette recherche</p>';
+}
+
+$('#liveSearch').addEventListener('input', renderLiveResults);
+
+window.liveSell = async (id) => {
+  if (!liveSession) return;
+  const p = products.find((x) => x.id === id);
+  try {
+    const result = await moveStock(id, liveSession.platform, -1, 'Vente live', liveSession.id);
+    liveSalesLog.unshift({
+      movement_id: result.movement_id,
+      product_id: id,
+      name: p.name,
+      sku: p.sku,
+      price: p.price,
+      time: new Date().toISOString(),
+      cancelled: false,
+    });
+    renderLiveResults();
+    renderLiveSales();
+    updateLiveCounters();
+    // on garde la recherche prête pour le produit suivant
+    $('#liveSearch').select();
+  } catch (e) {
+    toast(e.message, true);
+  }
+};
+
+function renderLiveSales() {
+  $('#liveSales').innerHTML = liveSalesLog.length
+    ? liveSalesLog
+        .map(
+          (s, i) => `
+      <div class="live-sale ${s.cancelled ? 'cancelled' : ''}">
+        <span class="live-sale-time">${timeFr(s.time)}</span>
+        <span class="live-sale-name">${escapeHtml(s.name)}${s.sku ? ` <small>(${escapeHtml(s.sku)})</small>` : ''}</span>
+        <span class="live-sale-price">${euro(s.price)}</span>
+        ${s.cancelled
+          ? '<span class="live-sale-undone">annulée</span>'
+          : `<button class="live-sale-undo" onclick="liveUndo(${i})" title="Annuler cette vente">↩</button>`}
+      </div>`
+        )
+        .join('')
+    : '<p class="empty small-pad">Les ventes apparaîtront ici,<br>horodatées à la seconde.</p>';
+}
+
+window.liveUndo = async (index) => {
+  const sale = liveSalesLog[index];
+  if (!sale || sale.cancelled || !sale.movement_id) return;
+  try {
+    const result = await api(`/api/movements/${sale.movement_id}/cancel`, { method: 'POST' });
+    sale.cancelled = true;
+    updateLocalProduct(result.product);
+    renderProducts();
+    renderLiveResults();
+    renderLiveSales();
+    updateLiveCounters();
+    loadStats();
+    toast('Vente annulée, stock restauré');
+  } catch (e) {
+    toast(e.message, true);
+  }
+};
+
+$('#btnEndLive').addEventListener('click', async () => {
+  if (!liveSession) return;
+  const t = liveTotals();
+  if (t.items > 0 && !confirm(`Terminer le live ? (${t.items} vente(s) enregistrée(s))`)) return;
+  try {
+    const session = await api(`/api/lives/${liveSession.id}/end`, { method: 'POST' });
+    closeLiveMode();
+    const dur = session.ended_at
+      ? Math.round((new Date(session.ended_at) - new Date(session.started_at)) / 60000)
+      : 0;
+    $('#recapContent').innerHTML = `
+      <div class="recap-grid">
+        <div class="stat"><div class="value">${PLATFORM_LABELS[session.platform]}</div><div class="label">Plateforme</div></div>
+        <div class="stat"><div class="value">${dur} min</div><div class="label">Durée</div></div>
+        <div class="stat"><div class="value">${session.items}</div><div class="label">Articles vendus</div></div>
+        <div class="stat"><div class="value">${euro(session.revenue)}</div><div class="label">Chiffre d'affaires</div></div>
+      </div>
+      <p><a class="btn" href="/api/lives/${session.id}/export.csv">⬇ Exporter les ventes de ce live (CSV)</a></p>`;
+    $('#recapModal').hidden = false;
+  } catch (e) {
+    toast(e.message, true);
+  }
+});
+
+function closeLiveMode() {
+  liveSession = null;
+  liveSalesLog = [];
+  clearInterval(liveTimerInterval);
+  $('#liveOverlay').hidden = true;
+  document.body.classList.remove('no-scroll');
+  loadProducts();
+}
+
+$('#btnCloseRecap').addEventListener('click', () => {
+  $('#recapModal').hidden = true;
+});
+
+// Reprise d'un live en cours après rechargement de la page
+async function resumeActiveLive() {
+  try {
+    const active = await api('/api/lives/active');
+    if (active) {
+      openLiveMode(active, active.sales || []);
+      toast('Live en cours repris');
+    }
+  } catch (e) {
+    /* pas bloquant */
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Onglet Lives (historique des sessions)
+// ---------------------------------------------------------------------------
+async function loadLives() {
+  const lives = await api('/api/lives');
+  $('#liveDetail').hidden = true;
+  $('#livesTable tbody').innerHTML = lives.length
+    ? lives
+        .map((l) => {
+          const dur = l.ended_at
+            ? `${Math.round((new Date(l.ended_at) - new Date(l.started_at)) / 60000)} min`
+            : '<span class="live-ongoing">🔴 en cours</span>';
+          return `<tr>
+        <td>${dateFr(l.started_at)}</td>
+        <td>${PLATFORM_LABELS[l.platform] || l.platform}</td>
+        <td>${dur}</td>
+        <td>${l.items}</td>
+        <td>${euro(l.revenue)}</td>
+        <td><button class="btn small" onclick="showLiveDetail(${l.id})">Détail</button></td>
+      </tr>`;
+        })
+        .join('')
+    : '<tr><td colspan="6">Aucun live pour l\'instant — cliquez sur « 🔴 Lancer un live » pour commencer</td></tr>';
+}
+
+window.showLiveDetail = async (id) => {
+  try {
+    const l = await api(`/api/lives/${id}`);
+    const rows = l.sales.length
+      ? l.sales
+          .map(
+            (m) => `<tr class="${m.cancelled ? 'row-cancelled' : ''}">
+          <td>${timeFr(m.created_at)}</td>
+          <td>${escapeHtml(m.product_name)}${m.product_sku ? ` <span class="product-sku">(${escapeHtml(m.product_sku)})</span>` : ''}</td>
+          <td>${euro(m.product_price)}</td>
+          <td>${m.cancelled ? 'annulée' : 'vendue'}</td>
+        </tr>`
+          )
+          .join('')
+      : '<tr><td colspan="4">Aucune vente pendant ce live</td></tr>';
+    $('#liveDetail').innerHTML = `
+      <h3>${PLATFORM_LABELS[l.platform]} — ${dateFr(l.started_at)}</h3>
+      <p class="muted">${l.items} article(s) vendu(s) · ${euro(l.revenue)}
+        · <a href="/api/lives/${l.id}/export.csv">⬇ Exporter en CSV</a></p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Heure</th><th>Produit</th><th>Prix</th><th>Statut</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>`;
+    $('#liveDetail').hidden = false;
+    $('#liveDetail').scrollIntoView({ behavior: 'smooth' });
+  } catch (e) {
+    toast(e.message, true);
+  }
+};
 
 // ---------------------------------------------------------------------------
 // Modale produit (ajout / édition)
@@ -385,8 +674,8 @@ async function loadMovements() {
   $('#movementsTable tbody').innerHTML = rows.length
     ? rows
         .map(
-          (m) => `<tr>
-        <td>${new Date(m.created_at).toLocaleString('fr-FR')}</td>
+          (m) => `<tr class="${m.cancelled ? 'row-cancelled' : ''}">
+        <td>${dateFr(m.created_at)}</td>
         <td>${escapeHtml(m.product_name)}${m.product_sku ? ` <span class="product-sku">(${escapeHtml(m.product_sku)})</span>` : ''}</td>
         <td>${CHANNEL_LABELS[m.channel] || m.channel}</td>
         <td class="${m.delta > 0 ? 'delta-pos' : 'delta-neg'}">${m.delta > 0 ? '+' : ''}${m.delta}</td>
@@ -399,4 +688,4 @@ async function loadMovements() {
 }
 
 // ---------------------------------------------------------------------------
-loadProducts();
+loadProducts().then(resumeActiveLive);

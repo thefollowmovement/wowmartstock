@@ -40,9 +40,26 @@ CREATE TABLE IF NOT EXISTS movements (
   delta INTEGER NOT NULL,
   stock_after INTEGER NOT NULL,
   reason TEXT NOT NULL DEFAULT '',
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  session_id INTEGER,
+  cancelled INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS live_sessions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  platform TEXT NOT NULL,
+  name TEXT NOT NULL DEFAULT '',
+  started_at TEXT NOT NULL,
+  ended_at TEXT
 );
 `);
+
+// Migration : ajout des colonnes session_id / cancelled aux bases existantes
+{
+  const mcols = db.prepare('PRAGMA table_info(movements)').all().map((c) => c.name);
+  if (!mcols.includes('session_id')) db.exec('ALTER TABLE movements ADD COLUMN session_id INTEGER');
+  if (!mcols.includes('cancelled')) db.exec('ALTER TABLE movements ADD COLUMN cancelled INTEGER NOT NULL DEFAULT 0');
+}
 
 // Migration depuis l'ancien schéma à stock par canal → stock unique partagé.
 // Si les trois canaux ont la même valeur, elle vient d'un import dupliqué :
@@ -68,17 +85,21 @@ CREATE TABLE IF NOT EXISTS movements (
 }
 
 // Canaux de vente (pour tracer d'où vient chaque mouvement) + 'adjust' pour
-// les réassorts / corrections manuelles
-const SALE_CHANNELS = ['online', 'store', 'live'];
-const MOVEMENT_CHANNELS = [...SALE_CHANNELS, 'adjust'];
+// les réassorts / corrections manuelles. 'live' reste accepté pour les
+// anciens mouvements enregistrés avant la séparation TikTok / Whatnot.
+const SALE_CHANNELS = ['online', 'store', 'tiktok', 'whatnot'];
+const LIVE_PLATFORMS = ['tiktok', 'whatnot'];
+const MOVEMENT_CHANNELS = [...SALE_CHANNELS, 'live', 'adjust'];
 
 const now = () => new Date().toISOString();
 
-function logMovement(productId, channel, delta, stockAfter, reason) {
-  db.prepare(
-    `INSERT INTO movements (product_id, channel, delta, stock_after, reason, created_at)
-     VALUES (?, ?, ?, ?, ?, ?)`
-  ).run(productId, channel, delta, stockAfter, reason || '', now());
+function logMovement(productId, channel, delta, stockAfter, reason, sessionId = null) {
+  return db
+    .prepare(
+      `INSERT INTO movements (product_id, channel, delta, stock_after, reason, created_at, session_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(productId, channel, delta, stockAfter, reason || '', now(), sessionId).lastInsertRowid;
 }
 
 // ---------------------------------------------------------------------------
@@ -207,16 +228,17 @@ app.delete('/api/products/:id', (req, res) => {
   res.json({ ok: true });
 });
 
-// Mouvement de stock : { channel: "online"|"store"|"live"|"adjust", delta: -1, reason: "vente" }
+// Mouvement de stock : { channel, delta: -1, reason, session_id }
 // Le stock est partagé : une vente sur n'importe quel canal décompte du même total,
-// le canal sert uniquement à tracer d'où vient la vente.
+// le canal sert uniquement à tracer d'où vient la vente. session_id relie la
+// vente à un live en cours (horodatée à la seconde dans l'historique).
 app.post('/api/products/:id/stock', (req, res) => {
   const id = Number(req.params.id);
   const existing = db.prepare('SELECT * FROM products WHERE id = ?').get(id);
   if (!existing) return res.status(404).json({ error: 'Produit introuvable' });
   const channel = req.body.channel;
   if (!MOVEMENT_CHANNELS.includes(channel)) {
-    return res.status(400).json({ error: 'Canal invalide (online, store, live ou adjust)' });
+    return res.status(400).json({ error: 'Canal invalide (online, store, tiktok, whatnot ou adjust)' });
   }
   const delta = parseInt(req.body.delta, 10);
   if (!Number.isFinite(delta) || delta === 0) {
@@ -225,14 +247,43 @@ app.post('/api/products/:id/stock', (req, res) => {
   if (delta < 0 && existing.stock <= 0) {
     return res.status(400).json({ error: 'Stock déjà à zéro' });
   }
+  let sessionId = null;
+  if (req.body.session_id != null) {
+    const session = db.prepare('SELECT * FROM live_sessions WHERE id = ?').get(Number(req.body.session_id));
+    if (!session) return res.status(404).json({ error: 'Live introuvable' });
+    if (session.ended_at) return res.status(400).json({ error: 'Ce live est déjà terminé' });
+    sessionId = session.id;
+  }
   const after = Math.max(0, existing.stock + delta);
   const realDelta = after - existing.stock;
-  if (realDelta === 0) return res.json(existing);
+  if (realDelta === 0) return res.json({ product: existing, movement_id: null });
   db.prepare('UPDATE products SET stock = ?, updated_at = ? WHERE id = ?').run(after, now(), id);
   const defaultReason =
     realDelta < 0 && SALE_CHANNELS.includes(channel) ? 'Vente' : 'Ajustement rapide';
-  logMovement(id, channel, realDelta, after, req.body.reason || defaultReason);
-  res.json(db.prepare('SELECT * FROM products WHERE id = ?').get(id));
+  const movementId = logMovement(id, channel, realDelta, after, req.body.reason || defaultReason, sessionId);
+  res.json({
+    product: db.prepare('SELECT * FROM products WHERE id = ?').get(id),
+    movement_id: movementId,
+  });
+});
+
+// Annulation d'un mouvement (mauvais clic pendant un live) : le stock est
+// restauré via un mouvement inverse, l'original est marqué annulé.
+app.post('/api/movements/:id/cancel', (req, res) => {
+  const id = Number(req.params.id);
+  const m = db.prepare('SELECT * FROM movements WHERE id = ?').get(id);
+  if (!m) return res.status(404).json({ error: 'Mouvement introuvable' });
+  if (m.cancelled) return res.status(400).json({ error: 'Mouvement déjà annulé' });
+  const product = db.prepare('SELECT * FROM products WHERE id = ?').get(m.product_id);
+  if (!product) return res.status(404).json({ error: 'Produit introuvable' });
+  const after = Math.max(0, product.stock - m.delta);
+  db.transaction(() => {
+    db.prepare('UPDATE movements SET cancelled = 1 WHERE id = ?').run(id);
+    db.prepare('UPDATE products SET stock = ?, updated_at = ? WHERE id = ?').run(after, now(), m.product_id);
+    const reverseId = logMovement(m.product_id, 'adjust', -m.delta, after, 'Annulation', m.session_id);
+    db.prepare('UPDATE movements SET cancelled = 1 WHERE id = ?').run(reverseId);
+  })();
+  res.json({ product: db.prepare('SELECT * FROM products WHERE id = ?').get(m.product_id) });
 });
 
 // ---------------------------------------------------------------------------
@@ -250,20 +301,114 @@ app.get('/api/stats', (req, res) => {
   const low = db
     .prepare('SELECT COUNT(*) AS n FROM products WHERE stock <= min_stock AND min_stock > 0')
     .get();
-  // Ventes des 30 derniers jours, par canal
+  // Ventes des 30 derniers jours, par canal (hors mouvements annulés).
+  // Les anciens mouvements 'live' (avant séparation) sont comptés avec TikTok.
   const since = new Date(Date.now() - 30 * 24 * 3600 * 1000).toISOString();
-  const sales = { online: 0, store: 0, live: 0 };
+  const sales = { online: 0, store: 0, tiktok: 0, whatnot: 0 };
   for (const row of db
     .prepare(
       `SELECT channel, COALESCE(SUM(-delta),0) AS sold
        FROM movements
-       WHERE delta < 0 AND created_at >= ? AND channel IN ('online','store','live')
+       WHERE delta < 0 AND cancelled = 0 AND created_at >= ?
+         AND channel IN ('online','store','tiktok','whatnot','live')
        GROUP BY channel`
     )
     .all(since)) {
-    sales[row.channel] = row.sold;
+    if (row.channel === 'live') sales.tiktok += row.sold;
+    else sales[row.channel] += row.sold;
   }
   res.json({ ...s, low: low.n, sales });
+});
+
+// ---------------------------------------------------------------------------
+// Lives (sessions TikTok / Whatnot)
+// ---------------------------------------------------------------------------
+const sessionSales = db.prepare(
+  `SELECT m.id, m.created_at, m.delta, m.channel, m.reason, m.cancelled,
+          p.id AS product_id, p.name AS product_name, p.sku AS product_sku,
+          p.price AS product_price, p.photo AS product_photo
+   FROM movements m JOIN products p ON p.id = m.product_id
+   WHERE m.session_id = ? AND m.delta < 0
+   ORDER BY m.id DESC`
+);
+
+function sessionSummary(session) {
+  const agg = db
+    .prepare(
+      `SELECT COALESCE(SUM(-m.delta),0) AS items,
+              COALESCE(SUM(-m.delta * p.price),0) AS revenue
+       FROM movements m JOIN products p ON p.id = m.product_id
+       WHERE m.session_id = ? AND m.delta < 0 AND m.cancelled = 0`
+    )
+    .get(session.id);
+  return { ...session, items: agg.items, revenue: agg.revenue };
+}
+
+// Démarrer un live : { platform: "tiktok"|"whatnot", name? }
+app.post('/api/lives', (req, res) => {
+  const platform = req.body.platform;
+  if (!LIVE_PLATFORMS.includes(platform)) {
+    return res.status(400).json({ error: 'Plateforme invalide (tiktok ou whatnot)' });
+  }
+  const open = db.prepare('SELECT * FROM live_sessions WHERE ended_at IS NULL').get();
+  if (open) {
+    return res.status(409).json({ error: 'Un live est déjà en cours, terminez-le d’abord', session: sessionSummary(open) });
+  }
+  const info = db
+    .prepare('INSERT INTO live_sessions (platform, name, started_at) VALUES (?, ?, ?)')
+    .run(platform, (req.body.name || '').trim(), now());
+  res.status(201).json(sessionSummary(db.prepare('SELECT * FROM live_sessions WHERE id = ?').get(info.lastInsertRowid)));
+});
+
+// Live en cours (pour reprendre après un rechargement de page)
+app.get('/api/lives/active', (req, res) => {
+  const open = db.prepare('SELECT * FROM live_sessions WHERE ended_at IS NULL').get();
+  if (!open) return res.json(null);
+  res.json({ ...sessionSummary(open), sales: sessionSales.all(open.id) });
+});
+
+// Historique des lives
+app.get('/api/lives', (req, res) => {
+  const rows = db.prepare('SELECT * FROM live_sessions ORDER BY id DESC LIMIT 100').all();
+  res.json(rows.map(sessionSummary));
+});
+
+// Détail d'un live : ventes horodatées
+app.get('/api/lives/:id', (req, res) => {
+  const session = db.prepare('SELECT * FROM live_sessions WHERE id = ?').get(Number(req.params.id));
+  if (!session) return res.status(404).json({ error: 'Live introuvable' });
+  res.json({ ...sessionSummary(session), sales: sessionSales.all(session.id) });
+});
+
+app.post('/api/lives/:id/end', (req, res) => {
+  const session = db.prepare('SELECT * FROM live_sessions WHERE id = ?').get(Number(req.params.id));
+  if (!session) return res.status(404).json({ error: 'Live introuvable' });
+  if (!session.ended_at) {
+    db.prepare('UPDATE live_sessions SET ended_at = ? WHERE id = ?').run(now(), session.id);
+  }
+  res.json(sessionSummary(db.prepare('SELECT * FROM live_sessions WHERE id = ?').get(session.id)));
+});
+
+// Export CSV des ventes d'un live
+app.get('/api/lives/:id/export.csv', (req, res) => {
+  const session = db.prepare('SELECT * FROM live_sessions WHERE id = ?').get(Number(req.params.id));
+  if (!session) return res.status(404).json({ error: 'Live introuvable' });
+  const sales = sessionSales.all(session.id).reverse();
+  const esc = (v) => {
+    const s = String(v ?? '');
+    return /[;"\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+  const lines = sales.map((m) =>
+    [
+      new Date(m.created_at).toLocaleString('fr-FR'),
+      m.product_sku, m.product_name, -m.delta, m.product_price,
+      m.cancelled ? 'annulée' : '',
+    ].map(esc).join(';')
+  );
+  const date = new Date(session.started_at).toISOString().slice(0, 10);
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename="live-${session.platform}-${date}.csv"`);
+  res.send('﻿' + ['Heure;SKU;Produit;Quantité;Prix;Statut', ...lines].join('\n'));
 });
 
 app.get('/api/movements', (req, res) => {

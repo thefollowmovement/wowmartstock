@@ -12,10 +12,12 @@
     <div class="brand">📦 <strong>WowMart Stock</strong></div>
     <nav class="tabs">
       <button class="tab active" data-tab="products">Produits</button>
-      <button class="tab" data-tab="import">Importer un fichier</button>
+      <button class="tab" data-tab="lives">Lives</button>
+      <button class="tab" data-tab="import">Importer</button>
       <button class="tab" data-tab="movements">Historique</button>
     </nav>
-    <a class="btn ghost" href="/api/export.csv">⬇ Exporter CSV</a>
+    <button class="btn live-launch" id="btnStartLive">🔴 Lancer un live</button>
+    <a class="btn ghost" href="/api/export.csv">⬇ CSV</a>
   </header>
 
   <section id="stats" class="stats"></section>
@@ -32,6 +34,23 @@
       Aucun produit pour l'instant.<br>
       Ajoutez votre premier produit ou importez un fichier Excel / CSV.
     </p>
+  </main>
+
+  <!-- ===================== LIVES (historique des sessions) ===================== -->
+  <main id="tab-lives" class="tab-panel" hidden>
+    <div class="card">
+      <h2>Historique des lives</h2>
+      <p class="muted">Chaque live est enregistré avec sa date, sa plateforme et toutes les ventes horodatées.</p>
+      <div class="table-wrap">
+        <table id="livesTable">
+          <thead>
+            <tr><th>Date</th><th>Plateforme</th><th>Durée</th><th>Articles vendus</th><th>Chiffre d'affaires</th><th></th></tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+    <div id="liveDetail" class="card" hidden></div>
   </main>
 
   <!-- ===================== IMPORT ===================== -->
@@ -123,6 +142,60 @@
           <button type="submit" class="btn primary" id="btnSave">Enregistrer</button>
         </div>
       </form>
+    </div>
+  </div>
+
+  <!-- ===================== CHOIX DE PLATEFORME ===================== -->
+  <div id="platformModal" class="modal-overlay" hidden>
+    <div class="modal narrow">
+      <h2>🔴 Lancer un live</h2>
+      <p class="muted">Sur quelle plateforme êtes-vous en live ?</p>
+      <div class="platform-buttons">
+        <button class="platform-btn tiktok" data-platform="tiktok">
+          <span class="platform-icon">🎵</span>TikTok
+        </button>
+        <button class="platform-btn whatnot" data-platform="whatnot">
+          <span class="platform-icon">🟡</span>Whatnot
+        </button>
+      </div>
+      <div class="actions">
+        <span class="spacer"></span>
+        <button type="button" class="btn" id="btnClosePlatform">Annuler</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================== MODE LIVE (plein écran) ===================== -->
+  <div id="liveOverlay" class="live-overlay" hidden>
+    <header class="live-header">
+      <span class="live-dot"></span>
+      <span id="livePlatformBadge" class="live-badge"></span>
+      <span id="liveTimer" class="live-timer">00:00</span>
+      <span id="liveCounters" class="live-counters"></span>
+      <span class="spacer"></span>
+      <button class="btn danger" id="btnEndLive">⏹ Terminer le live</button>
+    </header>
+    <div class="live-body">
+      <div class="live-left">
+        <input id="liveSearch" class="live-search" placeholder="🔍 Réf ou nom du produit…" autocomplete="off">
+        <div id="liveResults" class="live-results"></div>
+      </div>
+      <aside class="live-log">
+        <h3>Ventes de ce live</h3>
+        <div id="liveSales" class="live-sales"></div>
+      </aside>
+    </div>
+  </div>
+
+  <!-- ===================== RÉCAP FIN DE LIVE ===================== -->
+  <div id="recapModal" class="modal-overlay" hidden>
+    <div class="modal narrow">
+      <h2>🏁 Live terminé !</h2>
+      <div id="recapContent"></div>
+      <div class="actions">
+        <span class="spacer"></span>
+        <button class="btn primary" id="btnCloseRecap">Fermer</button>
+      </div>
     </div>
   </div>
 
