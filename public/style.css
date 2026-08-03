@@ -808,6 +808,32 @@ tr.row-unpaid td { background: #fef2f2; }
 .ai-report ul { margin: 6px 0 6px 22px; display: flex; flex-direction: column; gap: 4px; }
 .ai-report p { margin: 6px 0; }
 
+/* ---------- Frais d'envoi et retours ---------- */
+.ship-input {
+  width: 74px;
+  padding: 5px 7px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: .85rem;
+  text-align: right;
+}
+.btn.ghost-mini {
+  padding: 2px 7px;
+  font-size: .75rem;
+  margin-left: 4px;
+  background: transparent;
+  border: 1px solid var(--border);
+}
+.btn.ghost-mini:hover { background: #fee2e2; border-color: var(--danger); }
+
+/* ---------- Historique : filtres et pagination ---------- */
+.mov-filters { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
+.mov-filters input[type="search"] { flex: 1; min-width: 220px; padding: 9px 12px; border: 1px solid var(--border); border-radius: var(--radius); }
+.mov-filters select { padding: 9px 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); font-size: .9rem; }
+.mov-pager { display: flex; align-items: center; justify-content: center; gap: 14px; margin-top: 14px; }
+.mov-pager .btn[disabled] { opacity: .4; cursor: default; }
+.btn.small { padding: 4px 10px; font-size: .8rem; }
+
 /* ---------- Code-barres ---------- */
 .product-barcode {
   font-variant-numeric: tabular-nums;

@@ -104,6 +104,8 @@ CREATE TABLE IF NOT EXISTS settings (
   if (!mcols.includes('payment_status')) db.exec('ALTER TABLE movements ADD COLUMN payment_status TEXT');
   if (!mcols.includes('net_amount')) db.exec('ALTER TABLE movements ADD COLUMN net_amount REAL');
   if (!mcols.includes('photo')) db.exec('ALTER TABLE movements ADD COLUMN photo TEXT');
+  // Frais d'expédition / emballage payés par le vendeur, par vente (déduits de la marge)
+  if (!mcols.includes('shipping_cost')) db.exec('ALTER TABLE movements ADD COLUMN shipping_cost REAL');
 
   const scols = db.prepare('PRAGMA table_info(live_sessions)').all().map((c) => c.name);
   if (!scols.includes('report_imported_at')) db.exec('ALTER TABLE live_sessions ADD COLUMN report_imported_at TEXT');
@@ -160,6 +162,9 @@ CREATE TABLE IF NOT EXISTS settings (
 const SALE_CHANNELS = ['online', 'store', 'tiktok', 'whatnot'];
 const LIVE_PLATFORMS = ['tiktok', 'whatnot'];
 const MOVEMENT_CHANNELS = [...SALE_CHANNELS, 'live', 'adjust'];
+const CHANNEL_NAMES = {
+  online: 'en ligne', store: 'boutique', tiktok: 'TikTok', whatnot: 'Whatnot', live: 'live',
+};
 
 const now = () => new Date().toISOString();
 
@@ -383,6 +388,47 @@ app.post('/api/movements/:id/cancel', (req, res) => {
   res.json({ product: db.prepare('SELECT * FROM products WHERE id = ?').get(m.product_id) });
 });
 
+// Retour / remboursement d'une vente : l'article revient en stock et la vente
+// est exclue du CA et de la marge (payment_status = 'refunded'). Différent de
+// l'annulation (mauvais clic) : le retour garde la trace de la vente.
+app.post('/api/movements/:id/return', (req, res) => {
+  const id = Number(req.params.id);
+  const m = db.prepare('SELECT * FROM movements WHERE id = ?').get(id);
+  if (!m) return res.status(404).json({ error: 'Mouvement introuvable' });
+  if (m.delta >= 0 || ['adjust', 'return'].includes(m.channel)) {
+    return res.status(400).json({ error: 'Seule une vente peut faire l’objet d’un retour' });
+  }
+  if (m.cancelled) return res.status(400).json({ error: 'Cette vente a été annulée' });
+  if (m.payment_status === 'refunded') return res.status(400).json({ error: 'Retour déjà enregistré pour cette vente' });
+  const product = db.prepare('SELECT * FROM products WHERE id = ?').get(m.product_id);
+  if (!product) return res.status(404).json({ error: 'Produit introuvable' });
+  const after = product.stock - m.delta;
+  withTransaction(() => {
+    db.prepare('UPDATE movements SET payment_status = ? WHERE id = ?').run('refunded', id);
+    db.prepare('UPDATE products SET stock = ?, updated_at = ? WHERE id = ?').run(after, now(), m.product_id);
+    logMovement(
+      m.product_id, 'return', -m.delta, after,
+      `Retour${m.sale_no ? ` vente #${m.sale_no}` : ''} (${CHANNEL_NAMES[m.channel] || m.channel})`
+    );
+  });
+  res.json({ product: db.prepare('SELECT * FROM products WHERE id = ?').get(m.product_id) });
+});
+
+// Frais d'expédition / emballage d'une vente (payés par le vendeur, déduits de la marge)
+app.patch('/api/movements/:id/shipping', (req, res) => {
+  const id = Number(req.params.id);
+  const m = db.prepare('SELECT * FROM movements WHERE id = ?').get(id);
+  if (!m) return res.status(404).json({ error: 'Mouvement introuvable' });
+  if (m.delta >= 0) return res.status(400).json({ error: 'Les frais d’envoi s’appliquent à une vente' });
+  const raw = req.body.shipping_cost;
+  const val = raw === null || raw === '' || raw === undefined ? null : Number(String(raw).replace(',', '.'));
+  if (val !== null && (!Number.isFinite(val) || val < 0)) {
+    return res.status(400).json({ error: 'Montant invalide' });
+  }
+  db.prepare('UPDATE movements SET shipping_cost = ? WHERE id = ?').run(val, id);
+  res.json({ ok: true, shipping_cost: val });
+});
+
 // ---------------------------------------------------------------------------
 // Réglages (taux de TVA)
 // ---------------------------------------------------------------------------
@@ -551,14 +597,17 @@ function sessionSummary(session) {
     .prepare(
       `SELECT COALESCE(SUM(CASE WHEN m.is_gift = 0 THEN -m.delta ELSE 0 END),0) AS items,
               COALESCE(SUM(CASE WHEN m.is_gift = 1 THEN -m.delta ELSE 0 END),0) AS gifts,
-              COALESCE(SUM(CASE WHEN COALESCE(m.payment_status,'paid') != 'failed'
+              COALESCE(SUM(CASE WHEN COALESCE(m.payment_status,'paid') NOT IN ('failed','refunded')
                 THEN -m.delta * COALESCE(m.sold_price, p.price) ELSE 0 END),0) AS revenue,
-              COALESCE(SUM(CASE WHEN COALESCE(m.payment_status,'paid') != 'failed'
+              COALESCE(SUM(CASE WHEN COALESCE(m.payment_status,'paid') NOT IN ('failed','refunded')
                 THEN -m.delta * (COALESCE(m.net_amount,
                   COALESCE(m.sold_price, p.price) - COALESCE(m.fees,
                     CASE WHEN COALESCE(m.sold_price, p.price) > 0
                       THEN COALESCE(m.sold_price, p.price) * ? + ? ELSE 0 END)) - p.cost)
+                  - COALESCE(m.shipping_cost, 0)
                 ELSE 0 END),0) AS margin,
+              COALESCE(SUM(CASE WHEN COALESCE(m.payment_status,'paid') NOT IN ('failed','refunded')
+                THEN COALESCE(m.shipping_cost, 0) ELSE 0 END),0) AS shipping,
               COALESCE(SUM(CASE WHEN m.is_gift = 0 AND m.sold_price IS NOT NULL THEN 1 ELSE 0 END),0) AS reported,
               COALESCE(SUM(CASE WHEN m.is_gift = 0 AND m.payment_status IN ('failed','pending') THEN 1 ELSE 0 END),0) AS unpaid
        FROM movements m JOIN products p ON p.id = m.product_id
@@ -580,6 +629,7 @@ function sessionSummary(session) {
     gifts: agg.gifts,
     revenue: agg.revenue + extras.revenue,
     margin: agg.margin + extras.net,
+    shipping: agg.shipping,
     reported: agg.reported,
     unpaid: agg.unpaid + extras.unpaid,
     extras: extras.n,
@@ -684,14 +734,14 @@ app.get('/api/lives/:id/export.csv', (req, res) => {
     const s = String(v ?? '');
     return /[;"\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
   };
-  const PAYMENT_FR = { paid: 'payé', pending: 'en attente', failed: 'échec' };
+  const PAYMENT_FR = { paid: 'payé', pending: 'en attente', failed: 'échec', refunded: 'remboursé' };
   const feeCfg = getFees(session.platform);
   const estFees = (price) =>
     price > 0 ? (price * (feeCfg.commission + feeCfg.processing)) / 100 + feeCfg.fixed : 0;
   const lines = sales.map((m) => {
     const eff = m.sold_price != null ? m.sold_price : m.product_price;
     const net = m.net_amount != null ? m.net_amount : eff - (m.fees != null ? m.fees : estFees(eff));
-    const margin = m.cancelled ? '' : (net - m.product_cost).toFixed(2);
+    const margin = m.cancelled ? '' : (net - m.product_cost - (m.shipping_cost || 0)).toFixed(2);
     return [
       m.sale_no ? `Vue à l'écran #${m.sale_no}` : '',
       new Date(m.created_at).toLocaleString('fr-FR'),
@@ -700,6 +750,7 @@ app.get('/api/lives/:id/export.csv', (req, res) => {
       m.sold_price != null ? m.sold_price : '',
       m.fees != null ? m.fees : '',
       m.net_amount != null ? m.net_amount : '',
+      m.shipping_cost != null ? m.shipping_cost : '',
       margin,
       m.payment_status ? PAYMENT_FR[m.payment_status] || m.payment_status : '',
       m.cancelled ? 'annulée' : m.is_gift ? 'cadeau' : '',
@@ -707,7 +758,7 @@ app.get('/api/lives/:id/export.csv', (req, res) => {
   });
   const extraLines = sessionExtras.all(session.id).map((x) =>
     [
-      x.ref, '', '', x.label, '', x.sold_price ?? '', '', x.net_amount ?? '',
+      x.ref, '', '', x.label, '', x.sold_price ?? '', '', x.net_amount ?? '', '',
       x.net_amount != null ? Number(x.net_amount).toFixed(2) : '',
       PAYMENT_FR[x.payment_status] || x.payment_status, '',
     ].map(esc).join(';')
@@ -715,7 +766,7 @@ app.get('/api/lives/:id/export.csv', (req, res) => {
   const date = new Date(session.started_at).toISOString().slice(0, 10);
   res.setHeader('Content-Type', 'text/csv; charset=utf-8');
   res.setHeader('Content-Disposition', `attachment; filename="live-${session.platform}-${date}.csv"`);
-  res.send('﻿' + ['Référence;Heure;SKU;Produit;Prix catalogue;Prix vendu;Frais;Gains nets;Marge;Paiement;Statut', ...lines, ...extraLines].join('\n'));
+  res.send('﻿' + ['Référence;Heure;SKU;Produit;Prix catalogue;Prix vendu;Frais;Gains nets;Frais envoi;Marge;Paiement;Statut', ...lines, ...extraLines].join('\n'));
 });
 
 // ---------------------------------------------------------------------------
@@ -902,15 +953,46 @@ app.post('/api/lives/:id/report/commit', (req, res) => {
   });
 });
 
+// Filtres : ?q=<produit/sku> &channel= &days= &page= (50 par page)
 app.get('/api/movements', (req, res) => {
+  const q = (req.query.q || '').trim();
+  const channel = (req.query.channel || '').trim();
+  const days = Number(req.query.days) || 0;
+  const page = Math.max(1, Number(req.query.page) || 1);
+  const PER_PAGE = 50;
+
+  const where = [];
+  const params = [];
+  if (q) {
+    where.push('(p.name LIKE ? OR p.sku LIKE ? OR p.barcode LIKE ?)');
+    const like = `%${q}%`;
+    params.push(like, like, like);
+  }
+  if (channel === 'tiktok') {
+    // Les anciennes ventes en live étaient enregistrées sous le canal « live »
+    where.push(`m.channel IN ('tiktok', 'live')`);
+  } else if (channel) {
+    where.push('m.channel = ?');
+    params.push(channel);
+  }
+  if (days > 0) {
+    where.push('m.created_at >= ?');
+    params.push(new Date(Date.now() - days * 86400e3).toISOString());
+  }
+  const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+
+  const total = db
+    .prepare(`SELECT COUNT(*) AS n FROM movements m JOIN products p ON p.id = m.product_id ${whereSql}`)
+    .get(...params).n;
   const rows = db
     .prepare(
       `SELECT m.*, p.name AS product_name, p.sku AS product_sku
        FROM movements m JOIN products p ON p.id = m.product_id
-       ORDER BY m.id DESC LIMIT 200`
+       ${whereSql}
+       ORDER BY m.id DESC LIMIT ? OFFSET ?`
     )
-    .all();
-  res.json(rows);
+    .all(...params, PER_PAGE, (page - 1) * PER_PAGE);
+  res.json({ rows, total, page, pages: Math.max(1, Math.ceil(total / PER_PAGE)) });
 });
 
 // ---------------------------------------------------------------------------
@@ -1259,11 +1341,11 @@ function computeStatistics(days) {
     : '';
   const rows = db
     .prepare(
-      `SELECT m.channel, m.delta, m.sold_price, m.fees, m.net_amount,
+      `SELECT m.channel, m.delta, m.sold_price, m.fees, m.net_amount, m.shipping_cost,
               p.id AS pid, p.name, p.sku, p.price, p.cost, p.stock, p.min_stock
        FROM movements m JOIN products p ON p.id = m.product_id
        WHERE m.delta < 0 AND m.cancelled = 0 AND m.is_gift = 0
-         AND COALESCE(m.payment_status,'paid') != 'failed'
+         AND COALESCE(m.payment_status,'paid') NOT IN ('failed','refunded')
          AND m.created_at >= ?`
     )
     .all(since);
@@ -1285,17 +1367,18 @@ function computeStatistics(days) {
     const qty = -r.delta;
     const eff = r.sold_price != null ? r.sold_price : r.price;
     const marginUnit = netUnitOf(r, channel) - r.cost;
+    const shipping = r.shipping_cost || 0; // par vente, pas par unité
     const e = byProduct.get(r.pid) || {
       id: r.pid, name: r.name, sku: r.sku, price: r.price, cost: r.cost,
       stock: r.stock, qty: 0, revenue: 0, margin: 0, channels: {},
     };
     e.qty += qty;
     e.revenue += qty * eff;
-    e.margin += qty * marginUnit;
+    e.margin += qty * marginUnit - shipping;
     const c = e.channels[channel] || { qty: 0, revenue: 0, margin: 0 };
     c.qty += qty;
     c.revenue += qty * eff;
-    c.margin += qty * marginUnit;
+    c.margin += qty * marginUnit - shipping;
     e.channels[channel] = c;
     byProduct.set(r.pid, e);
   }

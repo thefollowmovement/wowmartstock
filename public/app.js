@@ -20,6 +20,7 @@ const CHANNEL_LABELS = {
   whatnot: '🟡 Whatnot',
   live: '🎥 Live',
   adjust: '🔧 Ajustement',
+  return: '↩ Retour',
 };
 const PLATFORM_LABELS = { tiktok: `${TIKTOK_ICON} TikTok`, whatnot: '🟡 Whatnot' };
 const MAPPING_FIELDS = [
@@ -671,6 +672,7 @@ const PAYMENT_LABELS = {
   paid: '<span class="pay-badge paid">payé</span>',
   pending: '<span class="pay-badge pending">⏳ en attente</span>',
   failed: '<span class="pay-badge failed">⚠ échec</span>',
+  refunded: '<span class="pay-badge failed">↩ remboursé</span>',
 };
 const EXTRA_KIND_LABELS = {
   give_sub: '🎁 Give abonné',
@@ -683,7 +685,7 @@ window.showLiveDetail = async (id) => {
   try {
     const l = await api(`/api/lives/${id}`);
     if (l.fee_config) detailFees = l.fee_config;
-    const valid = l.sales.filter((m) => !m.cancelled);
+    const valid = l.sales.filter((m) => !m.cancelled && m.payment_status !== 'refunded');
 
     // Récap des produits vendus (agrégé) — les cadeaux sur une ligne à part
     const byProduct = new Map();
@@ -694,7 +696,7 @@ window.showLiveDetail = async (id) => {
       };
       e.qty += 1;
       e.total += m.sold_price != null ? m.sold_price : m.product_price;
-      e.margin += saleMargin(m);
+      e.margin += saleMargin(m) - (m.shipping_cost || 0);
       byProduct.set(key, e);
     }
     const productRows = [...byProduct.values()]
@@ -712,9 +714,10 @@ window.showLiveDetail = async (id) => {
     const rows = l.sales.length
       ? l.sales
           .map((m) => {
-            const margin = saleMargin(m);
+            const refunded = m.payment_status === 'refunded';
+            const margin = saleMargin(m) - (m.shipping_cost || 0);
             const failed = m.payment_status === 'failed' && !m.cancelled;
-            return `<tr class="${m.cancelled ? 'row-cancelled' : ''} ${failed ? 'row-unpaid' : ''}">
+            return `<tr class="${m.cancelled ? 'row-cancelled' : ''} ${failed || refunded ? 'row-unpaid' : ''}">
           <td><strong>${m.is_gift ? '🎁 ' : ''}${m.sale_no ? '#' + m.sale_no : ''}</strong></td>
           <td>${timeFr(m.created_at)}</td>
           <td>${m.photo ? `<a href="${escapeHtml(m.photo)}" target="_blank" rel="noopener"><img class="sale-photo-thumb" src="${escapeHtml(m.photo)}" alt=""></a> ` : ''}${escapeHtml(m.product_name)}${m.product_sku ? ` <span class="product-sku">(${escapeHtml(m.product_sku)})</span>` : ''}</td>
@@ -725,19 +728,26 @@ window.showLiveDetail = async (id) => {
             : saleNetIsEstimated(m)
               ? `<span class="muted-cell" title="Estimation avec le barème de frais — importez le rapport pour la valeur exacte">≈ ${euro(saleNet(m))}</span>`
               : `<strong>${euro(saleNet(m))}</strong>`}</td>
-          <td class="${margin >= 0 ? 'delta-pos' : 'delta-neg'}">${m.cancelled || failed ? '' : euro(margin)}</td>
+          <td>${m.is_gift || m.cancelled || refunded
+            ? '<span class="muted-cell">—</span>'
+            : `<input class="ship-input" type="number" step="0.01" min="0" value="${m.shipping_cost != null ? m.shipping_cost : ''}"
+                 placeholder="0" title="Frais d'envoi et d'emballage payés par vous pour cette vente (déduits de la marge)"
+                 onchange="setShipping(${m.id}, ${l.id}, this.value)">`}</td>
+          <td class="${margin >= 0 ? 'delta-pos' : 'delta-neg'}">${m.cancelled || failed || refunded ? '' : euro(margin)}</td>
           <td>${m.payment_status && !m.is_gift ? PAYMENT_LABELS[m.payment_status] || m.payment_status : '<span class="muted-cell">—</span>'}</td>
           <td>${m.cancelled
             ? (m.is_gift ? 'annulé' : 'annulée')
-            : m.is_gift
-              ? 'cadeau'
-              : failed
-                ? `<button class="btn small" onclick="liveRestock(${m.id}, ${l.id})" title="Annuler la vente et remettre l'article en stock">↩ Restock</button>`
-                : 'vendue'}</td>
+            : refunded
+              ? 'retour fait'
+              : m.is_gift
+                ? 'cadeau'
+                : failed
+                  ? `<button class="btn small" onclick="liveRestock(${m.id}, ${l.id})" title="Annuler la vente et remettre l'article en stock">↩ Restock</button>`
+                  : `vendue <button class="btn small ghost-mini" onclick="returnLiveSale(${m.id}, ${l.id})" title="Retour / remboursement : l'article revient en stock, la vente est retirée du CA et de la marge">↩</button>`}</td>
         </tr>`;
           })
           .join('')
-      : '<tr><td colspan="9">Aucune vente pendant ce live</td></tr>';
+      : '<tr><td colspan="10">Aucune vente pendant ce live</td></tr>';
 
     // Lignes hors « Vue à l'écran » : gives et produits boutique de la plateforme
     const extraRows = (l.extra_lines || [])
@@ -800,7 +810,7 @@ window.showLiveDetail = async (id) => {
         <div class="stat"><div class="value">${euro(l.revenue)}</div><div class="label">CA TTC${l.reported > 0 ? ' (réel)' : ' (catalogue)'}</div></div>
         <div class="stat"><div class="value">${euro(ht)}</div><div class="label">CA HT</div></div>
         <div class="stat"><div class="value">${euro(l.revenue - ht)}</div><div class="label">TVA collectée (${vatRate} %)</div></div>
-        <div class="stat"><div class="value">${euro(l.margin)}</div><div class="label">Marge nette estimée</div></div>
+        <div class="stat"><div class="value">${euro(l.margin)}</div><div class="label">Marge nette estimée${l.shipping > 0 ? ` (envoi −${euro(l.shipping)})` : ''}</div></div>
         <div class="stat ${l.unpaid > 0 ? 'alert' : ''}"><div class="value">${l.unpaid}</div><div class="label">⚠ Non réglée(s)</div></div>
         <div class="stat"><div class="value">${l.reported}/${l.items}</div><div class="label">Ventes associées au rapport</div></div>
       </div>
@@ -859,7 +869,7 @@ window.showLiveDetail = async (id) => {
       <h4>Ventes « Vue à l'écran » <a class="export-link" href="/api/lives/${l.id}/export.csv">⬇ Exporter en CSV</a></h4>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>N°</th><th>Heure</th><th>Produit</th><th>Prix catalogue</th><th>Prix vendu</th><th>Gains nets</th><th>Marge</th><th>Paiement</th><th>Statut</th></tr></thead>
+          <thead><tr><th>N°</th><th>Heure</th><th>Produit</th><th>Prix catalogue</th><th>Prix vendu</th><th>Gains nets</th><th title="Frais d'envoi et d'emballage payés par vous, déduits de la marge">📮 Envoi</th><th>Marge</th><th>Paiement</th><th>Statut</th></tr></thead>
           <tbody>${rows}</tbody>
         </table>
       </div>
@@ -887,6 +897,36 @@ window.validateLive = async (id) => {
     await loadLives();
     await showLiveDetail(id);
     loadStats();
+  } catch (e) {
+    toast(e.message, true);
+  }
+};
+
+// Frais d'envoi d'une vente (saisis dans le détail du live)
+window.setShipping = async (movementId, liveId, value) => {
+  try {
+    await api(`/api/movements/${movementId}/shipping`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ shipping_cost: value === '' ? null : value }),
+    });
+    toast('📮 Frais d\'envoi enregistrés');
+    await loadLives();
+    await showLiveDetail(liveId);
+  } catch (e) {
+    toast(e.message, true);
+  }
+};
+
+// Retour / remboursement d'une vente de live
+window.returnLiveSale = async (movementId, liveId) => {
+  if (!confirm('Enregistrer un retour ? L’article revient en stock et la vente est retirée du chiffre d’affaires et de la marge.')) return;
+  try {
+    await api(`/api/movements/${movementId}/return`, { method: 'POST' });
+    toast('↩ Retour enregistré, article remis en stock');
+    await loadLives();
+    await showLiveDetail(liveId);
+    loadProducts();
   } catch (e) {
     toast(e.message, true);
   }
@@ -1467,23 +1507,63 @@ $('#btnCommitImport').addEventListener('click', async () => {
 // ---------------------------------------------------------------------------
 // Historique des mouvements
 // ---------------------------------------------------------------------------
+let movPage = 1;
+
 async function loadMovements() {
-  const rows = await api('/api/movements');
-  $('#movementsTable tbody').innerHTML = rows.length
-    ? rows
+  const params = new URLSearchParams();
+  const q = $('#movSearch').value.trim();
+  if (q) params.set('q', q);
+  if ($('#movChannel').value) params.set('channel', $('#movChannel').value);
+  if ($('#movDays').value) params.set('days', $('#movDays').value);
+  params.set('page', movPage);
+  const data = await api('/api/movements?' + params);
+  movPage = data.page;
+  $('#movPageInfo').textContent = data.total
+    ? `Page ${data.page} / ${data.pages} — ${data.total} mouvement(s)`
+    : '';
+  $('#movPrev').disabled = data.page <= 1;
+  $('#movNext').disabled = data.page >= data.pages;
+  const canReturn = (m) =>
+    m.delta < 0 && !m.cancelled && !m.is_gift &&
+    !['adjust', 'return'].includes(m.channel) && m.payment_status !== 'refunded';
+  $('#movementsTable tbody').innerHTML = data.rows.length
+    ? data.rows
         .map(
           (m) => `<tr class="${m.cancelled ? 'row-cancelled' : ''}">
         <td>${dateFr(m.created_at)}</td>
         <td>${escapeHtml(m.product_name)}${m.product_sku ? ` <span class="product-sku">(${escapeHtml(m.product_sku)})</span>` : ''}</td>
-        <td>${CHANNEL_LABELS[m.channel] || m.channel}</td>
+        <td>${CHANNEL_LABELS[m.channel] || m.channel}${m.sale_no ? ` <span class="product-sku">#${m.sale_no}</span>` : ''}</td>
         <td class="${m.delta > 0 ? 'delta-pos' : 'delta-neg'}">${m.delta > 0 ? '+' : ''}${m.delta}</td>
         <td>${m.stock_after}</td>
-        <td>${escapeHtml(m.reason)}</td>
+        <td>${escapeHtml(m.reason)}${m.payment_status === 'refunded' ? ' <span class="pay-badge failed">↩ remboursé</span>' : ''}</td>
+        <td>${canReturn(m) ? `<button class="btn small" onclick="returnSale(${m.id})" title="Retour / remboursement : l'article revient en stock, la vente est retirée du CA et de la marge">↩ Retour</button>` : ''}</td>
       </tr>`
         )
         .join('')
-    : '<tr><td colspan="6">Aucun mouvement pour l\'instant</td></tr>';
+    : '<tr><td colspan="7">Aucun mouvement trouvé</td></tr>';
 }
+
+window.returnSale = async (id) => {
+  if (!confirm('Enregistrer un retour ? L’article revient en stock et la vente est retirée du chiffre d’affaires et de la marge.')) return;
+  try {
+    await api(`/api/movements/${id}/return`, { method: 'POST' });
+    toast('↩ Retour enregistré, article remis en stock');
+    loadMovements();
+    loadProducts();
+  } catch (e) {
+    toast(e.message, true);
+  }
+};
+
+let movSearchTimer;
+$('#movSearch').addEventListener('input', () => {
+  clearTimeout(movSearchTimer);
+  movSearchTimer = setTimeout(() => { movPage = 1; loadMovements(); }, 250);
+});
+$('#movChannel').addEventListener('change', () => { movPage = 1; loadMovements(); });
+$('#movDays').addEventListener('change', () => { movPage = 1; loadMovements(); });
+$('#movPrev').addEventListener('click', () => { movPage--; loadMovements(); });
+$('#movNext').addEventListener('click', () => { movPage++; loadMovements(); });
 
 // ---------------------------------------------------------------------------
 loadSettings();
