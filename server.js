@@ -1238,6 +1238,181 @@ app.post('/api/lives/:id/photo-sales', (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
+// Statistiques : meilleures ventes / marges par plateforme, liste de réassort
+// et rapport de conseils généré par l'IA
+// ---------------------------------------------------------------------------
+const STAT_CHANNELS = ['online', 'store', 'tiktok', 'whatnot'];
+
+function computeStatistics(days) {
+  const since = Number.isFinite(days) && days > 0
+    ? new Date(Date.now() - days * 24 * 3600 * 1000).toISOString()
+    : '';
+  const rows = db
+    .prepare(
+      `SELECT m.channel, m.delta, m.sold_price, m.fees, m.net_amount,
+              p.id AS pid, p.name, p.sku, p.price, p.cost, p.stock, p.min_stock
+       FROM movements m JOIN products p ON p.id = m.product_id
+       WHERE m.delta < 0 AND m.cancelled = 0 AND m.is_gift = 0
+         AND COALESCE(m.payment_status,'paid') != 'failed'
+         AND m.created_at >= ?`
+    )
+    .all(since);
+
+  const feeCfg = { tiktok: getFees('tiktok'), whatnot: getFees('whatnot') };
+  const netUnitOf = (r, channel) => {
+    const eff = r.sold_price != null ? r.sold_price : r.price;
+    if (r.net_amount != null) return r.net_amount;
+    if (r.fees != null) return eff - r.fees;
+    const f = feeCfg[channel];
+    if (!f || eff <= 0) return eff;
+    return eff - ((eff * (f.commission + f.processing)) / 100 + f.fixed);
+  };
+
+  const byProduct = new Map();
+  for (const r of rows) {
+    const channel = r.channel === 'live' ? 'tiktok' : r.channel;
+    if (!STAT_CHANNELS.includes(channel)) continue;
+    const qty = -r.delta;
+    const eff = r.sold_price != null ? r.sold_price : r.price;
+    const marginUnit = netUnitOf(r, channel) - r.cost;
+    const e = byProduct.get(r.pid) || {
+      id: r.pid, name: r.name, sku: r.sku, price: r.price, cost: r.cost,
+      stock: r.stock, qty: 0, revenue: 0, margin: 0, channels: {},
+    };
+    e.qty += qty;
+    e.revenue += qty * eff;
+    e.margin += qty * marginUnit;
+    const c = e.channels[channel] || { qty: 0, revenue: 0, margin: 0 };
+    c.qty += qty;
+    c.revenue += qty * eff;
+    c.margin += qty * marginUnit;
+    e.channels[channel] = c;
+    byProduct.set(r.pid, e);
+  }
+
+  // Réassort : produits sous leur seuil, quantité conseillée d'après les
+  // ventes des 30 derniers jours
+  const sold30 = new Map(
+    db.prepare(
+      `SELECT m.product_id AS pid, SUM(-m.delta) AS qty
+       FROM movements m
+       WHERE m.delta < 0 AND m.cancelled = 0 AND m.is_gift = 0 AND m.created_at >= ?
+       GROUP BY m.product_id`
+    )
+      .all(new Date(Date.now() - 30 * 24 * 3600 * 1000).toISOString())
+      .map((r) => [r.pid, r.qty])
+  );
+  const toOrder = db
+    .prepare('SELECT * FROM products WHERE min_stock > 0 AND stock <= min_stock ORDER BY (min_stock - stock) DESC')
+    .all()
+    .map((p) => ({
+      id: p.id, name: p.name, sku: p.sku, stock: p.stock, min_stock: p.min_stock,
+      sold_30d: sold30.get(p.id) || 0,
+      suggested: Math.max(p.min_stock * 2 - p.stock, (sold30.get(p.id) || 0) - p.stock, 1),
+    }));
+
+  return {
+    products: [...byProduct.values()].sort((a, b) => b.margin - a.margin),
+    to_order: toOrder,
+  };
+}
+
+app.get('/api/statistics', (req, res) => {
+  const days = parseInt(req.query.days, 10);
+  const stats = computeStatistics(Number.isFinite(days) ? days : 30);
+  let lastReport = null;
+  try {
+    lastReport = JSON.parse(getSetting('last_ai_report', '') || 'null');
+  } catch (e) {
+    /* pas de rapport enregistré */
+  }
+  res.json({ ...stats, last_report: lastReport });
+});
+
+// Bon de commande fournisseur (CSV)
+app.get('/api/statistics/order.csv', (req, res) => {
+  const { to_order } = computeStatistics(30);
+  const esc = (v) => {
+    const s = String(v ?? '');
+    return /[;"\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+  const lines = to_order.map((p) =>
+    [p.sku, p.name, p.stock, p.min_stock, p.sold_30d, p.suggested].map(esc).join(';')
+  );
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', 'attachment; filename="bon-de-commande.csv"');
+  res.send('﻿' + ['SKU;Produit;Stock actuel;Seuil;Vendus 30 j;Quantité à commander', ...lines].join('\n'));
+});
+
+// Rapport de conseils généré par Claude à partir des chiffres réels
+app.post('/api/statistics/report', async (req, res) => {
+  const apiKey = getAnthropicKey();
+  if (!apiKey) {
+    return res.status(400).json({
+      error: 'Aucune clé API Anthropic configurée — enregistrez-la dans un détail de live (section Photos) ou via ANTHROPIC_API_KEY',
+    });
+  }
+  const stats = computeStatistics(30);
+  if (!stats.products.length) {
+    return res.status(400).json({ error: 'Pas encore assez de ventes sur les 30 derniers jours pour un rapport' });
+  }
+
+  const chLabel = { online: 'en ligne', store: 'boutique', tiktok: 'TikTok', whatnot: 'Whatnot' };
+  const productLines = stats.products.slice(0, 25).map((p) => {
+    const channels = Object.entries(p.channels)
+      .map(([c, v]) => `${chLabel[c]}: ${v.qty} vendus / ${v.margin.toFixed(0)}€ de marge`)
+      .join(', ');
+    return `- ${p.name}${p.sku ? ` (${p.sku})` : ''} : ${p.qty} vendus, CA ${p.revenue.toFixed(0)}€, marge nette totale ${p.margin.toFixed(0)}€ (soit ${(p.margin / p.qty).toFixed(2)}€/unité), stock restant ${p.stock} — ${channels}`;
+  }).join('\n');
+  const orderLines = stats.to_order.length
+    ? stats.to_order.map((p) => `- ${p.name}${p.sku ? ` (${p.sku})` : ''} : stock ${p.stock} (seuil ${p.min_stock}), ${p.sold_30d} vendus en 30 j`).join('\n')
+    : '(aucun produit sous son seuil)';
+
+  const prompt = `Tu es le conseiller commercial d'une petite boutique française qui vend en ligne, en boutique physique et pendant des lives TikTok et Whatnot.
+
+Voici les chiffres réels des 30 derniers jours (marges nettes : frais des plateformes déjà déduits) :
+
+VENTES PAR PRODUIT :
+${productLines}
+
+PRODUITS SOUS LEUR SEUIL DE STOCK :
+${orderLines}
+
+Rédige un rapport court et actionnable en français, en Markdown, avec ces sections :
+## 🏆 À mettre en avant — les produits qui rapportent vraiment (marge totale et marge/unité élevées), et sur quelles plateformes les pousser en priorité d'après leurs performances par canal.
+## ⚠️ À ne plus pousser — les produits à gros volume mais faible marge (ex : beaucoup de ventes pour quelques euros de bénéfice) : dis clairement s'il faut monter le prix, les utiliser comme cadeaux/produits d'appel pendant les lives, ou arrêter.
+## 📦 Réassort prioritaire — parmi les produits sous leur seuil, lesquels commander en premier (croiser marge et vitesse de vente).
+## 💡 Idées concrètes — 2 ou 3 actions simples (bundles, prix, produit star du prochain live…).
+
+Sois direct et concret, cite les chiffres, pas de blabla. Maximum 400 mots.`;
+
+  try {
+    const client = new Anthropic({ apiKey });
+    const model = getSetting('vision_model', 'claude-opus-5');
+    const response = await client.messages.create({
+      model,
+      max_tokens: 3000,
+      messages: [{ role: 'user', content: prompt }],
+    });
+    if (response.stop_reason === 'refusal') {
+      return res.status(500).json({ error: 'Le modèle a refusé de générer ce rapport, réessayez' });
+    }
+    const report = response.content.find((b) => b.type === 'text')?.text || '';
+    const payload = { report, generated_at: now(), model };
+    setSetting('last_ai_report', JSON.stringify(payload));
+    res.json(payload);
+  } catch (e) {
+    const msg =
+      e.status === 401
+        ? 'Clé API invalide — vérifiez-la'
+        : e.status === 429
+          ? 'Limite de requêtes API atteinte, réessayez dans une minute'
+          : e.message || 'Génération impossible';
+    res.status(500).json({ error: msg });
+  }
+});
+
+// ---------------------------------------------------------------------------
 // Export CSV
 // ---------------------------------------------------------------------------
 app.get('/api/export.csv', (req, res) => {

@@ -57,6 +57,12 @@ Le taux de TVA est configurable (20 % par défaut, onglet Lives). Chaque live af
 
 L'onglet **Lives** garde l'historique de toutes vos sessions : date et heure, plateforme, durée, articles vendus (+ cadeaux + hors écran), CA TTC, marge et statut de vérification.
 
+## 📊 Onglet Stats
+
+- **Meilleures ventes et marges** : classement par **marge nette** (frais des plateformes et coût d'achat déduits), avec la marge par unité et la répartition par plateforme — filtrable par période (7/30/90 jours) et par canal. C'est là qu'on voit qu'un produit vendu 100 fois pour 20 € de bénéfice compte moins qu'un produit vendu 30 fois pour 300 €.
+- **À commander chez le fournisseur** : liste quotidienne des produits sous leur seuil, avec quantité conseillée calculée d'après les ventes des 30 derniers jours, exportable en **bon de commande CSV**.
+- **Conseils de l'IA** : Claude analyse vos chiffres réels et rédige un rapport actionnable — produits à mettre en avant (et sur quelle plateforme), produits à gros volume mais faible marge, réassorts prioritaires, idées de bundles. Utilise la même clé API que les ventes par photos.
+
 ## Fonctionnalités
 
 - **Fiches produits avec photo** : ajoutez une photo en la glissant-déposant (ou en cliquant) directement dans l'application.

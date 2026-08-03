@@ -13,6 +13,7 @@
     <nav class="tabs">
       <button class="tab active" data-tab="products">Produits</button>
       <button class="tab" data-tab="lives">Lives</button>
+      <button class="tab" data-tab="stats">Stats</button>
       <button class="tab" data-tab="import">Importer</button>
       <button class="tab" data-tab="movements">Historique</button>
     </nav>
@@ -77,6 +78,63 @@
       </div>
     </div>
     <div id="liveDetail" class="card" hidden></div>
+  </main>
+
+  <!-- ===================== STATISTIQUES ===================== -->
+  <main id="tab-stats" class="tab-panel" hidden>
+    <div class="card">
+      <div class="stats-page-head">
+        <h2>🏆 Meilleures ventes et marges</h2>
+        <div class="stats-filters">
+          <select id="statsDays">
+            <option value="7">7 derniers jours</option>
+            <option value="30" selected>30 derniers jours</option>
+            <option value="90">90 derniers jours</option>
+            <option value="0">Depuis le début</option>
+          </select>
+          <select id="statsChannel">
+            <option value="">Toutes les plateformes</option>
+            <option value="online">🌐 En ligne</option>
+            <option value="store">🏬 Boutique</option>
+            <option value="tiktok">TikTok</option>
+            <option value="whatnot">🟡 Whatnot</option>
+          </select>
+        </div>
+      </div>
+      <p class="muted">Classement par <strong>marge nette</strong> (frais des plateformes et coût d'achat déduits) — c'est elle qui compte, pas le volume.</p>
+      <div class="table-wrap">
+        <table id="statsTable">
+          <thead>
+            <tr><th>#</th><th>Produit</th><th>Vendus</th><th>CA TTC</th><th>Marge nette</th><th>Marge / unité</th><th>Par plateforme</th></tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>📦 À commander chez le fournisseur
+        <a class="export-link" href="/api/statistics/order.csv">⬇ Bon de commande CSV</a></h2>
+      <p class="muted">Produits sous leur seuil d'alerte — consultez cette liste chaque jour. La quantité conseillée est calculée d'après vos ventes des 30 derniers jours.</p>
+      <div class="table-wrap">
+        <table id="orderTable">
+          <thead>
+            <tr><th>Produit</th><th>Stock actuel</th><th>Seuil</th><th>Vendus 30 j</th><th>À commander</th></tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>🤖 Conseils de l'IA</h2>
+      <p class="muted">Claude analyse vos 30 derniers jours : produits à mettre en avant, produits à gros volume mais faible marge, réassorts prioritaires et idées concrètes.</p>
+      <div class="ai-report-actions">
+        <button class="btn primary" id="btnAiReport">✨ Générer le rapport</button>
+        <span id="aiReportInfo" class="muted small"></span>
+      </div>
+      <div id="aiReport" class="ai-report" hidden></div>
+    </div>
   </main>
 
   <!-- ===================== IMPORT ===================== -->

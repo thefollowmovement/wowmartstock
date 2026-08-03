@@ -716,6 +716,37 @@ tr.row-unpaid td { background: #fef2f2; }
   vertical-align: middle;
 }
 
+/* ---------- Onglet Statistiques ---------- */
+.stats-page-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.stats-filters { display: flex; gap: 10px; }
+.stats-filters select {
+  padding: 9px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--card);
+  font-size: .9rem;
+}
+.ai-report-actions { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.ai-report {
+  margin-top: 16px;
+  padding: 18px 22px;
+  background: #f8f7ff;
+  border: 1px solid #c7d2fe;
+  border-radius: var(--radius);
+  line-height: 1.65;
+  font-size: .95rem;
+}
+.ai-report h3 { margin: 14px 0 6px; font-size: 1.02rem; }
+.ai-report h3:first-child { margin-top: 0; }
+.ai-report ul { margin: 6px 0 6px 22px; display: flex; flex-direction: column; gap: 4px; }
+.ai-report p { margin: 6px 0; }
+
 @media (max-width: 760px) {
   .live-body { flex-direction: column; overflow-y: auto; }
   .live-left { flex: none; }

@@ -83,6 +83,7 @@ document.querySelectorAll('.tab').forEach((btn) => {
     $(`#tab-${btn.dataset.tab}`).hidden = false;
     if (btn.dataset.tab === 'movements') loadMovements();
     if (btn.dataset.tab === 'lives') loadLives();
+    if (btn.dataset.tab === 'stats') loadStatsPage();
   });
 });
 
@@ -979,6 +980,115 @@ window.commitReport = async () => {
     toast(e.message, true);
   }
 };
+
+// ---------------------------------------------------------------------------
+// Onglet Statistiques : top ventes/marges, réassort, rapport IA
+// ---------------------------------------------------------------------------
+let statsData = null;
+const CHANNEL_SHORT = { online: '🌐', store: '🏬', tiktok: TIKTOK_ICON, whatnot: '🟡' };
+
+async function loadStatsPage() {
+  try {
+    const days = $('#statsDays').value;
+    statsData = await api(`/api/statistics?days=${encodeURIComponent(days)}`);
+    renderStatsTable();
+    renderOrderTable();
+    renderLastAiReport();
+  } catch (e) {
+    toast(e.message, true);
+  }
+}
+
+$('#statsDays').addEventListener('change', loadStatsPage);
+$('#statsChannel').addEventListener('change', renderStatsTable);
+
+function renderStatsTable() {
+  if (!statsData) return;
+  const channel = $('#statsChannel').value;
+  // avec un filtre plateforme, on classe sur les chiffres de cette plateforme
+  const list = statsData.products
+    .map((p) => {
+      const src = channel ? p.channels[channel] : p;
+      if (!src || !src.qty) return null;
+      return { ...p, fQty: src.qty, fRevenue: src.revenue, fMargin: src.margin };
+    })
+    .filter(Boolean)
+    .sort((a, b) => b.fMargin - a.fMargin);
+
+  $('#statsTable tbody').innerHTML = list.length
+    ? list
+        .map((p, i) => {
+          const perUnit = p.fQty ? p.fMargin / p.fQty : 0;
+          const breakdown = Object.entries(p.channels)
+            .map(([c, v]) => `${CHANNEL_SHORT[c] || c} ${v.qty}`)
+            .join(' · ');
+          return `<tr>
+        <td><strong>${i + 1}</strong></td>
+        <td>${escapeHtml(p.name)}${p.sku ? ` <span class="product-sku">(${escapeHtml(p.sku)})</span>` : ''}</td>
+        <td>${p.fQty}</td>
+        <td>${euro(p.fRevenue)}</td>
+        <td class="${p.fMargin >= 0 ? 'delta-pos' : 'delta-neg'}"><strong>${euro(p.fMargin)}</strong></td>
+        <td class="${perUnit >= 0 ? 'delta-pos' : 'delta-neg'}">${euro(perUnit)}</td>
+        <td class="muted-cell">${breakdown}</td>
+      </tr>`;
+        })
+        .join('')
+    : '<tr><td colspan="7">Aucune vente sur cette période' + (channel ? ' pour cette plateforme' : '') + '</td></tr>';
+}
+
+function renderOrderTable() {
+  if (!statsData) return;
+  $('#orderTable tbody').innerHTML = statsData.to_order.length
+    ? statsData.to_order
+        .map(
+          (p) => `<tr class="row-missing-report">
+        <td>${escapeHtml(p.name)}${p.sku ? ` <span class="product-sku">(${escapeHtml(p.sku)})</span>` : ''}</td>
+        <td class="delta-neg"><strong>${p.stock}</strong></td>
+        <td>${p.min_stock}</td>
+        <td>${p.sold_30d}</td>
+        <td><strong>${p.suggested}</strong></td>
+      </tr>`
+        )
+        .join('')
+    : '<tr><td colspan="5">✅ Aucun produit sous son seuil — rien à commander aujourd\'hui</td></tr>';
+}
+
+// Rendu Markdown minimal pour le rapport IA (titres, gras, listes)
+function mdToHtml(md) {
+  let h = escapeHtml(md);
+  h = h.replace(/^#{1,3} (.*)$/gm, '<h3>$1</h3>');
+  h = h.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
+  h = h.replace(/^[-*] (.*)$/gm, '<li>$1</li>');
+  h = h.replace(/(<li>[\s\S]*?<\/li>\n?)+/g, (m) => `<ul>${m}</ul>`);
+  h = h.replace(/\n{2,}/g, '</p><p>');
+  return `<p>${h}</p>`;
+}
+
+function renderLastAiReport() {
+  const r = statsData && statsData.last_report;
+  if (!r || !r.report) return;
+  $('#aiReportInfo').textContent = `Dernier rapport : ${dateFr(r.generated_at)}`;
+  $('#aiReport').innerHTML = mdToHtml(r.report);
+  $('#aiReport').hidden = false;
+}
+
+$('#btnAiReport').addEventListener('click', async () => {
+  const btn = $('#btnAiReport');
+  btn.disabled = true;
+  $('#aiReportInfo').textContent = '🤖 Analyse de vos chiffres en cours… (jusqu\'à une minute)';
+  try {
+    const r = await api('/api/statistics/report', { method: 'POST' });
+    $('#aiReport').innerHTML = mdToHtml(r.report);
+    $('#aiReport').hidden = false;
+    $('#aiReportInfo').textContent = `Rapport généré : ${dateFr(r.generated_at)}`;
+    toast('✨ Rapport généré');
+  } catch (e) {
+    $('#aiReportInfo').textContent = '';
+    toast(e.message, true);
+  } finally {
+    btn.disabled = false;
+  }
+});
 
 // ---------------------------------------------------------------------------
 // Ventes par photos : analyse des étiquettes #N par l'IA puis vérification
