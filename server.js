@@ -3,7 +3,7 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
-const Database = require('better-sqlite3');
+const { DatabaseSync } = require('node:sqlite');
 const XLSX = require('xlsx');
 
 const PORT = process.env.PORT || 3000;
@@ -15,8 +15,21 @@ fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 // ---------------------------------------------------------------------------
 // Base de données
 // ---------------------------------------------------------------------------
-const db = new Database(path.join(DATA_DIR, 'stock.db'));
-db.pragma('journal_mode = WAL');
+// SQLite intégré à Node.js (>= 22.5) : aucune compilation nécessaire
+const db = new DatabaseSync(path.join(DATA_DIR, 'stock.db'));
+db.exec('PRAGMA journal_mode = WAL');
+
+function withTransaction(fn) {
+  db.exec('BEGIN');
+  try {
+    const result = fn();
+    db.exec('COMMIT');
+    return result;
+  } catch (e) {
+    db.exec('ROLLBACK');
+    throw e;
+  }
+}
 
 db.exec(`
 CREATE TABLE IF NOT EXISTS products (
@@ -67,7 +80,7 @@ CREATE TABLE IF NOT EXISTS live_sessions (
 {
   const cols = db.prepare('PRAGMA table_info(products)').all().map((c) => c.name);
   if (cols.includes('stock_online')) {
-    db.transaction(() => {
+    withTransaction(() => {
       if (!cols.includes('stock')) {
         db.exec(`ALTER TABLE products ADD COLUMN stock INTEGER NOT NULL DEFAULT 0`);
       }
@@ -79,7 +92,7 @@ CREATE TABLE IF NOT EXISTS live_sessions (
       db.exec(`ALTER TABLE products DROP COLUMN stock_online`);
       db.exec(`ALTER TABLE products DROP COLUMN stock_store`);
       db.exec(`ALTER TABLE products DROP COLUMN stock_live`);
-    })();
+    });
     console.log('Migration effectuée : stock par canal → stock unique partagé');
   }
 }
@@ -277,12 +290,12 @@ app.post('/api/movements/:id/cancel', (req, res) => {
   const product = db.prepare('SELECT * FROM products WHERE id = ?').get(m.product_id);
   if (!product) return res.status(404).json({ error: 'Produit introuvable' });
   const after = Math.max(0, product.stock - m.delta);
-  db.transaction(() => {
+  withTransaction(() => {
     db.prepare('UPDATE movements SET cancelled = 1 WHERE id = ?').run(id);
     db.prepare('UPDATE products SET stock = ?, updated_at = ? WHERE id = ?').run(after, now(), m.product_id);
     const reverseId = logMovement(m.product_id, 'adjust', -m.delta, after, 'Annulation', m.session_id);
     db.prepare('UPDATE movements SET cancelled = 1 WHERE id = ?').run(reverseId);
-  })();
+  });
   res.json({ product: db.prepare('SELECT * FROM products WHERE id = ?').get(m.product_id) });
 });
 
@@ -512,7 +525,7 @@ app.post('/api/import/commit', (req, res) => {
   let updated = 0;
   let skipped = 0;
 
-  const run = db.transaction(() => {
+  const run = () => withTransaction(() => {
     for (const row of pending.rows) {
       const get = (field) => (mapping[field] != null && mapping[field] !== '' ? row[mapping[field]] : '');
       const sku = String(get('sku')).trim() || null;

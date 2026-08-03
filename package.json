@@ -8,8 +8,10 @@
     "dev": "node --watch server.js"
   },
   "license": "MIT",
+  "engines": {
+    "node": ">=22.5.0"
+  },
   "dependencies": {
-    "better-sqlite3": "^11.3.0",
     "express": "^4.19.2",
     "multer": "^1.4.5-lts.1",
     "xlsx": "^0.18.5"
