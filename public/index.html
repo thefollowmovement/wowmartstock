@@ -187,6 +187,20 @@
     </div>
   </div>
 
+  <!-- ===================== SÉLECTEUR DE CADEAU ===================== -->
+  <div id="giftModal" class="modal-overlay" hidden>
+    <div class="modal narrow gift-modal">
+      <h2 id="giftTitle">🎁 Ajouter un cadeau</h2>
+      <p class="muted">Choisissez le produit offert : il sera rattaché à la vente et déduit du stock.</p>
+      <input id="giftSearch" class="live-search" placeholder="🔍 Réf ou nom du produit…" autocomplete="off">
+      <div id="giftResults" class="live-results gift-results"></div>
+      <div class="actions">
+        <span class="spacer"></span>
+        <button type="button" class="btn" id="btnCloseGift">Fermer</button>
+      </div>
+    </div>
+  </div>
+
   <!-- ===================== RÉCAP FIN DE LIVE ===================== -->
   <div id="recapModal" class="modal-overlay" hidden>
     <div class="modal narrow">

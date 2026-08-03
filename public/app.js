@@ -212,7 +212,8 @@ function openLiveMode(session, sales) {
     product_id: m.product_id,
     name: m.product_name,
     sku: m.product_sku,
-    price: m.product_price,
+    price: m.is_gift ? 0 : m.product_price,
+    is_gift: !!m.is_gift,
     time: m.created_at,
     cancelled: !!m.cancelled,
   }));
@@ -240,12 +241,17 @@ function updateLiveTimer() {
 
 function liveTotals() {
   const valid = liveSalesLog.filter((s) => !s.cancelled);
-  return { items: valid.length, revenue: valid.reduce((sum, s) => sum + (Number(s.price) || 0), 0) };
+  return {
+    items: valid.filter((s) => !s.is_gift).length,
+    gifts: valid.filter((s) => s.is_gift).length,
+    revenue: valid.reduce((sum, s) => sum + (Number(s.price) || 0), 0),
+  };
 }
 
 function updateLiveCounters() {
   const t = liveTotals();
-  $('#liveCounters').textContent = `${t.items} vente(s) · ${euro(t.revenue)}`;
+  $('#liveCounters').textContent =
+    `${t.items} vente(s)${t.gifts ? ` · ${t.gifts} 🎁` : ''} · ${euro(t.revenue)}`;
 }
 
 // Recherche rapide par référence ou nom (insensible à la casse)
@@ -297,6 +303,7 @@ window.liveSell = async (id) => {
       name: p.name,
       sku: p.sku,
       price: p.price,
+      is_gift: false,
       time: new Date().toISOString(),
       cancelled: false,
     });
@@ -310,30 +317,50 @@ window.liveSell = async (id) => {
   }
 };
 
+// Journal du live : chaque vente avec, en dessous, ses cadeaux (🎁) rattachés
 function renderLiveSales() {
-  $('#liveSales').innerHTML = liveSalesLog.length
-    ? liveSalesLog
-        .map(
-          (s, i) => `
+  const saleLine = (s) => `
       <div class="live-sale ${s.cancelled ? 'cancelled' : ''}">
+        ${s.cancelled ? '<span class="live-gift-spacer"></span>'
+          : `<button class="live-gift-btn" onclick="openGiftPicker(${s.sale_no})" title="Ajouter un cadeau à la vente #${s.sale_no}">🎁</button>`}
         <span class="live-sale-no">${s.sale_no ? '#' + s.sale_no : ''}</span>
         <span class="live-sale-time">${timeFr(s.time)}</span>
         <span class="live-sale-name">${escapeHtml(s.name)}${s.sku ? ` <small>(${escapeHtml(s.sku)})</small>` : ''}</span>
         <span class="live-sale-price">${euro(s.price)}</span>
         ${s.cancelled
           ? '<span class="live-sale-undone">annulée</span>'
-          : `<button class="live-sale-undo" onclick="liveUndo(${i})" title="Annuler cette vente">↩</button>`}
-      </div>`
+          : `<button class="live-sale-undo" onclick="liveUndo(${s.movement_id})" title="Annuler cette vente">↩</button>`}
+      </div>`;
+  const giftLine = (g) => `
+      <div class="live-sale gift ${g.cancelled ? 'cancelled' : ''}">
+        <span class="live-gift-spacer"></span>
+        <span class="live-sale-no gift">🎁</span>
+        <span class="live-sale-name">${escapeHtml(g.name)}${g.sku ? ` <small>(${escapeHtml(g.sku)})</small>` : ''}</span>
+        <span class="live-sale-price offert">offert</span>
+        ${g.cancelled
+          ? '<span class="live-sale-undone">annulé</span>'
+          : `<button class="live-sale-undo" onclick="liveUndo(${g.movement_id})" title="Annuler ce cadeau">↩</button>`}
+      </div>`;
+  const sales = liveSalesLog.filter((s) => !s.is_gift);
+  $('#liveSales').innerHTML = sales.length
+    ? sales
+        .map(
+          (s) =>
+            saleLine(s) +
+            liveSalesLog
+              .filter((g) => g.is_gift && g.sale_no === s.sale_no)
+              .map(giftLine)
+              .join('')
         )
         .join('')
     : '<p class="empty small-pad">Les ventes apparaîtront ici,<br>horodatées à la seconde.</p>';
 }
 
-window.liveUndo = async (index) => {
-  const sale = liveSalesLog[index];
-  if (!sale || sale.cancelled || !sale.movement_id) return;
+window.liveUndo = async (movementId) => {
+  const sale = liveSalesLog.find((s) => s.movement_id === movementId);
+  if (!sale || sale.cancelled) return;
   try {
-    const result = await api(`/api/movements/${sale.movement_id}/cancel`, { method: 'POST' });
+    const result = await api(`/api/movements/${movementId}/cancel`, { method: 'POST' });
     sale.cancelled = true;
     updateLocalProduct(result.product);
     renderProducts();
@@ -341,7 +368,101 @@ window.liveUndo = async (index) => {
     renderLiveSales();
     updateLiveCounters();
     loadStats();
-    toast('Vente annulée, stock restauré');
+    toast(sale.is_gift ? 'Cadeau annulé, stock restauré' : 'Vente annulée, stock restauré');
+  } catch (e) {
+    toast(e.message, true);
+  }
+};
+
+// ---------------------------------------------------------------------------
+// Sélecteur de cadeau (🎁 rattaché à une vente du live)
+// ---------------------------------------------------------------------------
+let giftForSaleNo = null;
+
+window.openGiftPicker = (saleNo) => {
+  giftForSaleNo = saleNo;
+  $('#giftTitle').textContent = `🎁 Ajouter un cadeau à la vente #${saleNo}`;
+  $('#giftSearch').value = '';
+  renderGiftResults();
+  $('#giftModal').hidden = false;
+  setTimeout(() => $('#giftSearch').focus(), 100);
+};
+
+function closeGiftPicker() {
+  giftForSaleNo = null;
+  $('#giftModal').hidden = true;
+  if (liveSession) setTimeout(() => $('#liveSearch').focus(), 100);
+}
+
+$('#btnCloseGift').addEventListener('click', closeGiftPicker);
+$('#giftModal').addEventListener('click', (e) => {
+  if (e.target === $('#giftModal')) closeGiftPicker();
+});
+$('#giftSearch').addEventListener('input', () => renderGiftResults());
+
+function renderGiftResults() {
+  const q = $('#giftSearch').value.trim().toLowerCase();
+  const list = (q
+    ? products.filter(
+        (p) =>
+          (p.sku || '').toLowerCase().includes(q) ||
+          p.name.toLowerCase().includes(q) ||
+          (p.category || '').toLowerCase().includes(q)
+      )
+    : products
+  ).filter((p) => p.stock > 0);
+  $('#giftResults').innerHTML = list.length
+    ? list
+        .map((p) => {
+          const photo = p.photo
+            ? `<img src="${escapeHtml(p.photo)}" alt="" loading="lazy">`
+            : '<div class="live-noimg">📷</div>';
+          return `
+        <button class="live-product" onclick="giveGift(${p.id})">
+          ${photo}
+          <span class="live-product-info">
+            <span class="live-product-name">${escapeHtml(p.name)}</span>
+            <span class="live-product-sku">${escapeHtml(p.sku || '')}</span>
+          </span>
+          <span class="live-product-side">
+            <span class="live-product-stock">Stock : ${p.stock}</span>
+            <span class="live-product-action gift">OFFRIR 🎁</span>
+          </span>
+        </button>`;
+        })
+        .join('')
+    : '<p class="empty small-pad">Aucun produit en stock ne correspond</p>';
+}
+
+window.giveGift = async (productId) => {
+  if (!liveSession || giftForSaleNo == null) return;
+  const p = products.find((x) => x.id === productId);
+  try {
+    const result = await api(`/api/lives/${liveSession.id}/gift`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sale_no: giftForSaleNo, product_id: productId }),
+    });
+    updateLocalProduct(result.product);
+    liveSalesLog.unshift({
+      movement_id: result.movement_id,
+      sale_no: result.sale_no,
+      product_id: productId,
+      name: p.name,
+      sku: p.sku,
+      price: 0,
+      is_gift: true,
+      time: new Date().toISOString(),
+      cancelled: false,
+    });
+    renderProducts();
+    renderLiveResults();
+    renderGiftResults();
+    renderLiveSales();
+    updateLiveCounters();
+    loadStats();
+    toast(`🎁 ${p.name} ajouté à la vente #${giftForSaleNo}`);
+    // le sélecteur reste ouvert pour ajouter un autre cadeau à la même vente
   } catch (e) {
     toast(e.message, true);
   }
@@ -361,7 +482,7 @@ $('#btnEndLive').addEventListener('click', async () => {
       <div class="recap-grid">
         <div class="stat"><div class="value">${PLATFORM_LABELS[session.platform]}</div><div class="label">Plateforme</div></div>
         <div class="stat"><div class="value">${dur} min</div><div class="label">Durée</div></div>
-        <div class="stat"><div class="value">${session.items}</div><div class="label">Articles vendus</div></div>
+        <div class="stat"><div class="value">${session.items}${session.gifts ? ` <small>+ ${session.gifts} 🎁</small>` : ''}</div><div class="label">Articles vendus${session.gifts ? ' + cadeaux' : ''}</div></div>
         <div class="stat"><div class="value">${euro(session.revenue)}</div><div class="label">Chiffre d'affaires</div></div>
       </div>
       <p class="muted">💡 Importez ensuite le rapport CSV de la plateforme depuis l'onglet <strong>Lives</strong> → Détail, pour récupérer les prix de vente réels et calculer votre marge.</p>
@@ -414,7 +535,7 @@ async function loadLives() {
         <td>${dateFr(l.started_at)}</td>
         <td>${PLATFORM_LABELS[l.platform] || l.platform}</td>
         <td>${dur}</td>
-        <td>${l.items}</td>
+        <td>${l.items}${l.gifts ? ` <small>+ ${l.gifts} 🎁</small>` : ''}</td>
         <td>${euro(l.revenue)}</td>
         <td>${l.reported > 0 ? euro(l.margin) : '<span class="muted-cell">—</span>'}</td>
         <td><button class="btn small" onclick="showLiveDetail(${l.id})">Détail</button></td>
@@ -434,24 +555,25 @@ window.showLiveDetail = async (id) => {
     const l = await api(`/api/lives/${id}`);
     const valid = l.sales.filter((m) => !m.cancelled);
 
-    // Récap des produits vendus (agrégé)
+    // Récap des produits vendus (agrégé) — les cadeaux sur une ligne à part
     const byProduct = new Map();
     for (const m of valid) {
-      const e = byProduct.get(m.product_id) || {
-        name: m.product_name, sku: m.product_sku, qty: 0, total: 0, margin: 0,
+      const key = `${m.product_id}-${m.is_gift ? 'gift' : 'sale'}`;
+      const e = byProduct.get(key) || {
+        name: m.product_name, sku: m.product_sku, isGift: !!m.is_gift, qty: 0, total: 0, margin: 0,
       };
       e.qty += 1;
       e.total += m.sold_price != null ? m.sold_price : m.product_price;
       e.margin += saleMargin(m);
-      byProduct.set(m.product_id, e);
+      byProduct.set(key, e);
     }
     const productRows = [...byProduct.values()]
-      .sort((a, b) => b.qty - a.qty)
+      .sort((a, b) => (a.isGift !== b.isGift ? a.isGift - b.isGift : b.qty - a.qty))
       .map(
         (e) => `<tr>
-        <td>${escapeHtml(e.name)}${e.sku ? ` <span class="product-sku">(${escapeHtml(e.sku)})</span>` : ''}</td>
+        <td>${e.isGift ? '🎁 ' : ''}${escapeHtml(e.name)}${e.sku ? ` <span class="product-sku">(${escapeHtml(e.sku)})</span>` : ''}</td>
         <td>${e.qty}</td>
-        <td>${euro(e.total)}</td>
+        <td>${e.isGift ? '<span class="muted-cell">offert</span>' : euro(e.total)}</td>
         <td class="${e.margin >= 0 ? 'delta-pos' : 'delta-neg'}">${euro(e.margin)}</td>
       </tr>`
       )
@@ -460,17 +582,16 @@ window.showLiveDetail = async (id) => {
     const rows = l.sales.length
       ? l.sales
           .map((m) => {
-            const eff = m.sold_price != null ? m.sold_price : m.product_price;
             const margin = saleMargin(m);
             return `<tr class="${m.cancelled ? 'row-cancelled' : ''}">
-          <td><strong>${m.sale_no ? '#' + m.sale_no : ''}</strong></td>
+          <td><strong>${m.is_gift ? '🎁 ' : ''}${m.sale_no ? '#' + m.sale_no : ''}</strong></td>
           <td>${timeFr(m.created_at)}</td>
           <td>${escapeHtml(m.product_name)}${m.product_sku ? ` <span class="product-sku">(${escapeHtml(m.product_sku)})</span>` : ''}</td>
           <td>${euro(m.product_price)}</td>
-          <td>${m.sold_price != null ? `<strong>${euro(m.sold_price)}</strong>` : '<span class="muted-cell">—</span>'}</td>
-          <td>${m.fees != null ? euro(m.fees) : '<span class="muted-cell">—</span>'}</td>
+          <td>${m.is_gift ? '<span class="muted-cell">offert</span>' : m.sold_price != null ? `<strong>${euro(m.sold_price)}</strong>` : '<span class="muted-cell">—</span>'}</td>
+          <td>${m.fees != null && !m.is_gift ? euro(m.fees) : '<span class="muted-cell">—</span>'}</td>
           <td class="${margin >= 0 ? 'delta-pos' : 'delta-neg'}">${m.cancelled ? '' : euro(margin)}</td>
-          <td>${m.cancelled ? 'annulée' : 'vendue'}</td>
+          <td>${m.cancelled ? (m.is_gift ? 'annulé' : 'annulée') : m.is_gift ? 'cadeau' : 'vendue'}</td>
         </tr>`;
           })
           .join('')
@@ -480,6 +601,7 @@ window.showLiveDetail = async (id) => {
       <h3>${PLATFORM_LABELS[l.platform]} — ${dateFr(l.started_at)}</h3>
       <div class="recap-grid wide">
         <div class="stat"><div class="value">${l.items}</div><div class="label">Articles vendus</div></div>
+        <div class="stat"><div class="value">${l.gifts}</div><div class="label">🎁 Cadeaux offerts</div></div>
         <div class="stat"><div class="value">${euro(l.revenue)}</div><div class="label">Chiffre d'affaires${l.reported > 0 ? ' (réel)' : ' (catalogue)'}</div></div>
         <div class="stat"><div class="value">${euro(l.margin)}</div><div class="label">Marge estimée</div></div>
         <div class="stat"><div class="value">${l.reported}/${l.items}</div><div class="label">Ventes associées au rapport</div></div>

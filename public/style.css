@@ -518,6 +518,34 @@ form input {
 .live-sale-undone { font-size: .75rem; color: var(--danger); flex-shrink: 0; }
 .empty.small-pad { padding: 20px 0; }
 
+/* ---------- Cadeaux ---------- */
+.live-gift-btn {
+  border: 1px solid var(--border);
+  background: var(--card);
+  border-radius: 6px;
+  width: 28px;
+  height: 28px;
+  cursor: pointer;
+  flex-shrink: 0;
+  font-size: .85rem;
+  padding: 0;
+}
+.live-gift-btn:hover { background: #fef3c7; border-color: var(--warning); }
+.live-gift-spacer { width: 28px; flex-shrink: 0; }
+.live-sale.gift {
+  margin-left: 26px;
+  background: #fffbeb;
+  border: 1px dashed #fcd34d;
+}
+.live-sale-no.gift { min-width: auto; }
+.live-sale-price.offert { color: var(--warning); font-weight: 700; font-size: .78rem; }
+.live-product-action.gift { color: var(--warning); }
+.gift-modal { max-width: 560px; }
+/* le sélecteur de cadeau doit passer au-dessus du mode live (z-index 60) */
+#giftModal { z-index: 70; }
+.gift-modal .live-search { margin: 10px 0; border-color: var(--warning); }
+.gift-results { max-height: 45vh; overflow-y: auto; }
+
 .recap-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;

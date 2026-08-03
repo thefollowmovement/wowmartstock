@@ -75,6 +75,7 @@ CREATE TABLE IF NOT EXISTS live_sessions (
   if (!mcols.includes('sale_no')) db.exec('ALTER TABLE movements ADD COLUMN sale_no INTEGER');
   if (!mcols.includes('sold_price')) db.exec('ALTER TABLE movements ADD COLUMN sold_price REAL');
   if (!mcols.includes('fees')) db.exec('ALTER TABLE movements ADD COLUMN fees REAL');
+  if (!mcols.includes('is_gift')) db.exec('ALTER TABLE movements ADD COLUMN is_gift INTEGER NOT NULL DEFAULT 0');
 
   // Numérotation rétroactive des ventes des lives existants (#1, #2… par ordre chronologique)
   const toNumber = db
@@ -353,7 +354,7 @@ app.get('/api/stats', (req, res) => {
     .prepare(
       `SELECT channel, COALESCE(SUM(-delta),0) AS sold
        FROM movements
-       WHERE delta < 0 AND cancelled = 0 AND created_at >= ?
+       WHERE delta < 0 AND cancelled = 0 AND is_gift = 0 AND created_at >= ?
          AND channel IN ('online','store','tiktok','whatnot','live')
        GROUP BY channel`
     )
@@ -372,7 +373,7 @@ app.get('/api/stats', (req, res) => {
 // Marge = prix effectif − frais de la plateforme − coût d'achat.
 const sessionSales = db.prepare(
   `SELECT m.id, m.created_at, m.delta, m.channel, m.reason, m.cancelled,
-          m.sale_no, m.sold_price, m.fees,
+          m.sale_no, m.sold_price, m.fees, m.is_gift,
           p.id AS product_id, p.name AS product_name, p.sku AS product_sku,
           p.price AS product_price, p.cost AS product_cost, p.photo AS product_photo
    FROM movements m JOIN products p ON p.id = m.product_id
@@ -380,18 +381,28 @@ const sessionSales = db.prepare(
    ORDER BY m.sale_no DESC, m.id DESC`
 );
 
+// Les cadeaux (is_gift=1) ont un prix de vente de 0 : ils n'ajoutent rien au
+// chiffre d'affaires mais leur coût d'achat est déduit de la marge.
 function sessionSummary(session) {
   const agg = db
     .prepare(
-      `SELECT COALESCE(SUM(-m.delta),0) AS items,
+      `SELECT COALESCE(SUM(CASE WHEN m.is_gift = 0 THEN -m.delta ELSE 0 END),0) AS items,
+              COALESCE(SUM(CASE WHEN m.is_gift = 1 THEN -m.delta ELSE 0 END),0) AS gifts,
               COALESCE(SUM(-m.delta * COALESCE(m.sold_price, p.price)),0) AS revenue,
               COALESCE(SUM(-m.delta * (COALESCE(m.sold_price, p.price) - COALESCE(m.fees,0) - p.cost)),0) AS margin,
-              COUNT(m.sold_price) AS reported
+              COALESCE(SUM(CASE WHEN m.is_gift = 0 AND m.sold_price IS NOT NULL THEN 1 ELSE 0 END),0) AS reported
        FROM movements m JOIN products p ON p.id = m.product_id
        WHERE m.session_id = ? AND m.delta < 0 AND m.cancelled = 0`
     )
     .get(session.id);
-  return { ...session, items: agg.items, revenue: agg.revenue, margin: agg.margin, reported: agg.reported };
+  return {
+    ...session,
+    items: agg.items,
+    gifts: agg.gifts,
+    revenue: agg.revenue,
+    margin: agg.margin,
+    reported: agg.reported,
+  };
 }
 
 // Démarrer un live : { platform: "tiktok"|"whatnot", name? }
@@ -430,6 +441,36 @@ app.get('/api/lives/:id', (req, res) => {
   res.json({ ...sessionSummary(session), sales: sessionSales.all(session.id) });
 });
 
+// Ajouter un cadeau à une vente du live : { sale_no, product_id }
+// Le cadeau est rattaché au numéro de la vente (ex : vente #8 = iPad
+// + 🎁 câble + 🎁 stylet), décompte le stock, prix de vente = 0.
+app.post('/api/lives/:id/gift', (req, res) => {
+  const session = db.prepare('SELECT * FROM live_sessions WHERE id = ?').get(Number(req.params.id));
+  if (!session) return res.status(404).json({ error: 'Live introuvable' });
+  if (session.ended_at) return res.status(400).json({ error: 'Ce live est déjà terminé' });
+  const saleNo = parseInt(req.body.sale_no, 10);
+  const sale = db
+    .prepare('SELECT id FROM movements WHERE session_id = ? AND sale_no = ? AND is_gift = 0 AND delta < 0')
+    .get(session.id, saleNo);
+  if (!sale) return res.status(404).json({ error: `Vente #${saleNo} introuvable dans ce live` });
+  const product = db.prepare('SELECT * FROM products WHERE id = ?').get(Number(req.body.product_id));
+  if (!product) return res.status(404).json({ error: 'Produit introuvable' });
+  if (product.stock <= 0) return res.status(400).json({ error: 'Stock déjà à zéro pour ce produit' });
+
+  const after = product.stock - 1;
+  let movementId;
+  withTransaction(() => {
+    db.prepare('UPDATE products SET stock = ?, updated_at = ? WHERE id = ?').run(after, now(), product.id);
+    movementId = logMovement(product.id, session.platform, -1, after, `Cadeau (vente #${saleNo})`, session.id, saleNo);
+    db.prepare('UPDATE movements SET is_gift = 1, sold_price = 0 WHERE id = ?').run(movementId);
+  });
+  res.json({
+    product: db.prepare('SELECT * FROM products WHERE id = ?').get(product.id),
+    movement_id: movementId,
+    sale_no: saleNo,
+  });
+});
+
 app.post('/api/lives/:id/end', (req, res) => {
   const session = db.prepare('SELECT * FROM live_sessions WHERE id = ?').get(Number(req.params.id));
   if (!session) return res.status(404).json({ error: 'Live introuvable' });
@@ -459,7 +500,7 @@ app.get('/api/lives/:id/export.csv', (req, res) => {
       m.sold_price != null ? m.sold_price : '',
       m.fees != null ? m.fees : '',
       margin,
-      m.cancelled ? 'annulée' : '',
+      m.cancelled ? 'annulée' : m.is_gift ? 'cadeau' : '',
     ].map(esc).join(';');
   });
   const date = new Date(session.started_at).toISOString().slice(0, 10);
@@ -532,8 +573,9 @@ app.post('/api/lives/:id/report/commit', (req, res) => {
     return res.status(400).json({ error: 'Associez les colonnes Numéro de vente et Prix de vente' });
   }
 
+  // Seules les ventes (pas les cadeaux) sont associées au rapport de la plateforme
   const sales = db
-    .prepare('SELECT id, sale_no FROM movements WHERE session_id = ? AND delta < 0 AND sale_no IS NOT NULL')
+    .prepare('SELECT id, sale_no FROM movements WHERE session_id = ? AND delta < 0 AND sale_no IS NOT NULL AND is_gift = 0')
     .all(session.id);
   const byNo = new Map(sales.map((s) => [s.sale_no, s.id]));
 

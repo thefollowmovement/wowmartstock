@@ -18,6 +18,7 @@ Cliquez sur **« Lancer un live »**, choisissez la plateforme (TikTok ou Whatno
 - **Recherche instantanée** par référence ou nom : tapez quelques lettres, le produit apparaît.
 - Un clic sur le produit = **vendu**, enregistré **avec l'heure exacte** (à la seconde) et **numéroté #1, #2, #3…** comme sur Whatnot et TikTok.
 - La liste des ventes du live défile à droite, avec un bouton **↩ annuler** en cas de mauvais clic (le stock est restauré).
+- **🎁 Cadeaux** : le bouton 🎁 devant chaque vente permet d'ajouter un ou plusieurs produits offerts (ex : vente #8 = iPad + 🎁 câble + 🎁 stylet). Le cadeau est rattaché au numéro de la vente, déduit du stock, à prix 0 — et son coût d'achat est déduit de la marge.
 - En haut : chrono du live, nombre de ventes et chiffre d'affaires en temps réel.
 - **« Terminer le live »** affiche le récap : durée, articles vendus, chiffre d'affaires.
 - Si la page se recharge pendant un live, la session en cours est **reprise automatiquement**.
