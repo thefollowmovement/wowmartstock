@@ -72,6 +72,7 @@ L'onglet **Lives** garde l'historique de toutes vos sessions : date et heure, pl
 - **Alertes stock bas** : définissez un seuil par produit, les produits en dessous sont signalés.
 - **Historique des mouvements** : chaque vente, réassort ou import est tracé (date, canal, quantité, motif).
 - **Recherche** par nom, SKU ou catégorie.
+- **Onglet Aide** : tutoriel intégré à l'application, section par section (démarrage, produits, import, mode live, vérification des rapports, ventes par photos, stats, sauvegardes).
 
 ## Installation
 

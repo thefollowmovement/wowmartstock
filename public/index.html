@@ -16,6 +16,7 @@
       <button class="tab" data-tab="stats">Stats</button>
       <button class="tab" data-tab="import">Importer</button>
       <button class="tab" data-tab="movements">Historique</button>
+      <button class="tab" data-tab="help">Aide</button>
     </nav>
     <button class="btn live-launch" id="btnStartLive">🔴 Lancer un live</button>
     <a class="btn ghost" href="/api/export.csv">⬇ CSV</a>
@@ -187,6 +188,148 @@
         </table>
       </div>
     </div>
+  </main>
+
+  <!-- ===================== AIDE / TUTORIEL ===================== -->
+  <main id="tab-help" class="tab-panel" hidden>
+    <div class="card tuto-intro">
+      <h2>📖 Comment fonctionne WowMart Stock</h2>
+      <p class="muted">Le guide complet de l'application — cliquez sur chaque section pour l'ouvrir.</p>
+      <div class="tuto-principle">
+        <span class="tuto-principle-icon">💡</span>
+        <div>
+          <strong>Le principe : un seul stock, partagé entre tous vos canaux.</strong><br>
+          Le même mug peut partir en ligne 🌐, en boutique 🏬 ou en live (<img src="img/tiktok.svg" class="ico-tiktok" alt=""> TikTok / 🟡 Whatnot).
+          Chaque vente décompte du même total, mais le <strong>canal est toujours tracé</strong> — c'est ce qui alimente l'historique et les statistiques.
+        </div>
+      </div>
+      <h3 class="tuto-flow-title">Le cycle d'un live, en 5 étapes :</h3>
+      <ol class="tuto-flow">
+        <li><span class="tuto-step">1</span>🔴 Lancer le live<small>choix de la plateforme</small></li>
+        <li><span class="tuto-step">2</span>👆 Vendre en 1 clic<small>ventes numérotées #1, #2…</small></li>
+        <li><span class="tuto-step">3</span>⏹ Terminer<small>récap immédiat</small></li>
+        <li><span class="tuto-step">4</span>📄 Importer le rapport<small>CSV Whatnot / TikTok</small></li>
+        <li><span class="tuto-step">5</span>✅ Vérifier et valider<small>paiements, marge, TVA</small></li>
+      </ol>
+    </div>
+
+    <details class="card tuto-section" open>
+      <summary><span class="tuto-emoji">🚀</span> Bien démarrer : créer votre catalogue</summary>
+      <div class="tuto-body">
+        <p>Deux façons de remplir votre catalogue :</p>
+        <ul>
+          <li><strong>À la main</strong> — onglet <em>Produits</em> → bouton <span class="tuto-btn">+ Nouveau produit</span>. Glissez la photo directement dans la fiche, renseignez le nom, le SKU, le prix de vente et le stock.</li>
+          <li><strong>Par fichier</strong> — onglet <em>Importer</em> : glissez votre fichier Excel ou CSV, tout est détecté automatiquement (voir la section Importer ci-dessous).</li>
+        </ul>
+        <p>Deux champs souvent oubliés mais très importants :</p>
+        <ul>
+          <li><strong>Coût d'achat</strong> — sans lui, l'app ne peut pas calculer votre <strong>marge</strong> (ni les stats, ni les conseils de l'IA).</li>
+          <li><strong>Seuil d'alerte stock bas</strong> — en dessous de ce seuil, le produit est signalé et apparaît dans la liste <em>« À commander chez le fournisseur »</em> de l'onglet Stats.</li>
+        </ul>
+      </div>
+    </details>
+
+    <details class="card tuto-section">
+      <summary><span class="tuto-emoji">📦</span> Produits : vendre et ajuster le stock</summary>
+      <div class="tuto-body">
+        <p>Sur chaque carte produit de l'onglet <em>Produits</em> :</p>
+        <ul>
+          <li>Les boutons <span class="tuto-btn">🌐 En ligne</span> <span class="tuto-btn">🏬 Boutique</span> <span class="tuto-btn"><img src="img/tiktok.svg" class="ico-tiktok" alt=""> TikTok</span> <span class="tuto-btn">🟡 Whatnot</span> enregistrent <strong>une vente sur ce canal</strong> : le stock baisse de 1 et la vente est tracée.</li>
+          <li>Les boutons <span class="tuto-btn">+</span> / <span class="tuto-btn">−</span> servent aux <strong>réassorts et corrections</strong> (réception fournisseur, casse, erreur…). Ce ne sont pas des ventes.</li>
+          <li>Cliquez sur la carte pour <strong>modifier la fiche</strong> (photo, prix, coût, seuil…).</li>
+        </ul>
+        <p>En haut : recherche par nom, SKU ou catégorie, et une case <em>« Stock bas uniquement »</em> pour ne voir que les produits à recommander.</p>
+        <p>Chaque opération est enregistrée dans l'onglet <em>Historique</em> : date, produit, canal, quantité, stock après, motif.</p>
+      </div>
+    </details>
+
+    <details class="card tuto-section">
+      <summary><span class="tuto-emoji">📥</span> Importer un fichier Excel / CSV</summary>
+      <div class="tuto-body">
+        <ol class="tuto-steps">
+          <li>Onglet <em>Importer</em> → glissez votre fichier (<code>.xlsx</code>, <code>.xls</code>, <code>.csv</code>, <code>.tsv</code>, <code>.ods</code>). La première ligne doit contenir les noms de colonnes.</li>
+          <li>L'app <strong>détecte les colonnes automatiquement</strong> (Nom, SKU, Prix, Coût, Stock, Seuil…) — vérifiez la correspondance et corrigez si besoin.</li>
+          <li>Choisissez le mode : <strong>Remplacer</strong> le stock existant, ou <strong>Ajouter</strong> au stock existant (pratique pour une réception fournisseur).</li>
+          <li>Vérifiez l'aperçu des 5 premières lignes, puis <span class="tuto-btn">Importer</span>.</li>
+        </ol>
+        <p>Les produits existants sont reconnus par <strong>SKU</strong> (ou par nom) : pas de doublons, leur fiche est mise à jour. Le bouton <span class="tuto-btn">⬇ CSV</span> en haut à droite exporte tout votre stock à tout moment.</p>
+      </div>
+    </details>
+
+    <details class="card tuto-section">
+      <summary><span class="tuto-emoji">🔴</span> Le mode live (TikTok / Whatnot)</summary>
+      <div class="tuto-body">
+        <p>Cliquez sur <span class="tuto-btn live">🔴 Lancer un live</span> puis choisissez la plateforme : une <strong>session datée</strong> démarre en plein écran.</p>
+        <ul>
+          <li><strong>Recherche instantanée</strong> : tapez quelques lettres de la référence ou du nom, le produit apparaît.</li>
+          <li><strong>1 clic = 1 vente</strong>, enregistrée à la seconde près et <strong>numérotée #1, #2, #3…</strong> — les mêmes numéros que sur Whatnot et TikTok.</li>
+          <li>Mauvais clic ? Bouton <span class="tuto-btn">↩</span> à côté de la vente : elle est annulée et le stock restauré.</li>
+          <li>En haut : chrono, nombre de ventes et chiffre d'affaires en temps réel.</li>
+          <li>Si la page se recharge en plein live, la session <strong>reprend automatiquement</strong>.</li>
+        </ul>
+        <p><strong>🎁 Les cadeaux</strong> : le bouton 🎁 devant chaque vente permet d'ajouter un ou plusieurs produits offerts (ex : vente #8 = iPad + 🎁 câble + 🎁 stylet). Le cadeau est rattaché au numéro de la vente, déduit du stock à prix 0, et son coût d'achat est déduit de la marge.</p>
+        <p class="tuto-note">ℹ️ Le mode live correspond aux ventes <strong>« Vue à l'écran »</strong>. Les gives Whatnot et les produits référencés dans la boutique de la plateforme ont leur propre numérotation — ils seront récupérés à l'import du rapport (section suivante).</p>
+      </div>
+    </details>
+
+    <details class="card tuto-section">
+      <summary><span class="tuto-emoji">✅</span> Après le live : rapport, vérification, validation</summary>
+      <div class="tuto-body">
+        <p>Chaque live passe par 3 statuts dans l'onglet <em>Lives</em> :</p>
+        <p class="tuto-badges">
+          <span class="status-badge missing">⚠ Rapport à importer</span> →
+          <span class="status-badge tovalidate">🟠 À valider</span> →
+          <span class="status-badge validated">✅ Validé</span>
+        </p>
+        <ol class="tuto-steps">
+          <li><strong>Exportez le rapport CSV</strong> des ventes depuis Whatnot ou TikTok après le live.</li>
+          <li>Onglet <em>Lives</em> → <span class="tuto-btn">Détail</span> du live → <strong>importez le fichier</strong>. Les lignes « Vue à l'écran » sont associées à vos ventes grâce à leur numéro ; les <strong>gives</strong> (abonné / acheteur) et les <strong>ventes boutique</strong> sont ajoutés à part au bilan.</li>
+          <li>L'app récupère le <strong>prix réel (TTC)</strong>, les <strong>gains nets</strong> (après commission et frais de la plateforme) et le <strong>statut du paiement</strong> de chaque vente : <span class="pay-badge paid">payé</span> <span class="pay-badge pending">⏳ en attente</span> <span class="pay-badge failed">⚠ échec</span></li>
+          <li><strong>Vérifiez</strong> : les paiements en échec sont listés et exclus du CA — le bouton <span class="tuto-btn">↩ Restock</span> annule la vente et remet l'article en stock.</li>
+          <li><strong>Validez</strong> le live : la ligne passe au vert et l'alerte du tableau de bord disparaît.</li>
+        </ol>
+        <p>Le détail affiche aussi <strong>CA TTC, CA HT et TVA collectée</strong> (taux réglable dans l'onglet Lives), et la <strong>marge nette</strong> : gains nets − coût d'achat (cadeaux inclus).</p>
+        <p class="tuto-note">💶 Avant l'import du rapport, la marge est <strong>estimée</strong> avec les frais des plateformes (réglables via <em>⚙ Frais des plateformes</em> : Whatnot 6,67 % + 2,42 % + 0,25 € par défaut). Après l'import, ce sont les <strong>chiffres réels</strong> qui comptent.</p>
+      </div>
+    </details>
+
+    <details class="card tuto-section">
+      <summary><span class="tuto-emoji">📸</span> Ventes par photos (IA)</summary>
+      <div class="tuto-body">
+        <p>Vous photographiez chaque produit vendu avec son étiquette <strong>#numéro</strong> pendant le live ? L'app peut créer les ventes à partir des photos :</p>
+        <ol class="tuto-steps">
+          <li>Onglet <em>Lives</em> → détail du live → section <strong>« Ventes par photos »</strong>.</li>
+          <li>Importez toutes les photos d'un coup (elles sont compressées automatiquement avant envoi).</li>
+          <li><strong>Claude (IA vision)</strong> lit le numéro sur l'étiquette et reconnaît le produit dans votre catalogue.</li>
+          <li>Vous <strong>vérifiez la liste</strong> (numéro et produit modifiables), puis validez : les ventes sont créées, le stock décompté, et chaque vente garde sa photo.</li>
+        </ol>
+        <p class="tuto-note">🔑 Nécessite une <strong>clé API Anthropic</strong> (console.anthropic.com), à coller une seule fois dans la section — elle reste stockée uniquement sur votre ordinateur. Deux modèles au choix : <strong>Claude Opus 5</strong> (précis, ≈ 2-3 centimes/photo) ou <strong>Claude Haiku 4.5</strong> (économique, ≈ 0,3 centime/photo). La même clé sert aux conseils de l'IA dans l'onglet Stats.</p>
+      </div>
+    </details>
+
+    <details class="card tuto-section">
+      <summary><span class="tuto-emoji">📊</span> Stats et conseils de l'IA</summary>
+      <div class="tuto-body">
+        <p>L'onglet <em>Stats</em> répond à trois questions :</p>
+        <ul>
+          <li><strong>🏆 Qu'est-ce qui rapporte vraiment ?</strong> Classement par <strong>marge nette</strong> (pas par volume !) — filtrable par période et par plateforme. Vendre 100 câbles pour 20 € de bénéfice compte moins que 30 batteries pour 300 €.</li>
+          <li><strong>📦 Que commander aujourd'hui ?</strong> Liste quotidienne des produits sous leur seuil, avec une quantité conseillée calculée d'après vos ventes des 30 derniers jours — exportable en <strong>bon de commande CSV</strong> pour votre fournisseur.</li>
+          <li><strong>🤖 Que mettre en avant ?</strong> Le bouton <span class="tuto-btn">✨ Générer le rapport</span> demande à Claude d'analyser vos chiffres réels : produits à pousser (et sur quelle plateforme), produits à gros volume mais faible marge, réassorts prioritaires, idées de bundles.</li>
+        </ul>
+      </div>
+    </details>
+
+    <details class="card tuto-section">
+      <summary><span class="tuto-emoji">💾</span> Vos données et sauvegardes</summary>
+      <div class="tuto-body">
+        <p>Tout est stocké <strong>sur votre ordinateur</strong>, rien ne part dans le cloud (sauf les photos envoyées à l'IA quand vous utilisez les ventes par photos) :</p>
+        <ul>
+          <li><code>data/stock.db</code> — la base de données (produits, ventes, lives, réglages) ;</li>
+          <li><code>uploads/</code> — les photos des produits et des ventes.</li>
+        </ul>
+        <p>Pensez à <strong>copier ces deux dossiers régulièrement</strong> (clé USB, Time Machine, cloud personnel…) : c'est votre sauvegarde complète.</p>
+      </div>
+    </details>
   </main>
 
   <!-- ===================== MODALE PRODUIT ===================== -->
