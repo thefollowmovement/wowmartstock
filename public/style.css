@@ -663,6 +663,59 @@ tr.row-unpaid td { background: #fef2f2; }
 #reportConfig { margin-top: 14px; }
 #reportConfig .mapping-grid { margin-top: 10px; }
 
+/* ---------- Ventes par photos ---------- */
+.api-key-setup {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 8px 12px;
+  margin-bottom: 12px;
+  background: var(--card);
+  font-size: .88rem;
+}
+.api-key-setup summary { cursor: pointer; font-weight: 600; }
+.key-row { display: flex; gap: 8px; margin-top: 6px; }
+.key-row input {
+  flex: 1;
+  padding: 9px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: .9rem;
+}
+.photos-actions { display: flex; gap: 14px; align-items: flex-end; flex-wrap: wrap; }
+.photos-actions label { display: flex; flex-direction: column; gap: 4px; }
+.photos-actions select {
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--card);
+}
+.photo-progress {
+  margin-top: 12px;
+  padding: 10px 14px;
+  background: #eef2ff;
+  border: 1px solid var(--primary);
+  border-radius: var(--radius);
+  font-size: .9rem;
+}
+#photoReview { margin-top: 14px; }
+.photo-thumb {
+  width: 64px;
+  height: 64px;
+  object-fit: cover;
+  border-radius: 8px;
+  display: block;
+}
+.photo-no { width: 70px; padding: 7px 8px; border: 1px solid var(--border); border-radius: 8px; }
+.photo-no-prefix { font-weight: 700; color: var(--primary); margin-right: 2px; }
+#photoReview select { max-width: 320px; padding: 7px 8px; border: 1px solid var(--border); border-radius: 8px; }
+.sale-photo-thumb {
+  width: 34px;
+  height: 34px;
+  object-fit: cover;
+  border-radius: 6px;
+  vertical-align: middle;
+}
+
 @media (max-width: 760px) {
   .live-body { flex-direction: column; overflow-y: auto; }
   .live-left { flex: none; }

@@ -5,6 +5,7 @@ const fs = require('fs');
 const crypto = require('crypto');
 const { DatabaseSync } = require('node:sqlite');
 const XLSX = require('xlsx');
+const Anthropic = require('@anthropic-ai/sdk');
 
 const PORT = process.env.PORT || 3000;
 const DATA_DIR = path.join(__dirname, 'data');
@@ -101,6 +102,7 @@ CREATE TABLE IF NOT EXISTS settings (
   if (!mcols.includes('is_gift')) db.exec('ALTER TABLE movements ADD COLUMN is_gift INTEGER NOT NULL DEFAULT 0');
   if (!mcols.includes('payment_status')) db.exec('ALTER TABLE movements ADD COLUMN payment_status TEXT');
   if (!mcols.includes('net_amount')) db.exec('ALTER TABLE movements ADD COLUMN net_amount REAL');
+  if (!mcols.includes('photo')) db.exec('ALTER TABLE movements ADD COLUMN photo TEXT');
 
   const scols = db.prepare('PRAGMA table_info(live_sessions)').all().map((c) => c.name);
   if (!scols.includes('report_imported_at')) db.exec('ALTER TABLE live_sessions ADD COLUMN report_imported_at TEXT');
@@ -191,6 +193,24 @@ const uploadPhoto = multer({
 const uploadImport = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 25 * 1024 * 1024 },
+});
+
+// Photos de ventes prises pendant les lives (étiquette #N + produit)
+const LIVE_PHOTOS_DIR = path.join(UPLOADS_DIR, 'live-photos');
+fs.mkdirSync(LIVE_PHOTOS_DIR, { recursive: true });
+const uploadLivePhotos = multer({
+  storage: multer.diskStorage({
+    destination: (req, file, cb) => cb(null, LIVE_PHOTOS_DIR),
+    filename: (req, file, cb) => {
+      const ext = (path.extname(file.originalname) || '.jpg').toLowerCase();
+      cb(null, `${Date.now()}-${crypto.randomBytes(4).toString('hex')}${ext}`);
+    },
+  }),
+  limits: { fileSize: 15 * 1024 * 1024, files: 40 },
+  fileFilter: (req, file, cb) => {
+    if (/^image\//.test(file.mimetype)) cb(null, true);
+    else cb(new Error('Les fichiers doivent être des images'));
+  },
 });
 
 const app = express();
@@ -395,10 +415,20 @@ function getFees(platform) {
   return base;
 }
 
+// Clé API Anthropic pour l'analyse des photos de ventes (vision).
+// Priorité à la variable d'environnement, sinon la clé enregistrée dans l'app.
+function getAnthropicKey() {
+  return process.env.ANTHROPIC_API_KEY || getSetting('anthropic_api_key', '') || '';
+}
+
+const VISION_MODELS = ['claude-opus-5', 'claude-haiku-4-5'];
+
 app.get('/api/settings', (req, res) => {
   res.json({
     vat_rate: parseFloat(getSetting('vat_rate', '20')),
     fees: { whatnot: getFees('whatnot'), tiktok: getFees('tiktok') },
+    has_api_key: !!getAnthropicKey(),
+    vision_model: getSetting('vision_model', 'claude-opus-5'),
   });
 });
 
@@ -426,9 +456,22 @@ app.put('/api/settings', (req, res) => {
       setSetting(`fees_${platform}`, JSON.stringify({ commission, processing, fixed }));
     }
   }
+  if (typeof req.body.anthropic_api_key === 'string') {
+    const key = req.body.anthropic_api_key.trim();
+    if (key) setSetting('anthropic_api_key', key);
+    else db.prepare('DELETE FROM settings WHERE key = ?').run('anthropic_api_key');
+  }
+  if (req.body.vision_model !== undefined) {
+    if (!VISION_MODELS.includes(req.body.vision_model)) {
+      return res.status(400).json({ error: 'Modèle invalide' });
+    }
+    setSetting('vision_model', req.body.vision_model);
+  }
   res.json({
     vat_rate: parseFloat(getSetting('vat_rate', '20')),
     fees: { whatnot: getFees('whatnot'), tiktok: getFees('tiktok') },
+    has_api_key: !!getAnthropicKey(),
+    vision_model: getSetting('vision_model', 'claude-opus-5'),
   });
 });
 
@@ -482,7 +525,7 @@ app.get('/api/stats', (req, res) => {
 // Marge = prix effectif − frais de la plateforme − coût d'achat.
 const sessionSales = db.prepare(
   `SELECT m.id, m.created_at, m.delta, m.channel, m.reason, m.cancelled,
-          m.sale_no, m.sold_price, m.fees, m.is_gift, m.payment_status, m.net_amount,
+          m.sale_no, m.sold_price, m.fees, m.is_gift, m.payment_status, m.net_amount, m.photo,
           p.id AS product_id, p.name AS product_name, p.sku AS product_sku,
           p.price AS product_price, p.cost AS product_cost, p.photo AS product_photo
    FROM movements m JOIN products p ON p.id = m.product_id
@@ -1014,6 +1057,184 @@ app.post('/api/import/commit', (req, res) => {
   }
   pendingImports.delete(importId);
   res.json({ created, updated, skipped });
+});
+
+// ---------------------------------------------------------------------------
+// Ventes par photos : pendant le live, chaque produit vendu est pris en photo
+// avec une étiquette #N. Claude (vision) lit le numéro et identifie le produit
+// dans le catalogue ; l'utilisateur vérifie puis valide la création des ventes.
+// ---------------------------------------------------------------------------
+const PHOTO_SCHEMA = {
+  type: 'object',
+  properties: {
+    sale_no: { type: ['integer', 'null'] },
+    product_name: { type: 'string' },
+    catalog_sku: { type: ['string', 'null'] },
+  },
+  required: ['sale_no', 'product_name', 'catalog_sku'],
+  additionalProperties: false,
+};
+
+const stripAccents = (s) =>
+  String(s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9 ]/g, ' ');
+
+// Correspondance de secours par similarité de nom (si Claude n'a pas trouvé le SKU)
+function fuzzyMatches(name, products) {
+  const qTokens = new Set(stripAccents(name).split(/\s+/).filter((t) => t.length > 1));
+  if (!qTokens.size) return [];
+  return products
+    .map((p) => {
+      const pTokens = new Set(stripAccents(`${p.name} ${p.sku || ''}`).split(/\s+/).filter(Boolean));
+      let common = 0;
+      for (const t of qTokens) if (pTokens.has(t)) common++;
+      return { id: p.id, name: p.name, sku: p.sku, stock: p.stock, score: common / qTokens.size };
+    })
+    .filter((m) => m.score > 0.3)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 3);
+}
+
+async function analyzePhoto(client, model, filePath, mimetype, catalogText) {
+  const data = fs.readFileSync(filePath).toString('base64');
+  const prompt = `Tu analyses la photo d'un produit vendu pendant un live de vente (TikTok / Whatnot).
+Sur la photo, une étiquette (manuscrite ou imprimée) porte un numéro de vente commençant par # (exemple : #8).
+
+Retourne :
+- sale_no : le numéro de vente lu sur l'étiquette (le nombre après le #), ou null si aucune étiquette lisible ;
+- product_name : le nom du produit visible sur la photo, aussi précis que possible (marque, modèle, couleur, taille…) ;
+- catalog_sku : le SKU du produit correspondant dans le catalogue ci-dessous, ou null si aucun ne correspond clairement.
+
+Catalogue de la boutique :
+${catalogText}`;
+  const request = {
+    model,
+    max_tokens: 1024,
+    output_config: { format: { type: 'json_schema', schema: PHOTO_SCHEMA } },
+    messages: [
+      {
+        role: 'user',
+        content: [
+          { type: 'image', source: { type: 'base64', media_type: mimetype || 'image/jpeg', data } },
+          { type: 'text', text: prompt },
+        ],
+      },
+    ],
+  };
+  // effort réduit le coût sur Opus ; le paramètre n'existe pas sur Haiku 4.5
+  if (model.startsWith('claude-opus')) request.output_config.effort = 'low';
+  const response = await client.messages.create(request);
+  if (response.stop_reason === 'refusal') {
+    throw new Error('Analyse refusée par le modèle pour cette photo');
+  }
+  const text = response.content.find((b) => b.type === 'text')?.text || '';
+  return JSON.parse(text);
+}
+
+app.post('/api/lives/:id/photos/analyze', uploadLivePhotos.array('photos', 40), async (req, res) => {
+  const session = db.prepare('SELECT * FROM live_sessions WHERE id = ?').get(Number(req.params.id));
+  if (!session) return res.status(404).json({ error: 'Live introuvable' });
+  if (!req.files || !req.files.length) return res.status(400).json({ error: 'Aucune photo reçue' });
+  const apiKey = getAnthropicKey();
+  if (!apiKey) {
+    return res.status(400).json({
+      error: 'Aucune clé API Anthropic configurée — enregistrez votre clé dans la section Photos du live',
+    });
+  }
+
+  const products = db.prepare('SELECT id, sku, name, stock FROM products ORDER BY name COLLATE NOCASE').all();
+  const catalogText = products
+    .slice(0, 400)
+    .map((p) => `- ${p.sku || '(sans SKU)'} : ${p.name}`)
+    .join('\n');
+  const client = new Anthropic({ apiKey });
+  const model = getSetting('vision_model', 'claude-opus-5');
+
+  // Analyse avec une concurrence limitée à 3 pour aller vite sans saturer
+  const files = req.files;
+  const results = new Array(files.length);
+  let next = 0;
+  async function worker() {
+    while (next < files.length) {
+      const i = next++;
+      const f = files[i];
+      const photoUrl = `/uploads/live-photos/${f.filename}`;
+      try {
+        const parsed = await analyzePhoto(client, model, f.path, f.mimetype, catalogText);
+        let matches = [];
+        if (parsed.catalog_sku) {
+          const bySku = products.find((p) => (p.sku || '').toLowerCase() === String(parsed.catalog_sku).toLowerCase());
+          if (bySku) matches.push({ id: bySku.id, name: bySku.name, sku: bySku.sku, stock: bySku.stock, score: 1 });
+        }
+        if (!matches.length) matches = fuzzyMatches(parsed.product_name, products);
+        results[i] = {
+          photo: photoUrl,
+          sale_no: Number.isFinite(parsed.sale_no) ? parsed.sale_no : null,
+          product_name: parsed.product_name || '',
+          matches,
+          best_match_id: matches.length ? matches[0].id : null,
+          error: null,
+        };
+      } catch (e) {
+        const msg =
+          e.status === 401
+            ? 'Clé API invalide — vérifiez-la dans les réglages'
+            : e.status === 429
+              ? 'Limite de requêtes API atteinte, réessayez dans une minute'
+              : e.message || 'Analyse impossible';
+        results[i] = { photo: photoUrl, sale_no: null, product_name: '', matches: [], best_match_id: null, error: msg };
+      }
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(3, files.length) }, worker));
+  res.json({ model, results });
+});
+
+// Création des ventes vérifiées : { sales: [{ product_id, sale_no, photo }] }
+app.post('/api/lives/:id/photo-sales', (req, res) => {
+  const session = db.prepare('SELECT * FROM live_sessions WHERE id = ?').get(Number(req.params.id));
+  if (!session) return res.status(404).json({ error: 'Live introuvable' });
+  const sales = Array.isArray(req.body.sales) ? req.body.sales : [];
+  if (!sales.length) return res.status(400).json({ error: 'Aucune vente à créer' });
+
+  const existingNos = new Set(
+    db.prepare('SELECT sale_no FROM movements WHERE session_id = ? AND delta < 0 AND is_gift = 0 AND sale_no IS NOT NULL')
+      .all(session.id)
+      .map((r) => r.sale_no)
+  );
+
+  let created = 0;
+  const skipped = [];
+  withTransaction(() => {
+    for (const s of sales) {
+      const saleNo = parseInt(s.sale_no, 10);
+      const product = db.prepare('SELECT * FROM products WHERE id = ?').get(Number(s.product_id));
+      if (!Number.isFinite(saleNo) || saleNo <= 0) {
+        skipped.push('numéro de vente manquant');
+        continue;
+      }
+      if (existingNos.has(saleNo)) {
+        skipped.push(`#${saleNo} existe déjà dans ce live`);
+        continue;
+      }
+      if (!product) {
+        skipped.push(`#${saleNo} : produit introuvable`);
+        continue;
+      }
+      if (product.stock <= 0) {
+        skipped.push(`#${saleNo} ${product.name} : stock à zéro`);
+        continue;
+      }
+      const after = product.stock - 1;
+      db.prepare('UPDATE products SET stock = ?, updated_at = ? WHERE id = ?').run(after, now(), product.id);
+      const movementId = logMovement(product.id, session.platform, -1, after, 'Vente live (photo)', session.id, saleNo);
+      if (s.photo) db.prepare('UPDATE movements SET photo = ? WHERE id = ?').run(String(s.photo), movementId);
+      existingNos.add(saleNo);
+      created++;
+    }
+    // de nouvelles ventes ont été ajoutées : le live devra être re-validé
+    if (created > 0) db.prepare('UPDATE live_sessions SET validated_at = NULL WHERE id = ?').run(session.id);
+  });
+  res.json({ created, skipped, session: sessionSummary(db.prepare('SELECT * FROM live_sessions WHERE id = ?').get(session.id)) });
 });
 
 // ---------------------------------------------------------------------------

@@ -116,6 +116,8 @@ let platformFees = {
   whatnot: { commission: 6.67, processing: 2.42, fixed: 0.25 },
   tiktok: { commission: 0, processing: 0, fixed: 0 },
 };
+let hasApiKey = false; // clé API Anthropic configurée (analyse des photos)
+let visionModel = 'claude-opus-5';
 
 function fillFeesInputs() {
   $('#feeWnComm').value = platformFees.whatnot.commission;
@@ -132,6 +134,8 @@ async function loadSettings() {
     vatRate = s.vat_rate;
     $('#vatRate').value = vatRate;
     if (s.fees) platformFees = s.fees;
+    hasApiKey = !!s.has_api_key;
+    if (s.vision_model) visionModel = s.vision_model;
     fillFeesInputs();
   } catch (e) {
     /* valeurs par défaut conservées */
@@ -709,7 +713,7 @@ window.showLiveDetail = async (id) => {
             return `<tr class="${m.cancelled ? 'row-cancelled' : ''} ${failed ? 'row-unpaid' : ''}">
           <td><strong>${m.is_gift ? '🎁 ' : ''}${m.sale_no ? '#' + m.sale_no : ''}</strong></td>
           <td>${timeFr(m.created_at)}</td>
-          <td>${escapeHtml(m.product_name)}${m.product_sku ? ` <span class="product-sku">(${escapeHtml(m.product_sku)})</span>` : ''}</td>
+          <td>${m.photo ? `<a href="${escapeHtml(m.photo)}" target="_blank" rel="noopener"><img class="sale-photo-thumb" src="${escapeHtml(m.photo)}" alt=""></a> ` : ''}${escapeHtml(m.product_name)}${m.product_sku ? ` <span class="product-sku">(${escapeHtml(m.product_sku)})</span>` : ''}</td>
           <td>${euro(m.product_price)}</td>
           <td>${m.is_gift ? '<span class="muted-cell">offert</span>' : m.sold_price != null ? `<strong>${euro(m.sold_price)}</strong>` : '<span class="muted-cell">—</span>'}</td>
           <td>${m.is_gift
@@ -807,6 +811,36 @@ window.showLiveDetail = async (id) => {
         <input type="file" id="reportFile" accept=".csv,.xlsx,.xls,.tsv" hidden onchange="previewReport(${l.id}, this.files[0])">
         <div id="reportConfig" hidden></div>
         <div id="reportResult" hidden></div>
+      </div>
+
+      <div class="report-import photos-import">
+        <strong>📸 Ventes par photos</strong>
+        <p class="muted small">Pendant le live, vous photographiez chaque produit vendu avec son étiquette
+          <strong>#numéro</strong>. Importez toutes les photos d'un coup : l'IA lit le numéro de vente et identifie
+          le produit dans votre catalogue, vous vérifiez, puis les ventes sont créées (stock décompté, photo conservée).</p>
+        <details class="api-key-setup" ${hasApiKey ? '' : 'open'}>
+          <summary>🔑 Clé API Anthropic ${hasApiKey ? '— configurée ✓' : '— requise pour l\'analyse'}</summary>
+          <p class="muted small">Créez une clé sur <a href="https://console.anthropic.com" target="_blank" rel="noopener">console.anthropic.com</a>
+            (API Keys), puis collez-la ici. Elle est stockée uniquement dans votre base locale.</p>
+          <div class="key-row">
+            <input type="password" id="apiKeyInput" placeholder="sk-ant-…" autocomplete="off">
+            <button class="btn primary" onclick="saveApiKey(${l.id})">Enregistrer</button>
+          </div>
+        </details>
+        <div class="photos-actions">
+          <label class="muted small">Modèle d'analyse :
+            <select id="visionModel" onchange="saveVisionModel(this.value)">
+              <option value="claude-opus-5" ${visionModel === 'claude-opus-5' ? 'selected' : ''}>Claude Opus 5 — précis (≈ 2-3 c€ / photo)</option>
+              <option value="claude-haiku-4-5" ${visionModel === 'claude-haiku-4-5' ? 'selected' : ''}>Claude Haiku 4.5 — économique (≈ 0,3 c€ / photo)</option>
+            </select>
+          </label>
+          <button class="btn primary" onclick="document.getElementById('livePhotos').click()" ${hasApiKey ? '' : 'disabled title="Enregistrez d\'abord votre clé API"'}>
+            📸 Choisir les photos
+          </button>
+          <input type="file" id="livePhotos" accept="image/*" multiple hidden onchange="analyzeLivePhotos(${l.id}, this.files)">
+        </div>
+        <div id="photoProgress" class="photo-progress" hidden></div>
+        <div id="photoReview" hidden></div>
       </div>
 
       ${productRows ? `
@@ -941,6 +975,161 @@ window.commitReport = async () => {
     await loadLives();
     await showLiveDetail(liveId);
     loadStats();
+  } catch (e) {
+    toast(e.message, true);
+  }
+};
+
+// ---------------------------------------------------------------------------
+// Ventes par photos : analyse des étiquettes #N par l'IA puis vérification
+// ---------------------------------------------------------------------------
+let photoAnalysis = null; // { liveId, results: [...] }
+
+window.saveApiKey = async (liveId) => {
+  const key = $('#apiKeyInput').value.trim();
+  if (!key) {
+    toast('Collez votre clé API (sk-ant-…)', true);
+    return;
+  }
+  try {
+    const s = await api('/api/settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ anthropic_api_key: key }),
+    });
+    hasApiKey = !!s.has_api_key;
+    toast('🔑 Clé API enregistrée');
+    showLiveDetail(liveId);
+  } catch (e) {
+    toast(e.message, true);
+  }
+};
+
+window.saveVisionModel = async (model) => {
+  try {
+    const s = await api('/api/settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ vision_model: model }),
+    });
+    visionModel = s.vision_model;
+    toast(`Modèle d'analyse : ${visionModel}`);
+  } catch (e) {
+    toast(e.message, true);
+  }
+};
+
+// Réduit la photo côté navigateur (max 1600 px, JPEG) : upload plus rapide
+// et coût d'analyse réduit, sans perte de lisibilité de l'étiquette
+async function resizePhoto(file, maxDim = 1600) {
+  try {
+    const img = await createImageBitmap(file);
+    const scale = Math.min(1, maxDim / Math.max(img.width, img.height));
+    if (scale === 1 && file.size < 1.5 * 1024 * 1024) return file;
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.round(img.width * scale);
+    canvas.height = Math.round(img.height * scale);
+    canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+    const blob = await new Promise((r) => canvas.toBlob(r, 'image/jpeg', 0.85));
+    return blob || file;
+  } catch (e) {
+    return file; // format non géré par le navigateur : envoi tel quel
+  }
+}
+
+window.analyzeLivePhotos = async (liveId, fileList) => {
+  const files = Array.from(fileList || []);
+  if (!files.length) return;
+  const progress = $('#photoProgress');
+  progress.hidden = false;
+  progress.textContent = `Préparation de ${files.length} photo(s)…`;
+  try {
+    const fd = new FormData();
+    for (const f of files) {
+      const resized = await resizePhoto(f);
+      fd.append('photos', resized, f.name.replace(/\.[^.]+$/, '') + '.jpg');
+    }
+    progress.textContent = `🔎 Analyse de ${files.length} photo(s) par l'IA… (environ ${Math.ceil(files.length * 2)} s)`;
+    const data = await api(`/api/lives/${liveId}/photos/analyze`, { method: 'POST', body: fd });
+    photoAnalysis = { liveId, results: data.results };
+    progress.hidden = true;
+    renderPhotoReview();
+  } catch (e) {
+    progress.hidden = true;
+    toast(e.message, true);
+  } finally {
+    const input = document.getElementById('livePhotos');
+    if (input) input.value = '';
+  }
+};
+
+function renderPhotoReview() {
+  if (!photoAnalysis) return;
+  const rows = photoAnalysis.results
+    .map((r, i) => {
+      const options = ['<option value="">— choisir le produit —</option>']
+        .concat(
+          products.map(
+            (p) =>
+              `<option value="${p.id}" ${r.best_match_id === p.id ? 'selected' : ''}>${escapeHtml(p.name)}${p.sku ? ` (${escapeHtml(p.sku)})` : ''} · stock ${p.stock}</option>`
+          )
+        )
+        .join('');
+      const ok = !r.error && r.sale_no && r.best_match_id;
+      return `<tr class="${r.error ? 'row-unpaid' : ''}">
+      <td><input type="checkbox" data-photo-row="${i}" ${ok ? 'checked' : ''} ${r.error ? 'disabled' : ''}></td>
+      <td><a href="${escapeHtml(r.photo)}" target="_blank" rel="noopener"><img class="photo-thumb" src="${escapeHtml(r.photo)}" alt=""></a></td>
+      <td><span class="photo-no-prefix">#</span><input type="number" min="1" class="photo-no" data-photo-no="${i}" value="${r.sale_no ?? ''}"></td>
+      <td>${r.error ? `<span class="pay-badge failed">⚠ ${escapeHtml(r.error)}</span>` : escapeHtml(r.product_name)}</td>
+      <td><select data-photo-product="${i}">${options}</select></td>
+    </tr>`;
+    })
+    .join('');
+  const detected = photoAnalysis.results.filter((r) => !r.error && r.sale_no).length;
+  $('#photoReview').innerHTML = `
+    <p class="muted small">✅ ${detected}/${photoAnalysis.results.length} photo(s) reconnue(s) —
+      vérifiez les numéros et les produits, corrigez si besoin, puis validez.</p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th></th><th>Photo</th><th>N° de vente</th><th>Produit détecté</th><th>Produit du catalogue</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+    <div class="actions">
+      <button class="btn success-btn" onclick="commitPhotoSales()">✅ Créer les ventes sélectionnées</button>
+    </div>`;
+  $('#photoReview').hidden = false;
+}
+
+window.commitPhotoSales = async () => {
+  if (!photoAnalysis) return;
+  const sales = [];
+  photoAnalysis.results.forEach((r, i) => {
+    const check = document.querySelector(`[data-photo-row="${i}"]`);
+    if (!check || !check.checked) return;
+    const saleNo = parseInt(document.querySelector(`[data-photo-no="${i}"]`).value, 10);
+    const productId = parseInt(document.querySelector(`[data-photo-product="${i}"]`).value, 10);
+    if (!Number.isFinite(saleNo) || !Number.isFinite(productId)) return;
+    sales.push({ product_id: productId, sale_no: saleNo, photo: r.photo });
+  });
+  if (!sales.length) {
+    toast('Aucune ligne complète sélectionnée (numéro + produit requis)', true);
+    return;
+  }
+  try {
+    const result = await api(`/api/lives/${photoAnalysis.liveId}/photo-sales`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sales }),
+    });
+    let msg = `✅ ${result.created} vente(s) créée(s) depuis les photos`;
+    if (result.skipped.length) msg += ` — ignorées : ${result.skipped.slice(0, 5).join(' · ')}${result.skipped.length > 5 ? '…' : ''}`;
+    toast(msg);
+    const liveId = photoAnalysis.liveId;
+    photoAnalysis = null;
+    await loadProducts();
+    await loadLives();
+    await showLiveDetail(liveId);
   } catch (e) {
     toast(e.message, true);
   }

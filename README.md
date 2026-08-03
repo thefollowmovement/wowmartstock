@@ -40,6 +40,17 @@ Après le live, importez le rapport dans le **détail du live** (onglet Lives �
 - Vous **validez manuellement** chaque live après vérification.
 - Tant que le rapport n'est pas importé, la ligne du live est **rouge** (⚠ Rapport à importer) ; importé mais non validé → **orange** (🟠 À valider) ; validé → ✅. Une **alerte sur le tableau de bord** rappelle le nombre de lives à vérifier.
 
+### 📸 Ventes par photos (IA)
+
+Pendant le live, prenez en photo chaque produit vendu avec son étiquette **#numéro**. Ensuite, dans le détail du live (onglet Lives → Détail → « Ventes par photos ») :
+
+1. importez toutes les photos d'un coup (elles sont réduites automatiquement avant envoi) ;
+2. **Claude (API Anthropic, vision)** lit le numéro de vente sur l'étiquette et identifie le produit dans votre catalogue ;
+3. vous **vérifiez** la liste (numéro et produit modifiables, photos non reconnues assignables à la main) ;
+4. les ventes sont créées : stock décompté, numéros #N conservés, **photo attachée à chaque vente**.
+
+Nécessite une **clé API Anthropic** (console.anthropic.com), enregistrée dans l'app (stockée uniquement dans votre base locale, ou via la variable d'environnement `ANTHROPIC_API_KEY`). Deux modèles au choix : **Claude Opus 5** (précis, ≈ 2-3 centimes/photo) ou **Claude Haiku 4.5** (économique, ≈ 0,3 centime/photo).
+
 ### 💶 TVA
 
 Le taux de TVA est configurable (20 % par défaut, onglet Lives). Chaque live affiche : **CA TTC**, **CA HT** et **TVA collectée**.
