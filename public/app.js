@@ -8,10 +8,10 @@ const $ = (sel) => document.querySelector(sel);
 // Logo TikTok officiel (SVG local) utilisé partout à la place d'un emoji
 const TIKTOK_ICON = '<img src="img/tiktok.svg" class="ico-tiktok" alt="">';
 const SALE_CHANNELS = [
-  { key: 'online', label: '🌐 En ligne', text: 'En ligne' },
-  { key: 'store', label: '🏬 Boutique', text: 'Boutique' },
-  { key: 'tiktok', label: `${TIKTOK_ICON} TikTok`, text: 'TikTok' },
-  { key: 'whatnot', label: '🟡 Whatnot', text: 'Whatnot' },
+  { key: 'online', label: '🌐 En ligne', text: 'En ligne', icon: '🌐' },
+  { key: 'store', label: '🏬 Boutique', text: 'Boutique', icon: '🏬' },
+  { key: 'tiktok', label: `${TIKTOK_ICON} TikTok`, text: 'TikTok', icon: TIKTOK_ICON },
+  { key: 'whatnot', label: '🟡 Whatnot', text: 'Whatnot', icon: '🟡' },
 ];
 const CHANNEL_LABELS = {
   online: '🌐 En ligne',
@@ -26,6 +26,7 @@ const PLATFORM_LABELS = { tiktok: `${TIKTOK_ICON} TikTok`, whatnot: '🟡 Whatno
 const MAPPING_FIELDS = [
   { key: 'sku', label: 'SKU / Référence' },
   { key: 'barcode', label: 'Code-barres (EAN)' },
+  { key: 'variant_group', label: 'Groupe de variantes' },
   { key: 'name', label: 'Nom du produit' },
   { key: 'category', label: 'Catégorie' },
   { key: 'price', label: 'Prix de vente' },
@@ -199,45 +200,114 @@ async function loadProducts() {
   loadStats();
 }
 
+function productCard(p) {
+  const photo = p.photo
+    ? `<img class="product-photo" src="${escapeHtml(p.photo)}" alt="" loading="lazy" onclick="openEdit(${p.id})">`
+    : `<div class="product-photo placeholder" onclick="openEdit(${p.id})">📷</div>`;
+  const saleButtons = SALE_CHANNELS.map(
+    (c) =>
+      `<button class="sale-btn" onclick="sell(${p.id}, '${c.key}')" ${p.stock <= 0 ? 'disabled' : ''}
+         title="Vendre 1 (${c.text})">${c.label}</button>`
+  ).join('');
+  return `
+  <div class="product-card ${isLow(p) ? 'low' : ''}">
+    ${photo}
+    <div class="product-body">
+      <div class="product-head">
+        <div>
+          <div class="product-name">${escapeHtml(p.name)}</div>
+          <div class="product-sku">${escapeHtml(p.sku || '')}${p.category ? ' · ' + escapeHtml(p.category) : ''}${p.barcode ? ` · <span class="product-barcode" title="Code-barres">∥ ${escapeHtml(p.barcode)}</span>` : ''}</div>
+        </div>
+        <div class="product-price">${euro(p.price)}</div>
+      </div>
+      ${isLow(p) ? '<span class="badge-low">⚠ Stock bas</span>' : ''}
+      <div class="stock-row big">
+        <span class="chan">📦 Stock</span>
+        <button onclick="adjust(${p.id}, -1)" title="Retirer 1 (correction)">−</button>
+        <span class="qty ${p.stock <= 0 ? 'zero' : ''}">${p.stock}</span>
+        <button onclick="adjust(${p.id}, 1)" title="Ajouter 1 (réassort)">+</button>
+      </div>
+      <div class="sale-row">${saleButtons}</div>
+      <div class="card-actions">
+        <button class="btn" onclick="openEdit(${p.id})">✏ Modifier</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+// Nom de la variante sans le préfixe du groupe (« T-shirt logo — M » → « M »)
+function variantLabel(p) {
+  const g = p.variant_group.toLowerCase();
+  let label = p.name;
+  if (label.toLowerCase().startsWith(g)) label = label.slice(p.variant_group.length);
+  label = label.replace(/^[\s—–\-·:,/]+/, '');
+  return label || p.name;
+}
+
+function variantGroupCard(group, items) {
+  const total = items.reduce((s, p) => s + p.stock, 0);
+  const anyLow = items.some(isLow);
+  const withPhoto = items.find((p) => p.photo);
+  const photo = withPhoto
+    ? `<img class="product-photo" src="${escapeHtml(withPhoto.photo)}" alt="" loading="lazy">`
+    : `<div class="product-photo placeholder">📷</div>`;
+  const prices = [...new Set(items.map((p) => p.price))];
+  const priceTxt = prices.length === 1 ? euro(prices[0]) : `${euro(Math.min(...prices))}–${euro(Math.max(...prices))}`;
+  const rows = items
+    .map(
+      (v) => `<div class="variant-row ${isLow(v) ? 'low' : ''}">
+      <span class="variant-name" onclick="openEdit(${v.id})" title="${escapeHtml(v.name)}${v.sku ? ' · ' + escapeHtml(v.sku) : ''} — cliquer pour modifier">${escapeHtml(variantLabel(v))}${isLow(v) ? ' ⚠' : ''}</span>
+      <button onclick="adjust(${v.id}, -1)" title="Retirer 1 (correction)">−</button>
+      <span class="qty ${v.stock <= 0 ? 'zero' : ''}">${v.stock}</span>
+      <button onclick="adjust(${v.id}, 1)" title="Ajouter 1 (réassort)">+</button>
+      <span class="variant-sales">${SALE_CHANNELS.map(
+        (c) => `<button class="sale-btn mini" onclick="sell(${v.id}, '${c.key}')" ${v.stock <= 0 ? 'disabled' : ''}
+          title="Vendre 1 ${escapeHtml(variantLabel(v))} (${c.text})">${c.icon}</button>`
+      ).join('')}</span>
+    </div>`
+    )
+    .join('');
+  return `
+  <div class="product-card group-card ${anyLow ? 'low' : ''}">
+    ${photo}
+    <div class="product-body">
+      <div class="product-head">
+        <div>
+          <div class="product-name">${escapeHtml(group)}</div>
+          <div class="product-sku">${items.length} variantes · 📦 ${total} au total</div>
+        </div>
+        <div class="product-price">${priceTxt}</div>
+      </div>
+      ${anyLow ? '<span class="badge-low">⚠ Stock bas sur une variante</span>' : ''}
+      <div class="variant-list">${rows}</div>
+    </div>
+  </div>`;
+}
+
 function renderProducts() {
   const lowOnly = $('#lowOnly').checked;
   const list = lowOnly ? products.filter(isLow) : products;
   $('#emptyMsg').hidden = list.length > 0;
-  $('#productList').innerHTML = list
-    .map((p) => {
-      const photo = p.photo
-        ? `<img class="product-photo" src="${escapeHtml(p.photo)}" alt="" loading="lazy" onclick="openEdit(${p.id})">`
-        : `<div class="product-photo placeholder" onclick="openEdit(${p.id})">📷</div>`;
-      const saleButtons = SALE_CHANNELS.map(
-        (c) =>
-          `<button class="sale-btn" onclick="sell(${p.id}, '${c.key}')" ${p.stock <= 0 ? 'disabled' : ''}
-             title="Vendre 1 (${c.text})">${c.label}</button>`
-      ).join('');
-      return `
-      <div class="product-card ${isLow(p) ? 'low' : ''}">
-        ${photo}
-        <div class="product-body">
-          <div class="product-head">
-            <div>
-              <div class="product-name">${escapeHtml(p.name)}</div>
-              <div class="product-sku">${escapeHtml(p.sku || '')}${p.category ? ' · ' + escapeHtml(p.category) : ''}${p.barcode ? ` · <span class="product-barcode" title="Code-barres">∥ ${escapeHtml(p.barcode)}</span>` : ''}</div>
-            </div>
-            <div class="product-price">${euro(p.price)}</div>
-          </div>
-          ${isLow(p) ? '<span class="badge-low">⚠ Stock bas</span>' : ''}
-          <div class="stock-row big">
-            <span class="chan">📦 Stock</span>
-            <button onclick="adjust(${p.id}, -1)" title="Retirer 1 (correction)">−</button>
-            <span class="qty ${p.stock <= 0 ? 'zero' : ''}">${p.stock}</span>
-            <button onclick="adjust(${p.id}, 1)" title="Ajouter 1 (réassort)">+</button>
-          </div>
-          <div class="sale-row">${saleButtons}</div>
-          <div class="card-actions">
-            <button class="btn" onclick="openEdit(${p.id})">✏ Modifier</button>
-          </div>
-        </div>
-      </div>`;
-    })
+
+  // Regroupe les variantes (même variant_group) en une seule carte, à la
+  // position de la première variante rencontrée
+  const entries = [];
+  const groupIndex = new Map();
+  for (const p of list) {
+    if (p.variant_group) {
+      if (groupIndex.has(p.variant_group)) {
+        groupIndex.get(p.variant_group).items.push(p);
+      } else {
+        const entry = { group: p.variant_group, items: [p] };
+        groupIndex.set(p.variant_group, entry);
+        entries.push(entry);
+      }
+    } else {
+      entries.push({ single: p });
+    }
+  }
+  $('#productList').innerHTML = entries
+    .map((e) => (e.single ? productCard(e.single) : variantGroupCard(e.group, e.items)))
     .join('');
 }
 
@@ -1296,6 +1366,10 @@ const modal = $('#modal');
 const form = $('#productForm');
 
 function openModal() {
+  // Suggestions de groupes de variantes existants
+  $('#variantGroups').innerHTML = [...new Set(products.map((p) => p.variant_group).filter(Boolean))]
+    .map((g) => `<option value="${escapeHtml(g)}">`)
+    .join('');
   modal.hidden = false;
   form.name.focus();
 }
@@ -1327,6 +1401,7 @@ window.openEdit = (id) => {
   form.name.value = p.name;
   form.sku.value = p.sku || '';
   form.barcode.value = p.barcode || '';
+  form.variant_group.value = p.variant_group || '';
   form.category.value = p.category;
   form.price.value = p.price;
   form.cost.value = p.cost;
