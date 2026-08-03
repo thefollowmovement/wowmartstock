@@ -140,6 +140,7 @@ async function loadSettings() {
     if (s.fees) platformFees = s.fees;
     hasApiKey = !!s.has_api_key;
     if (s.vision_model) visionModel = s.vision_model;
+    $('#autoReport').checked = !!s.auto_report;
     fillFeesInputs();
   } catch (e) {
     /* valeurs par défaut conservées */
@@ -1239,10 +1240,25 @@ function mdToHtml(md) {
 function renderLastAiReport() {
   const r = statsData && statsData.last_report;
   if (!r || !r.report) return;
-  $('#aiReportInfo').textContent = `Dernier rapport : ${dateFr(r.generated_at)}`;
+  $('#aiReportInfo').textContent = `Dernier rapport : ${dateFr(r.generated_at)}${r.auto ? ' (généré automatiquement)' : ''}`;
   $('#aiReport').innerHTML = mdToHtml(r.report);
   $('#aiReport').hidden = false;
 }
+
+$('#autoReport').addEventListener('change', async (e) => {
+  try {
+    await api('/api/settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ auto_report: e.target.checked }),
+    });
+    toast(e.target.checked
+      ? '🤖 Rapport automatique activé — généré chaque matin après 7 h (app ouverte)'
+      : 'Rapport automatique désactivé');
+  } catch (err) {
+    toast(err.message, true);
+  }
+});
 
 $('#btnAiReport').addEventListener('click', async () => {
   const btn = $('#btnAiReport');

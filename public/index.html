@@ -148,6 +148,9 @@
       <p class="muted">Claude analyse vos 30 derniers jours : produits à mettre en avant, produits à gros volume mais faible marge, réassorts prioritaires et idées concrètes.</p>
       <div class="ai-report-actions">
         <button class="btn primary" id="btnAiReport">✨ Générer le rapport</button>
+        <label class="check" title="Un rapport est généré une fois par jour, après 7 h, tant que l'app est lancée — utilise votre clé API (même coût qu'un rapport manuel)">
+          <input type="checkbox" id="autoReport"> ☕ Générer automatiquement chaque matin
+        </label>
         <span id="aiReportInfo" class="muted small"></span>
       </div>
       <div id="aiReport" class="ai-report" hidden></div>

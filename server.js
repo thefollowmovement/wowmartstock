@@ -483,6 +483,7 @@ app.get('/api/settings', (req, res) => {
     fees: { whatnot: getFees('whatnot'), tiktok: getFees('tiktok') },
     has_api_key: !!getAnthropicKey(),
     vision_model: getSetting('vision_model', 'claude-opus-5'),
+    auto_report: getSetting('auto_report', '0') === '1',
   });
 });
 
@@ -521,11 +522,15 @@ app.put('/api/settings', (req, res) => {
     }
     setSetting('vision_model', req.body.vision_model);
   }
+  if (req.body.auto_report !== undefined) {
+    setSetting('auto_report', req.body.auto_report ? '1' : '0');
+  }
   res.json({
     vat_rate: parseFloat(getSetting('vat_rate', '20')),
     fees: { whatnot: getFees('whatnot'), tiktok: getFees('tiktok') },
     has_api_key: !!getAnthropicKey(),
     vision_model: getSetting('vision_model', 'claude-opus-5'),
+    auto_report: getSetting('auto_report', '0') === '1',
   });
 });
 
@@ -1536,17 +1541,17 @@ app.get('/api/statistics/order.csv', (req, res) => {
   res.send('﻿' + ['SKU;Produit;Stock actuel;Seuil;Vendus 30 j;Quantité à commander', ...lines].join('\n'));
 });
 
-// Rapport de conseils généré par Claude à partir des chiffres réels
-app.post('/api/statistics/report', async (req, res) => {
+// Rapport de conseils généré par Claude à partir des chiffres réels.
+// Utilisé par le bouton de l'onglet Stats et par la génération automatique
+// du matin. Lève une erreur avec un message français prêt à afficher.
+async function generateAiReport({ auto = false } = {}) {
   const apiKey = getAnthropicKey();
   if (!apiKey) {
-    return res.status(400).json({
-      error: 'Aucune clé API Anthropic configurée — enregistrez-la dans un détail de live (section Photos) ou via ANTHROPIC_API_KEY',
-    });
+    throw new Error('Aucune clé API Anthropic configurée — enregistrez-la dans un détail de live (section Photos) ou via ANTHROPIC_API_KEY');
   }
   const stats = computeStatistics(30);
   if (!stats.products.length) {
-    return res.status(400).json({ error: 'Pas encore assez de ventes sur les 30 derniers jours pour un rapport' });
+    throw new Error('Pas encore assez de ventes sur les 30 derniers jours pour un rapport');
   }
 
   const chLabel = { online: 'en ligne', store: 'boutique', tiktok: 'TikTok', whatnot: 'Whatnot' };
@@ -1578,21 +1583,15 @@ Rédige un rapport court et actionnable en français, en Markdown, avec ces sect
 
 Sois direct et concret, cite les chiffres, pas de blabla. Maximum 400 mots.`;
 
+  const client = new Anthropic({ apiKey });
+  const model = getSetting('vision_model', 'claude-opus-5');
+  let response;
   try {
-    const client = new Anthropic({ apiKey });
-    const model = getSetting('vision_model', 'claude-opus-5');
-    const response = await client.messages.create({
+    response = await client.messages.create({
       model,
       max_tokens: 3000,
       messages: [{ role: 'user', content: prompt }],
     });
-    if (response.stop_reason === 'refusal') {
-      return res.status(500).json({ error: 'Le modèle a refusé de générer ce rapport, réessayez' });
-    }
-    const report = response.content.find((b) => b.type === 'text')?.text || '';
-    const payload = { report, generated_at: now(), model };
-    setSetting('last_ai_report', JSON.stringify(payload));
-    res.json(payload);
   } catch (e) {
     const msg =
       e.status === 401
@@ -1600,9 +1599,44 @@ Sois direct et concret, cite les chiffres, pas de blabla. Maximum 400 mots.`;
         : e.status === 429
           ? 'Limite de requêtes API atteinte, réessayez dans une minute'
           : e.message || 'Génération impossible';
-    res.status(500).json({ error: msg });
+    throw new Error(msg);
+  }
+  if (response.stop_reason === 'refusal') {
+    throw new Error('Le modèle a refusé de générer ce rapport, réessayez');
+  }
+  const report = response.content.find((b) => b.type === 'text')?.text || '';
+  const payload = { report, generated_at: now(), model, auto };
+  setSetting('last_ai_report', JSON.stringify(payload));
+  return payload;
+}
+
+app.post('/api/statistics/report', async (req, res) => {
+  try {
+    res.json(await generateAiReport());
+  } catch (e) {
+    res.status(e.message.startsWith('Aucune clé') || e.message.startsWith('Pas encore') ? 400 : 500)
+      .json({ error: e.message });
   }
 });
+
+// Génération automatique du matin : si l'option est activée, un rapport est
+// généré une fois par jour dès que l'app tourne après 7 h (heure locale).
+async function maybeAutoReport() {
+  try {
+    if (getSetting('auto_report', '0') !== '1') return;
+    if (!getAnthropicKey()) return;
+    const localDay = new Date().toLocaleDateString('sv-SE'); // YYYY-MM-DD local
+    if (new Date().getHours() < 7) return;
+    if (getSetting('last_auto_report_day', '') === localDay) return;
+    setSetting('last_auto_report_day', localDay); // avant l'appel : pas de double génération si lenteur
+    await generateAiReport({ auto: true });
+    console.log(`Rapport IA automatique généré (${localDay})`);
+  } catch (e) {
+    console.error(`Rapport IA automatique impossible : ${e.message}`);
+  }
+}
+setInterval(maybeAutoReport, 10 * 60 * 1000).unref();
+setTimeout(maybeAutoReport, 15 * 1000).unref();
 
 // ---------------------------------------------------------------------------
 // Export CSV
