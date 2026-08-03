@@ -1447,6 +1447,68 @@ function computeStatistics(days) {
   };
 }
 
+// Meilleurs créneaux de live : CA et marge par jour de la semaine et par
+// heure de début, plus le rythme moyen des ventes au fil du live (par
+// tranches de 15 min) pour voir quand le live s'essouffle.
+app.get('/api/statistics/lives', (req, res) => {
+  const platform = LIVE_PLATFORMS.includes(req.query.platform) ? req.query.platform : '';
+  const sessions = db
+    .prepare(`SELECT * FROM live_sessions WHERE ended_at IS NOT NULL ${platform ? 'AND platform = ?' : ''} ORDER BY id`)
+    .all(...(platform ? [platform] : []))
+    .map(sessionSummary)
+    .filter((s) => s.items > 0);
+
+  const byWeekday = Array.from({ length: 7 }, (_, dow) => ({ dow, lives: 0, revenue: 0, margin: 0 }));
+  const byHour = new Map();
+  for (const s of sessions) {
+    const d = new Date(s.started_at);
+    const w = byWeekday[d.getDay()];
+    w.lives++;
+    w.revenue += s.revenue;
+    w.margin += s.margin;
+    const h = d.getHours();
+    const e = byHour.get(h) || { hour: h, lives: 0, revenue: 0, margin: 0 };
+    e.lives++;
+    e.revenue += s.revenue;
+    e.margin += s.margin;
+    byHour.set(h, e);
+  }
+
+  // Rythme : CA moyen par tranche de 15 min depuis le début du live
+  // (moyenne sur les lives ayant duré au moins jusqu'à la tranche)
+  const BUCKET_MIN = 15;
+  const MAX_BUCKETS = 16; // 4 h
+  const bucketRevenue = new Array(MAX_BUCKETS).fill(0);
+  const bucketReached = new Array(MAX_BUCKETS).fill(0);
+  const saleTimes = db.prepare(
+    `SELECT m.created_at, COALESCE(m.sold_price, p.price) AS eff
+     FROM movements m JOIN products p ON p.id = m.product_id
+     WHERE m.session_id = ? AND m.delta < 0 AND m.cancelled = 0 AND m.is_gift = 0
+       AND COALESCE(m.payment_status,'paid') NOT IN ('failed','refunded')`
+  );
+  for (const s of sessions) {
+    const start = new Date(s.started_at).getTime();
+    const durationMin = (new Date(s.ended_at).getTime() - start) / 60000;
+    const reachedBuckets = Math.min(MAX_BUCKETS, Math.max(1, Math.ceil(durationMin / BUCKET_MIN)));
+    for (let i = 0; i < reachedBuckets; i++) bucketReached[i]++;
+    for (const m of saleTimes.all(s.id)) {
+      const idx = Math.floor((new Date(m.created_at).getTime() - start) / 60000 / BUCKET_MIN);
+      if (idx >= 0 && idx < MAX_BUCKETS) bucketRevenue[idx] += m.eff || 0;
+    }
+  }
+  const curve = [];
+  for (let i = 0; i < MAX_BUCKETS && bucketReached[i] > 0; i++) {
+    curve.push({ from: i * BUCKET_MIN, to: (i + 1) * BUCKET_MIN, lives: bucketReached[i], avg: bucketRevenue[i] / bucketReached[i] });
+  }
+
+  res.json({
+    total_lives: sessions.length,
+    by_weekday: byWeekday.filter((w) => w.lives > 0),
+    by_hour: [...byHour.values()].sort((a, b) => a.hour - b.hour),
+    curve,
+  });
+});
+
 app.get('/api/statistics', (req, res) => {
   const days = parseInt(req.query.days, 10);
   const stats = computeStatistics(Number.isFinite(days) ? days : 30);

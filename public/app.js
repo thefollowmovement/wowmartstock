@@ -1108,6 +1108,7 @@ async function loadStatsPage() {
     renderStatsTable();
     renderOrderTable();
     renderLastAiReport();
+    loadLiveSlots();
   } catch (e) {
     toast(e.message, true);
   }
@@ -1115,6 +1116,63 @@ async function loadStatsPage() {
 
 $('#statsDays').addEventListener('change', loadStatsPage);
 $('#statsChannel').addEventListener('change', renderStatsTable);
+$('#slotPlatform').addEventListener('change', loadLiveSlots);
+
+// ---- Meilleurs créneaux de live ----
+const DOW_FR = ['Dimanche', 'Lundi', 'Mardi', 'Mercredi', 'Jeudi', 'Vendredi', 'Samedi'];
+
+function slotBars(rows, labelOf, valueOf, subOf) {
+  const max = Math.max(...rows.map(valueOf), 0.01);
+  return rows
+    .map((r) => {
+      const v = valueOf(r);
+      return `<div class="slot-bar-row">
+      <span class="slot-label">${labelOf(r)}</span>
+      <div class="slot-bar-track"><div class="slot-bar" style="width:${Math.max(3, (v / max) * 100)}%"></div></div>
+      <span class="slot-value">${euro(v)}<small>${subOf(r)}</small></span>
+    </div>`;
+    })
+    .join('');
+}
+
+async function loadLiveSlots() {
+  try {
+    const platform = $('#slotPlatform').value;
+    const data = await api(`/api/statistics/lives${platform ? `?platform=${platform}` : ''}`);
+    if (!data.total_lives) {
+      $('#liveSlots').innerHTML = '<p class="empty">Pas encore de live terminé avec des ventes — les statistiques apparaîtront ici.</p>';
+      return;
+    }
+    const weekdays = [...data.by_weekday].sort((a, b) => b.revenue / b.lives - a.revenue / a.lives);
+    const hours = [...data.by_hour].sort((a, b) => b.revenue / b.lives - a.revenue / a.lives);
+    const curveMax = Math.max(...data.curve.map((c) => c.avg), 0.01);
+    $('#liveSlots').innerHTML = `
+      <div class="slots-grid">
+        <div>
+          <h4>📅 CA moyen par jour de live</h4>
+          ${slotBars(weekdays, (w) => DOW_FR[w.dow], (w) => w.revenue / w.lives, (w) => `${w.lives} live(s) · marge ${euro(w.margin / w.lives)}`)}
+        </div>
+        <div>
+          <h4>🕐 CA moyen par heure de début</h4>
+          ${slotBars(hours, (h) => `${String(h.hour).padStart(2, '0')} h`, (h) => h.revenue / h.lives, (h) => `${h.lives} live(s)`)}
+        </div>
+      </div>
+      <h4>⏱ Rythme des ventes pendant le live <span class="muted small">(CA moyen par tranche de 15 min — repérez le moment où ça s'essouffle)</span></h4>
+      <div class="slot-curve">
+        ${data.curve
+          .map(
+            (c) => `<div class="slot-col" title="${c.from}–${c.to} min : ${euro(c.avg)} en moyenne (${c.lives} live(s) concernés)">
+            <div class="slot-col-bar" style="height:${Math.max(4, (c.avg / curveMax) * 100)}%"></div>
+            <span class="slot-col-label">${c.from}′</span>
+          </div>`
+          )
+          .join('')}
+      </div>
+      <p class="muted small">Basé sur ${data.total_lives} live(s) terminé(s). Le meilleur créneau combine un bon CA moyen et assez de lives pour être fiable.</p>`;
+  } catch (e) {
+    $('#liveSlots').innerHTML = `<p class="empty">${escapeHtml(e.message)}</p>`;
+  }
+}
 
 function renderStatsTable() {
   if (!statsData) return;
