@@ -63,7 +63,30 @@ CREATE TABLE IF NOT EXISTS live_sessions (
   platform TEXT NOT NULL,
   name TEXT NOT NULL DEFAULT '',
   started_at TEXT NOT NULL,
-  ended_at TEXT
+  ended_at TEXT,
+  report_imported_at TEXT,
+  validated_at TEXT
+);
+
+-- Lignes du rapport plateforme qui ne correspondent pas à une vente « Vue à
+-- l'écran » enregistrée dans l'app : gives (abonné / acheteur) et produits
+-- référencés dans la boutique de la plateforme, chacun avec sa propre
+-- numérotation (#1, #2…).
+CREATE TABLE IF NOT EXISTS live_extras (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id INTEGER NOT NULL REFERENCES live_sessions(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL,
+  ref TEXT NOT NULL DEFAULT '',
+  label TEXT NOT NULL DEFAULT '',
+  sold_price REAL,
+  net_amount REAL,
+  payment_status TEXT NOT NULL DEFAULT 'paid',
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS settings (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
 );
 `);
 
@@ -76,6 +99,12 @@ CREATE TABLE IF NOT EXISTS live_sessions (
   if (!mcols.includes('sold_price')) db.exec('ALTER TABLE movements ADD COLUMN sold_price REAL');
   if (!mcols.includes('fees')) db.exec('ALTER TABLE movements ADD COLUMN fees REAL');
   if (!mcols.includes('is_gift')) db.exec('ALTER TABLE movements ADD COLUMN is_gift INTEGER NOT NULL DEFAULT 0');
+  if (!mcols.includes('payment_status')) db.exec('ALTER TABLE movements ADD COLUMN payment_status TEXT');
+  if (!mcols.includes('net_amount')) db.exec('ALTER TABLE movements ADD COLUMN net_amount REAL');
+
+  const scols = db.prepare('PRAGMA table_info(live_sessions)').all().map((c) => c.name);
+  if (!scols.includes('report_imported_at')) db.exec('ALTER TABLE live_sessions ADD COLUMN report_imported_at TEXT');
+  if (!scols.includes('validated_at')) db.exec('ALTER TABLE live_sessions ADD COLUMN validated_at TEXT');
 
   // Numérotation rétroactive des ventes des lives existants (#1, #2… par ordre chronologique)
   const toNumber = db
@@ -332,6 +361,28 @@ app.post('/api/movements/:id/cancel', (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
+// Réglages (taux de TVA)
+// ---------------------------------------------------------------------------
+function getSetting(key, fallback) {
+  const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(key);
+  return row ? row.value : fallback;
+}
+
+app.get('/api/settings', (req, res) => {
+  res.json({ vat_rate: parseFloat(getSetting('vat_rate', '20')) });
+});
+
+app.put('/api/settings', (req, res) => {
+  const rate = parseFloat(req.body.vat_rate);
+  if (!Number.isFinite(rate) || rate < 0 || rate > 100) {
+    return res.status(400).json({ error: 'Taux de TVA invalide (entre 0 et 100)' });
+  }
+  db.prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value')
+    .run('vat_rate', String(rate));
+  res.json({ vat_rate: rate });
+});
+
+// ---------------------------------------------------------------------------
 // Statistiques + mouvements
 // ---------------------------------------------------------------------------
 app.get('/api/stats', (req, res) => {
@@ -362,7 +413,15 @@ app.get('/api/stats', (req, res) => {
     if (row.channel === 'live') sales.tiktok += row.sold;
     else sales[row.channel] += row.sold;
   }
-  res.json({ ...s, low: low.n, sales });
+  // Lives terminés avec des ventes mais pas encore vérifiés / validés
+  const toCheck = db
+    .prepare(
+      `SELECT COUNT(*) AS n FROM live_sessions s
+       WHERE s.ended_at IS NOT NULL AND s.validated_at IS NULL
+         AND EXISTS (SELECT 1 FROM movements m WHERE m.session_id = s.id AND m.delta < 0)`
+    )
+    .get();
+  res.json({ ...s, low: low.n, sales, lives_to_check: toCheck.n });
 });
 
 // ---------------------------------------------------------------------------
@@ -373,7 +432,7 @@ app.get('/api/stats', (req, res) => {
 // Marge = prix effectif − frais de la plateforme − coût d'achat.
 const sessionSales = db.prepare(
   `SELECT m.id, m.created_at, m.delta, m.channel, m.reason, m.cancelled,
-          m.sale_no, m.sold_price, m.fees, m.is_gift,
+          m.sale_no, m.sold_price, m.fees, m.is_gift, m.payment_status, m.net_amount,
           p.id AS product_id, p.name AS product_name, p.sku AS product_sku,
           p.price AS product_price, p.cost AS product_cost, p.photo AS product_photo
    FROM movements m JOIN products p ON p.id = m.product_id
@@ -381,27 +440,46 @@ const sessionSales = db.prepare(
    ORDER BY m.sale_no DESC, m.id DESC`
 );
 
-// Les cadeaux (is_gift=1) ont un prix de vente de 0 : ils n'ajoutent rien au
-// chiffre d'affaires mais leur coût d'achat est déduit de la marge.
+const sessionExtras = db.prepare('SELECT * FROM live_extras WHERE session_id = ? ORDER BY kind, id');
+
+// Les cadeaux (is_gift=1) ont un prix de vente de 0 : leur coût d'achat est
+// déduit de la marge. Les ventes en échec de paiement sont exclues du CA et
+// de la marge. Gains nets = « Statut du gains » de la plateforme (après
+// commission et frais) quand il est importé, sinon prix vendu − frais.
 function sessionSummary(session) {
   const agg = db
     .prepare(
       `SELECT COALESCE(SUM(CASE WHEN m.is_gift = 0 THEN -m.delta ELSE 0 END),0) AS items,
               COALESCE(SUM(CASE WHEN m.is_gift = 1 THEN -m.delta ELSE 0 END),0) AS gifts,
-              COALESCE(SUM(-m.delta * COALESCE(m.sold_price, p.price)),0) AS revenue,
-              COALESCE(SUM(-m.delta * (COALESCE(m.sold_price, p.price) - COALESCE(m.fees,0) - p.cost)),0) AS margin,
-              COALESCE(SUM(CASE WHEN m.is_gift = 0 AND m.sold_price IS NOT NULL THEN 1 ELSE 0 END),0) AS reported
+              COALESCE(SUM(CASE WHEN COALESCE(m.payment_status,'paid') != 'failed'
+                THEN -m.delta * COALESCE(m.sold_price, p.price) ELSE 0 END),0) AS revenue,
+              COALESCE(SUM(CASE WHEN COALESCE(m.payment_status,'paid') != 'failed'
+                THEN -m.delta * (COALESCE(m.net_amount, COALESCE(m.sold_price, p.price) - COALESCE(m.fees,0)) - p.cost)
+                ELSE 0 END),0) AS margin,
+              COALESCE(SUM(CASE WHEN m.is_gift = 0 AND m.sold_price IS NOT NULL THEN 1 ELSE 0 END),0) AS reported,
+              COALESCE(SUM(CASE WHEN m.is_gift = 0 AND m.payment_status IN ('failed','pending') THEN 1 ELSE 0 END),0) AS unpaid
        FROM movements m JOIN products p ON p.id = m.product_id
        WHERE m.session_id = ? AND m.delta < 0 AND m.cancelled = 0`
+    )
+    .get(session.id);
+  const extras = db
+    .prepare(
+      `SELECT COUNT(*) AS n,
+              COALESCE(SUM(CASE WHEN payment_status != 'failed' THEN COALESCE(sold_price,0) ELSE 0 END),0) AS revenue,
+              COALESCE(SUM(CASE WHEN payment_status != 'failed' THEN COALESCE(net_amount, COALESCE(sold_price,0)) ELSE 0 END),0) AS net,
+              COALESCE(SUM(CASE WHEN payment_status IN ('failed','pending') THEN 1 ELSE 0 END),0) AS unpaid
+       FROM live_extras WHERE session_id = ?`
     )
     .get(session.id);
   return {
     ...session,
     items: agg.items,
     gifts: agg.gifts,
-    revenue: agg.revenue,
-    margin: agg.margin,
+    revenue: agg.revenue + extras.revenue,
+    margin: agg.margin + extras.net,
     reported: agg.reported,
+    unpaid: agg.unpaid + extras.unpaid,
+    extras: extras.n,
   };
 }
 
@@ -434,11 +512,24 @@ app.get('/api/lives', (req, res) => {
   res.json(rows.map(sessionSummary));
 });
 
-// Détail d'un live : ventes horodatées
+// Détail d'un live : ventes horodatées + lignes hors « Vue à l'écran »
 app.get('/api/lives/:id', (req, res) => {
   const session = db.prepare('SELECT * FROM live_sessions WHERE id = ?').get(Number(req.params.id));
   if (!session) return res.status(404).json({ error: 'Live introuvable' });
-  res.json({ ...sessionSummary(session), sales: sessionSales.all(session.id) });
+  res.json({
+    ...sessionSummary(session),
+    sales: sessionSales.all(session.id),
+    extra_lines: sessionExtras.all(session.id),
+  });
+});
+
+// Validation manuelle après vérification du rapport
+app.post('/api/lives/:id/validate', (req, res) => {
+  const session = db.prepare('SELECT * FROM live_sessions WHERE id = ?').get(Number(req.params.id));
+  if (!session) return res.status(404).json({ error: 'Live introuvable' });
+  if (!session.ended_at) return res.status(400).json({ error: 'Terminez le live avant de le valider' });
+  db.prepare('UPDATE live_sessions SET validated_at = ? WHERE id = ?').run(now(), session.id);
+  res.json(sessionSummary(db.prepare('SELECT * FROM live_sessions WHERE id = ?').get(session.id)));
 });
 
 // Ajouter un cadeau à une vente du live : { sale_no, product_id }
@@ -489,24 +580,35 @@ app.get('/api/lives/:id/export.csv', (req, res) => {
     const s = String(v ?? '');
     return /[;"\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
   };
+  const PAYMENT_FR = { paid: 'payé', pending: 'en attente', failed: 'échec' };
   const lines = sales.map((m) => {
     const eff = m.sold_price != null ? m.sold_price : m.product_price;
-    const margin = m.cancelled ? '' : (eff - (m.fees || 0) - m.product_cost).toFixed(2);
+    const net = m.net_amount != null ? m.net_amount : eff - (m.fees || 0);
+    const margin = m.cancelled ? '' : (net - m.product_cost).toFixed(2);
     return [
-      m.sale_no ? `#${m.sale_no}` : '',
+      m.sale_no ? `Vue à l'écran #${m.sale_no}` : '',
       new Date(m.created_at).toLocaleString('fr-FR'),
       m.product_sku, m.product_name,
       m.product_price,
       m.sold_price != null ? m.sold_price : '',
       m.fees != null ? m.fees : '',
+      m.net_amount != null ? m.net_amount : '',
       margin,
+      m.payment_status ? PAYMENT_FR[m.payment_status] || m.payment_status : '',
       m.cancelled ? 'annulée' : m.is_gift ? 'cadeau' : '',
     ].map(esc).join(';');
   });
+  const extraLines = sessionExtras.all(session.id).map((x) =>
+    [
+      x.ref, '', '', x.label, '', x.sold_price ?? '', '', x.net_amount ?? '',
+      x.net_amount != null ? Number(x.net_amount).toFixed(2) : '',
+      PAYMENT_FR[x.payment_status] || x.payment_status, '',
+    ].map(esc).join(';')
+  );
   const date = new Date(session.started_at).toISOString().slice(0, 10);
   res.setHeader('Content-Type', 'text/csv; charset=utf-8');
   res.setHeader('Content-Disposition', `attachment; filename="live-${session.platform}-${date}.csv"`);
-  res.send('﻿' + ['N°;Heure;SKU;Produit;Prix catalogue;Prix vendu;Frais;Marge;Statut', ...lines].join('\n'));
+  res.send('﻿' + ['Référence;Heure;SKU;Produit;Prix catalogue;Prix vendu;Frais;Gains nets;Marge;Paiement;Statut', ...lines, ...extraLines].join('\n'));
 });
 
 // ---------------------------------------------------------------------------
@@ -516,16 +618,60 @@ app.get('/api/lives/:id/export.csv', (req, res) => {
 // les frais, pour calculer la marge.
 // ---------------------------------------------------------------------------
 const REPORT_PATTERNS = {
-  sale_no: /^#$|^#?\s*(n°|no|num[ée]ro|order|commande|vente|sale)/i,
-  sold_price: /(prix de vente|prix vendu|sold ?price|sale ?price|final ?price|montant|amount|sous.total|subtotal|price)/i,
+  sale_no: /^#$|^#?\s*(n°|no\b|num[ée]ro|order|commande|vente|sale|listing|placement)/i,
+  name: /(produit|product|nom|name|titre|title|listing|article|description)/i,
+  sold_price: /(prix de vente|prix vendu|sold ?price|sale ?price|final ?price|sous.total|subtotal|price)/i,
+  net_amount: /(statut? du gain|gains?|earn|net|payout|revers|vers[ée])/i,
+  payment_status: /(statut.*(paiement|commande)|paiement|payment|pay[ée]|status)/i,
   fees: /(frais|fee|commission)/i,
-  name: /(produit|product|nom|name|titre|title|listing|article)/i,
 };
 
-function guessReportMapping(headers) {
+// Statut de paiement normalisé depuis le texte de la plateforme
+function parsePaymentStatus(raw) {
+  const s = String(raw || '').toLowerCase();
+  if (/(échec|echec|échou|echou|fail|annul|cancel|refus|rembours|refund|impay|non pay)/.test(s)) return 'failed';
+  if (/(attente|pending|processing|en cours|à venir|a venir|hold)/.test(s)) return 'pending';
+  return 'paid';
+}
+
+// Classification d'une ligne du rapport selon sa référence :
+// « Vue à l'écran #8 » → vente enregistrée dans l'app (mode live) ;
+// « Give abonné #1 » / « Give acheteur #2 » → give ;
+// « iPad 8 #1 » / autre → produit référencé dans la boutique de la plateforme.
+// Un numéro seul (« #8 » ou « 8 ») est traité comme « Vue à l'écran ».
+function classifyRef(raw) {
+  const str = String(raw ?? '').trim();
+  const s = str.toLowerCase();
+  const numMatch = str.match(/#\s*(\d+)/);
+  const num = numMatch ? parseInt(numMatch[1], 10) : /^\d+$/.test(str) ? parseInt(str, 10) : null;
+  if (/vue\s*[àa]\s*l|screen|flash/.test(s) || /^#?\s*\d+$/.test(str)) return { type: 'screen', num };
+  if (/give|giveaway|cadeau/.test(s)) {
+    return { type: /achet|buyer|client/.test(s) ? 'give_buyer' : 'give_sub', num };
+  }
+  return { type: 'boutique', num };
+}
+
+function guessReportMapping(headers, rows = []) {
   const mapping = {};
   const used = new Set();
+  // La colonne « référence de vente » est détectée par son contenu : c'est
+  // celle dont les valeurs contiennent un numéro « #N » (Vue à l'écran #8,
+  // Give abonné #1…). Plus fiable que le nom de la colonne, qui varie.
+  let bestRef = null;
+  let bestScore = 0;
+  for (const h of headers) {
+    const score = rows.filter((r) => /#\s*\d+/.test(String(r[h]))).length;
+    if (score > bestScore) {
+      bestScore = score;
+      bestRef = h;
+    }
+  }
+  if (bestRef && bestScore >= Math.max(1, rows.length / 2)) {
+    mapping.sale_no = bestRef;
+    used.add(bestRef);
+  }
   for (const [field, re] of Object.entries(REPORT_PATTERNS)) {
+    if (mapping[field]) continue;
     for (const h of headers) {
       if (used.has(h)) continue;
       if (re.test(String(h).trim())) {
@@ -559,7 +705,7 @@ app.post('/api/lives/:id/report/preview', uploadImport.single('file'), (req, res
     headers,
     rowCount: rows.length,
     preview: rows.slice(0, 5),
-    mapping: guessReportMapping(headers),
+    mapping: guessReportMapping(headers, rows.slice(0, 20)),
   });
 });
 
@@ -570,10 +716,11 @@ app.post('/api/lives/:id/report/commit', (req, res) => {
   const pending = pendingImports.get(importId);
   if (!pending) return res.status(410).json({ error: 'Import expiré, merci de renvoyer le fichier' });
   if (!mapping.sale_no || !mapping.sold_price) {
-    return res.status(400).json({ error: 'Associez les colonnes Numéro de vente et Prix de vente' });
+    return res.status(400).json({ error: 'Associez les colonnes Numéro / référence de vente et Prix de vente' });
   }
 
-  // Seules les ventes (pas les cadeaux) sont associées au rapport de la plateforme
+  // Seules les ventes « Vue à l'écran » (pas les cadeaux) sont associées aux
+  // ventes enregistrées dans l'app
   const sales = db
     .prepare('SELECT id, sale_no FROM movements WHERE session_id = ? AND delta < 0 AND sale_no IS NOT NULL AND is_gift = 0')
     .all(session.id);
@@ -581,29 +728,62 @@ app.post('/api/lives/:id/report/commit', (req, res) => {
 
   let matched = 0;
   let skipped = 0;
+  let extras = 0;
   const unmatched = [];
   withTransaction(() => {
-    const upd = db.prepare('UPDATE movements SET sold_price = ?, fees = ? WHERE id = ?');
+    // ré-import : on remplace les lignes hors « Vue à l'écran » précédentes
+    db.prepare('DELETE FROM live_extras WHERE session_id = ?').run(session.id);
+    const upd = db.prepare('UPDATE movements SET sold_price = ?, fees = ?, net_amount = ?, payment_status = ? WHERE id = ?');
+    const insExtra = db.prepare(
+      `INSERT INTO live_extras (session_id, kind, ref, label, sold_price, net_amount, payment_status, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+    );
     for (const row of pending.rows) {
-      const rawNo = row[mapping.sale_no];
-      const n = parseInt(String(rawNo).replace(/[^0-9]/g, ''), 10);
-      if (!Number.isFinite(n) || n <= 0) {
-        skipped++;
-        continue;
-      }
-      const movementId = byNo.get(n);
-      if (!movementId) {
-        unmatched.push(`#${n}`);
-        continue;
-      }
+      const rawRef = row[mapping.sale_no];
+      const { type, num } = classifyRef(rawRef);
       const price = toNum(row[mapping.sold_price]);
+      const net = mapping.net_amount ? toNum(row[mapping.net_amount]) : null;
       const fees = mapping.fees ? toNum(row[mapping.fees]) : null;
-      upd.run(price, fees, movementId);
-      matched++;
+      // le statut peut être dans sa propre colonne, sinon on le détecte dans
+      // le texte de la colonne gains (ex : « en attente de paiement »)
+      const statusSource = mapping.payment_status
+        ? row[mapping.payment_status]
+        : mapping.net_amount
+          ? row[mapping.net_amount]
+          : '';
+      const status = parsePaymentStatus(statusSource);
+
+      if (type === 'screen') {
+        if (!Number.isFinite(num) || num == null || num <= 0) {
+          skipped++;
+          continue;
+        }
+        const movementId = byNo.get(num);
+        if (!movementId) {
+          unmatched.push(`#${num}`);
+          continue;
+        }
+        upd.run(price, fees, net, status, movementId);
+        matched++;
+      } else {
+        const label = mapping.name ? String(row[mapping.name]).trim() : '';
+        insExtra.run(session.id, type, String(rawRef).trim(), label, price, net, status, now());
+        extras++;
+      }
     }
+    db.prepare('UPDATE live_sessions SET report_imported_at = ?, validated_at = NULL WHERE id = ?').run(now(), session.id);
   });
   pendingImports.delete(importId);
-  res.json({ matched, skipped, unmatched, session: sessionSummary(session) });
+  const fresh = db.prepare('SELECT * FROM live_sessions WHERE id = ?').get(session.id);
+  const summary = sessionSummary(fresh);
+  res.json({
+    matched,
+    skipped,
+    extras,
+    unmatched,
+    unpaid: summary.unpaid,
+    session: summary,
+  });
 });
 
 app.get('/api/movements', (req, res) => {

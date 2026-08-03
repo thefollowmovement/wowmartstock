@@ -34,6 +34,7 @@ let products = [];
 let editingId = null;
 let photoFile = null;
 let currentImport = null;
+let vatRate = 20; // taux de TVA (%), modifiable dans l'onglet Lives
 let liveSession = null; // session en cours { id, platform, started_at, ... }
 let liveSalesLog = []; // [{ movement_id, product_id, name, sku, price, time, cancelled }]
 let liveTimerInterval = null;
@@ -88,7 +89,14 @@ document.querySelectorAll('.tab').forEach((btn) => {
 // ---------------------------------------------------------------------------
 async function loadStats() {
   const s = await api('/api/stats');
+  const checkTile =
+    s.lives_to_check > 0
+      ? `<div class="stat alert clickable" onclick="document.querySelector('[data-tab=lives]').click()" title="Voir les lives à vérifier">
+           <div class="value">${s.lives_to_check}</div><div class="label">🔴 Live(s) à vérifier</div>
+         </div>`
+      : '';
   $('#stats').innerHTML = `
+    ${checkTile}
     <div class="stat"><div class="value">${s.products}</div><div class="label">Produits</div></div>
     <div class="stat"><div class="value">${s.stock}</div><div class="label">📦 Stock total</div></div>
     <div class="stat"><div class="value">${euro(s.value)}</div><div class="label">Valeur du stock</div></div>
@@ -98,6 +106,35 @@ async function loadStats() {
     <div class="stat"><div class="value">${s.sales.whatnot}</div><div class="label">🟡 Whatnot (30 j)</div></div>
     <div class="stat ${s.low > 0 ? 'alert' : ''}"><div class="value">${s.low}</div><div class="label">⚠ Stock bas</div></div>`;
 }
+
+// ---------------------------------------------------------------------------
+// Réglage du taux de TVA
+// ---------------------------------------------------------------------------
+async function loadSettings() {
+  try {
+    const s = await api('/api/settings');
+    vatRate = s.vat_rate;
+    $('#vatRate').value = vatRate;
+  } catch (e) {
+    /* valeur par défaut conservée */
+  }
+}
+
+$('#vatRate').addEventListener('change', async () => {
+  try {
+    const s = await api('/api/settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ vat_rate: parseFloat($('#vatRate').value) }),
+    });
+    vatRate = s.vat_rate;
+    toast(`Taux de TVA enregistré : ${vatRate} %`);
+  } catch (e) {
+    toast(e.message, true);
+  }
+});
+
+const httc = (ttc) => ttc / (1 + vatRate / 100); // TTC → HT
 
 // ---------------------------------------------------------------------------
 // Produits
@@ -522,6 +559,21 @@ async function resumeActiveLive() {
 // ---------------------------------------------------------------------------
 // Onglet Lives (historique des sessions)
 // ---------------------------------------------------------------------------
+// Statut de vérification d'un live :
+// en cours → 🔴 / pas de rapport importé → ⚠ rouge / rapport importé mais
+// non validé → 🟠 à valider / validé → ✅
+function liveStatus(l) {
+  if (!l.ended_at) return { label: '<span class="live-ongoing">🔴 en cours</span>', cls: '' };
+  if (!l.report_imported_at) {
+    return { label: '<span class="status-badge missing">⚠ Rapport à importer</span>', cls: 'row-missing-report' };
+  }
+  if (!l.validated_at) {
+    const unpaidTxt = l.unpaid > 0 ? ` · ${l.unpaid} non réglé(s)` : '';
+    return { label: `<span class="status-badge tovalidate">🟠 À valider${unpaidTxt}</span>`, cls: 'row-tovalidate' };
+  }
+  return { label: '<span class="status-badge validated">✅ Validé</span>', cls: '' };
+}
+
 async function loadLives() {
   const lives = await api('/api/lives');
   $('#liveDetail').hidden = true;
@@ -531,24 +583,40 @@ async function loadLives() {
           const dur = l.ended_at
             ? `${Math.round((new Date(l.ended_at) - new Date(l.started_at)) / 60000)} min`
             : '<span class="live-ongoing">🔴 en cours</span>';
-          return `<tr>
+          const st = liveStatus(l);
+          return `<tr class="${st.cls}">
         <td>${dateFr(l.started_at)}</td>
         <td>${PLATFORM_LABELS[l.platform] || l.platform}</td>
         <td>${dur}</td>
-        <td>${l.items}${l.gifts ? ` <small>+ ${l.gifts} 🎁</small>` : ''}</td>
+        <td>${l.items}${l.gifts ? ` <small>+ ${l.gifts} 🎁</small>` : ''}${l.extras ? ` <small>+ ${l.extras} hors écran</small>` : ''}</td>
         <td>${euro(l.revenue)}</td>
         <td>${l.reported > 0 ? euro(l.margin) : '<span class="muted-cell">—</span>'}</td>
+        <td>${st.label}</td>
         <td><button class="btn small" onclick="showLiveDetail(${l.id})">Détail</button></td>
       </tr>`;
         })
         .join('')
-    : '<tr><td colspan="7">Aucun live pour l\'instant — cliquez sur « 🔴 Lancer un live » pour commencer</td></tr>';
+    : '<tr><td colspan="8">Aucun live pour l\'instant — cliquez sur « 🔴 Lancer un live » pour commencer</td></tr>';
 }
 
-// Marge d'une vente : prix vendu réel (rapport plateforme) sinon prix
-// catalogue, moins les frais et le coût d'achat
-const saleMargin = (m) =>
-  (m.sold_price != null ? m.sold_price : m.product_price) - (m.fees || 0) - m.product_cost;
+// Marge d'une vente : gains nets de la plateforme (« Statut du gains ») si
+// importés, sinon prix vendu − frais ; moins le coût d'achat
+const saleNet = (m) =>
+  m.net_amount != null
+    ? m.net_amount
+    : (m.sold_price != null ? m.sold_price : m.product_price) - (m.fees || 0);
+const saleMargin = (m) => saleNet(m) - m.product_cost;
+
+const PAYMENT_LABELS = {
+  paid: '<span class="pay-badge paid">payé</span>',
+  pending: '<span class="pay-badge pending">⏳ en attente</span>',
+  failed: '<span class="pay-badge failed">⚠ échec</span>',
+};
+const EXTRA_KIND_LABELS = {
+  give_sub: '🎁 Give abonné',
+  give_buyer: '🎁 Give acheteur',
+  boutique: '🏪 Produit boutique',
+};
 
 window.showLiveDetail = async (id) => {
   try {
@@ -583,35 +651,100 @@ window.showLiveDetail = async (id) => {
       ? l.sales
           .map((m) => {
             const margin = saleMargin(m);
-            return `<tr class="${m.cancelled ? 'row-cancelled' : ''}">
+            const failed = m.payment_status === 'failed' && !m.cancelled;
+            return `<tr class="${m.cancelled ? 'row-cancelled' : ''} ${failed ? 'row-unpaid' : ''}">
           <td><strong>${m.is_gift ? '🎁 ' : ''}${m.sale_no ? '#' + m.sale_no : ''}</strong></td>
           <td>${timeFr(m.created_at)}</td>
           <td>${escapeHtml(m.product_name)}${m.product_sku ? ` <span class="product-sku">(${escapeHtml(m.product_sku)})</span>` : ''}</td>
           <td>${euro(m.product_price)}</td>
           <td>${m.is_gift ? '<span class="muted-cell">offert</span>' : m.sold_price != null ? `<strong>${euro(m.sold_price)}</strong>` : '<span class="muted-cell">—</span>'}</td>
-          <td>${m.fees != null && !m.is_gift ? euro(m.fees) : '<span class="muted-cell">—</span>'}</td>
-          <td class="${margin >= 0 ? 'delta-pos' : 'delta-neg'}">${m.cancelled ? '' : euro(margin)}</td>
-          <td>${m.cancelled ? (m.is_gift ? 'annulé' : 'annulée') : m.is_gift ? 'cadeau' : 'vendue'}</td>
+          <td>${m.net_amount != null && !m.is_gift ? euro(m.net_amount) : m.fees != null && !m.is_gift ? euro((m.sold_price ?? m.product_price) - m.fees) : '<span class="muted-cell">—</span>'}</td>
+          <td class="${margin >= 0 ? 'delta-pos' : 'delta-neg'}">${m.cancelled || failed ? '' : euro(margin)}</td>
+          <td>${m.payment_status && !m.is_gift ? PAYMENT_LABELS[m.payment_status] || m.payment_status : '<span class="muted-cell">—</span>'}</td>
+          <td>${m.cancelled
+            ? (m.is_gift ? 'annulé' : 'annulée')
+            : m.is_gift
+              ? 'cadeau'
+              : failed
+                ? `<button class="btn small" onclick="liveRestock(${m.id}, ${l.id})" title="Annuler la vente et remettre l'article en stock">↩ Restock</button>`
+                : 'vendue'}</td>
         </tr>`;
           })
           .join('')
-      : '<tr><td colspan="8">Aucune vente pendant ce live</td></tr>';
+      : '<tr><td colspan="9">Aucune vente pendant ce live</td></tr>';
 
+    // Lignes hors « Vue à l'écran » : gives et produits boutique de la plateforme
+    const extraRows = (l.extra_lines || [])
+      .map(
+        (x) => `<tr class="${x.payment_status === 'failed' ? 'row-unpaid' : ''}">
+        <td>${EXTRA_KIND_LABELS[x.kind] || x.kind}</td>
+        <td>${escapeHtml(x.ref)}</td>
+        <td>${escapeHtml(x.label)}</td>
+        <td>${x.sold_price != null ? euro(x.sold_price) : '<span class="muted-cell">—</span>'}</td>
+        <td>${x.net_amount != null ? euro(x.net_amount) : '<span class="muted-cell">—</span>'}</td>
+        <td>${PAYMENT_LABELS[x.payment_status] || x.payment_status}</td>
+      </tr>`
+      )
+      .join('');
+
+    // Bandeau d'état : rapport manquant → alerte rouge ; importé mais non
+    // validé → étape de vérification ; validé → confirmation
+    let statusBlock = '';
+    if (l.ended_at && !l.report_imported_at) {
+      statusBlock = `<div class="verify-banner missing">
+        ⚠ <strong>Rapport de la plateforme non importé.</strong>
+        Importez le CSV des ventes ci-dessous pour vérifier les paiements et calculer vos gains réels.
+      </div>`;
+    } else if (l.ended_at && !l.validated_at) {
+      const problems = [
+        ...l.sales.filter((m) => !m.cancelled && !m.is_gift && (m.payment_status === 'failed' || m.payment_status === 'pending')),
+      ];
+      const extraProblems = (l.extra_lines || []).filter((x) => x.payment_status === 'failed' || x.payment_status === 'pending');
+      const problemList = [
+        ...problems.map(
+          (m) => `<li>${PAYMENT_LABELS[m.payment_status]} — Vue à l'écran <strong>#${m.sale_no}</strong> ${escapeHtml(m.product_name)}
+            (${euro(m.sold_price != null ? m.sold_price : m.product_price)})
+            ${m.payment_status === 'failed' ? `<button class="btn small" onclick="liveRestock(${m.id}, ${l.id})">↩ Restock</button>` : ''}</li>`
+        ),
+        ...extraProblems.map(
+          (x) => `<li>${PAYMENT_LABELS[x.payment_status]} — ${escapeHtml(x.ref)} ${escapeHtml(x.label)}
+            (${x.sold_price != null ? euro(x.sold_price) : '?'})</li>`
+        ),
+      ].join('');
+      statusBlock = `<div class="verify-panel">
+        <strong>🟠 Étape de vérification</strong>
+        ${problemList
+          ? `<p class="muted small">Ventes non réglées détectées dans le rapport — vérifiez-les avant de valider.
+             « Restock » annule la vente et remet l'article en stock (elle est déjà exclue du CA et de la marge).</p>
+             <ul class="verify-list">${problemList}</ul>`
+          : '<p class="muted small">Aucun problème de paiement détecté dans le rapport. Vous pouvez valider ce live.</p>'}
+        <button class="btn success-btn" onclick="validateLive(${l.id})">✅ Valider ce live</button>
+      </div>`;
+    } else if (l.validated_at) {
+      statusBlock = `<div class="verify-banner validated">✅ Live vérifié et validé le ${dateFr(l.validated_at)}</div>`;
+    }
+
+    const ht = httc(l.revenue);
     $('#liveDetail').innerHTML = `
       <h3>${PLATFORM_LABELS[l.platform]} — ${dateFr(l.started_at)}</h3>
+      ${statusBlock}
       <div class="recap-grid wide">
         <div class="stat"><div class="value">${l.items}</div><div class="label">Articles vendus</div></div>
         <div class="stat"><div class="value">${l.gifts}</div><div class="label">🎁 Cadeaux offerts</div></div>
-        <div class="stat"><div class="value">${euro(l.revenue)}</div><div class="label">Chiffre d'affaires${l.reported > 0 ? ' (réel)' : ' (catalogue)'}</div></div>
-        <div class="stat"><div class="value">${euro(l.margin)}</div><div class="label">Marge estimée</div></div>
+        <div class="stat"><div class="value">${euro(l.revenue)}</div><div class="label">CA TTC${l.reported > 0 ? ' (réel)' : ' (catalogue)'}</div></div>
+        <div class="stat"><div class="value">${euro(ht)}</div><div class="label">CA HT</div></div>
+        <div class="stat"><div class="value">${euro(l.revenue - ht)}</div><div class="label">TVA collectée (${vatRate} %)</div></div>
+        <div class="stat"><div class="value">${euro(l.margin)}</div><div class="label">Marge nette estimée</div></div>
+        <div class="stat ${l.unpaid > 0 ? 'alert' : ''}"><div class="value">${l.unpaid}</div><div class="label">⚠ Non réglée(s)</div></div>
         <div class="stat"><div class="value">${l.reported}/${l.items}</div><div class="label">Ventes associées au rapport</div></div>
       </div>
 
       <div class="report-import">
         <strong>📄 Rapport de la plateforme</strong>
-        <p class="muted small">Importez le CSV des ventes exporté depuis ${PLATFORM_LABELS[l.platform]} :
-          chaque ligne est associée à la vente correspondante grâce à son numéro (#1, #2…),
-          pour récupérer le prix de vente réel et calculer votre marge.</p>
+        <p class="muted small">Importez le CSV des ventes exporté depuis ${PLATFORM_LABELS[l.platform]}.
+          Les lignes « Vue à l'écran #1, #2… » sont associées à vos ventes enregistrées pendant le live ;
+          les gives (abonné / acheteur) et les produits référencés dans la boutique sont ajoutés à part,
+          chacun ayant sa propre numérotation.</p>
         <button class="btn primary" onclick="document.getElementById('reportFile').click()">Choisir le fichier CSV</button>
         <input type="file" id="reportFile" accept=".csv,.xlsx,.xls,.tsv" hidden onchange="previewReport(${l.id}, this.files[0])">
         <div id="reportConfig" hidden></div>
@@ -619,7 +752,7 @@ window.showLiveDetail = async (id) => {
       </div>
 
       ${productRows ? `
-      <h4>Produits vendus</h4>
+      <h4>Produits vendus (Vue à l'écran)</h4>
       <div class="table-wrap">
         <table>
           <thead><tr><th>Produit</th><th>Quantité</th><th>Total</th><th>Marge</th></tr></thead>
@@ -627,15 +760,51 @@ window.showLiveDetail = async (id) => {
         </table>
       </div>` : ''}
 
-      <h4>Toutes les ventes <a class="export-link" href="/api/lives/${l.id}/export.csv">⬇ Exporter en CSV</a></h4>
+      <h4>Ventes « Vue à l'écran » <a class="export-link" href="/api/lives/${l.id}/export.csv">⬇ Exporter en CSV</a></h4>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>N°</th><th>Heure</th><th>Produit</th><th>Prix catalogue</th><th>Prix vendu</th><th>Frais</th><th>Marge</th><th>Statut</th></tr></thead>
+          <thead><tr><th>N°</th><th>Heure</th><th>Produit</th><th>Prix catalogue</th><th>Prix vendu</th><th>Gains nets</th><th>Marge</th><th>Paiement</th><th>Statut</th></tr></thead>
           <tbody>${rows}</tbody>
         </table>
-      </div>`;
+      </div>
+
+      ${extraRows ? `
+      <h4>Autres ventes du live (gives, produits boutique)</h4>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Type</th><th>Référence</th><th>Produit</th><th>Prix</th><th>Gains nets</th><th>Paiement</th></tr></thead>
+          <tbody>${extraRows}</tbody>
+        </table>
+      </div>` : ''}`;
     $('#liveDetail').hidden = false;
     $('#liveDetail').scrollIntoView({ behavior: 'smooth' });
+  } catch (e) {
+    toast(e.message, true);
+  }
+};
+
+// Valider un live après vérification
+window.validateLive = async (id) => {
+  try {
+    await api(`/api/lives/${id}/validate`, { method: 'POST' });
+    toast('✅ Live validé');
+    await loadLives();
+    await showLiveDetail(id);
+    loadStats();
+  } catch (e) {
+    toast(e.message, true);
+  }
+};
+
+// Annuler une vente non payée depuis le détail (l'article revient en stock)
+window.liveRestock = async (movementId, liveId) => {
+  if (!confirm('Annuler cette vente non payée et remettre l\'article en stock ?')) return;
+  try {
+    await api(`/api/movements/${movementId}/cancel`, { method: 'POST' });
+    toast('Vente annulée, article remis en stock');
+    await loadLives();
+    await showLiveDetail(liveId);
+    loadProducts();
   } catch (e) {
     toast(e.message, true);
   }
@@ -645,8 +814,11 @@ window.showLiveDetail = async (id) => {
 // Import du rapport de ventes de la plateforme (dans le détail d'un live)
 // ---------------------------------------------------------------------------
 const REPORT_FIELDS = [
-  { key: 'sale_no', label: 'Numéro de vente (#)' },
-  { key: 'sold_price', label: 'Prix de vente' },
+  { key: 'sale_no', label: 'Référence de vente (ex : Vue à l\'écran #8)' },
+  { key: 'name', label: 'Nom du produit (optionnel)' },
+  { key: 'sold_price', label: 'Prix de vente (TTC)' },
+  { key: 'net_amount', label: 'Gains nets (« Statut du gains »)' },
+  { key: 'payment_status', label: 'Statut du paiement (optionnel)' },
   { key: 'fees', label: 'Frais / commission (optionnel)' },
 ];
 let currentReport = null; // { liveId, importId, headers, ... }
@@ -700,14 +872,17 @@ window.commitReport = async () => {
     });
     const liveId = currentReport.liveId;
     currentReport = null;
-    let msg = `✅ ${result.matched} vente(s) associée(s)`;
+    let msg = `✅ ${result.matched} vente(s) « Vue à l'écran » associée(s)`;
+    if (result.extras) msg += ` · ${result.extras} ligne(s) hors écran (gives, boutique)`;
+    if (result.unpaid) msg += ` · ⚠ ${result.unpaid} non réglée(s) à vérifier`;
     if (result.unmatched.length) {
-      msg += ` — non trouvées dans ce live : ${result.unmatched.slice(0, 10).join(', ')}${result.unmatched.length > 10 ? '…' : ''}`;
+      msg += ` — numéros introuvables : ${result.unmatched.slice(0, 10).join(', ')}${result.unmatched.length > 10 ? '…' : ''}`;
     }
     if (result.skipped) msg += ` · ${result.skipped} ligne(s) sans numéro ignorée(s)`;
     toast(msg);
     await loadLives();
     await showLiveDetail(liveId);
+    loadStats();
   } catch (e) {
     toast(e.message, true);
   }
@@ -950,4 +1125,5 @@ async function loadMovements() {
 }
 
 // ---------------------------------------------------------------------------
+loadSettings();
 loadProducts().then(resumeActiveLive);

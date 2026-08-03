@@ -23,17 +23,28 @@ Cliquez sur **« Lancer un live »**, choisissez la plateforme (TikTok ou Whatno
 - **« Terminer le live »** affiche le récap : durée, articles vendus, chiffre d'affaires.
 - Si la page se recharge pendant un live, la session en cours est **reprise automatiquement**.
 
-## 📄 Rapport de la plateforme et marge
+## 📄 Rapport de la plateforme, vérification et marge
 
-Après le live, exportez le CSV des ventes depuis Whatnot ou TikTok et importez-le dans le **détail du live** (onglet Lives → Détail → « Choisir le fichier CSV ») :
+Le mode live de l'app correspond aux ventes **« Vue à l'écran »**. Le rapport CSV exporté depuis Whatnot peut aussi contenir des **gives** (abonné / acheteur, avec parfois des frais de livraison) et des **produits référencés dans la boutique** de la plateforme — chaque type ayant sa **propre numérotation** (`Vue à l'écran #1`, `Give abonné #1`, `iPad 8 #1`…).
 
-- chaque ligne du rapport est **associée à la vente correspondante grâce à son numéro** (#1, #2…) ;
-- l'application récupère le **prix de vente réel** (enchères, promos…) et les **frais de la plateforme** ;
-- votre **marge** est calculée automatiquement : prix vendu − frais − coût d'achat.
+Après le live, importez le rapport dans le **détail du live** (onglet Lives → Détail → « Choisir le fichier CSV ») :
 
-Le détail d'un live affiche alors : chiffre d'affaires réel, marge totale, récapitulatif par produit (quantités, total, marge) et chaque vente numérotée et horodatée — le tout exportable en CSV.
+- les lignes **« Vue à l'écran »** sont associées à vos ventes enregistrées grâce à leur numéro ;
+- les **gives** et **ventes boutique** sont ajoutés à part et comptés dans le bilan du live ;
+- l'app récupère le **prix de vente réel (TTC)**, les **gains nets** (colonne « Statut du gains » = ce que vous touchez après commission et frais) et le **statut du paiement** ;
+- la **marge nette** est calculée : gains nets − coût d'achat (cadeaux inclus).
 
-L'onglet **Lives** garde l'historique de toutes vos sessions : date et heure, plateforme, durée, articles vendus, chiffre d'affaires et marge.
+### ✅ Vérification et validation
+
+- Les ventes en **échec de paiement** ou **en attente** sont détectées et listées dans une étape de vérification ; elles sont **exclues du CA et de la marge**, avec un bouton **↩ Restock** pour annuler la vente et remettre l'article en stock.
+- Vous **validez manuellement** chaque live après vérification.
+- Tant que le rapport n'est pas importé, la ligne du live est **rouge** (⚠ Rapport à importer) ; importé mais non validé → **orange** (🟠 À valider) ; validé → ✅. Une **alerte sur le tableau de bord** rappelle le nombre de lives à vérifier.
+
+### 💶 TVA
+
+Le taux de TVA est configurable (20 % par défaut, onglet Lives). Chaque live affiche : **CA TTC**, **CA HT** et **TVA collectée**.
+
+L'onglet **Lives** garde l'historique de toutes vos sessions : date et heure, plateforme, durée, articles vendus (+ cadeaux + hors écran), CA TTC, marge et statut de vérification.
 
 ## Fonctionnalités
 

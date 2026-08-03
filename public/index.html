@@ -39,12 +39,20 @@
   <!-- ===================== LIVES (historique des sessions) ===================== -->
   <main id="tab-lives" class="tab-panel" hidden>
     <div class="card">
-      <h2>Historique des lives</h2>
-      <p class="muted">Chaque live est enregistré avec sa date, sa plateforme et toutes les ventes horodatées.</p>
+      <div class="lives-head">
+        <div>
+          <h2>Historique des lives</h2>
+          <p class="muted">Chaque live est enregistré avec sa date, sa plateforme et toutes les ventes horodatées.<br>
+          Après chaque live, <strong>importez le rapport CSV de la plateforme</strong> pour vérifier les paiements, puis validez le live.</p>
+        </div>
+        <label class="vat-setting">Taux de TVA
+          <span><input id="vatRate" type="number" min="0" max="100" step="0.1" value="20"> %</span>
+        </label>
+      </div>
       <div class="table-wrap">
         <table id="livesTable">
           <thead>
-            <tr><th>Date</th><th>Plateforme</th><th>Durée</th><th>Articles vendus</th><th>Chiffre d'affaires</th><th>Marge</th><th></th></tr>
+            <tr><th>Date</th><th>Plateforme</th><th>Durée</th><th>Articles vendus</th><th>CA TTC</th><th>Marge</th><th>Statut</th><th></th></tr>
           </thead>
           <tbody></tbody>
         </table>
