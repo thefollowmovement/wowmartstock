@@ -368,18 +368,65 @@ function getSetting(key, fallback) {
   return row ? row.value : fallback;
 }
 
+function setSetting(key, value) {
+  db.prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value')
+    .run(key, String(value));
+}
+
+// Barème de frais par plateforme, pour estimer les gains nets avant l'import
+// du rapport. Valeurs Whatnot relevées sur un détail de vente réel :
+// commission 6,67 % du prix + frais de traitement 2,42 % + 0,25 €.
+const DEFAULT_FEES = {
+  whatnot: { commission: 6.67, processing: 2.42, fixed: 0.25 },
+  tiktok: { commission: 0, processing: 0, fixed: 0 },
+};
+
+function getFees(platform) {
+  const base = DEFAULT_FEES[platform] || { commission: 0, processing: 0, fixed: 0 };
+  try {
+    const raw = getSetting(`fees_${platform}`, null);
+    if (raw) return { ...base, ...JSON.parse(raw) };
+  } catch (e) {
+    /* base conservée */
+  }
+  return base;
+}
+
 app.get('/api/settings', (req, res) => {
-  res.json({ vat_rate: parseFloat(getSetting('vat_rate', '20')) });
+  res.json({
+    vat_rate: parseFloat(getSetting('vat_rate', '20')),
+    fees: { whatnot: getFees('whatnot'), tiktok: getFees('tiktok') },
+  });
 });
 
 app.put('/api/settings', (req, res) => {
-  const rate = parseFloat(req.body.vat_rate);
-  if (!Number.isFinite(rate) || rate < 0 || rate > 100) {
-    return res.status(400).json({ error: 'Taux de TVA invalide (entre 0 et 100)' });
+  if (req.body.vat_rate !== undefined) {
+    const rate = parseFloat(req.body.vat_rate);
+    if (!Number.isFinite(rate) || rate < 0 || rate > 100) {
+      return res.status(400).json({ error: 'Taux de TVA invalide (entre 0 et 100)' });
+    }
+    setSetting('vat_rate', rate);
   }
-  db.prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value')
-    .run('vat_rate', String(rate));
-  res.json({ vat_rate: rate });
+  if (req.body.fees) {
+    for (const platform of ['whatnot', 'tiktok']) {
+      const f = req.body.fees[platform];
+      if (!f) continue;
+      const commission = parseFloat(f.commission);
+      const processing = parseFloat(f.processing);
+      const fixed = parseFloat(f.fixed);
+      if (
+        ![commission, processing, fixed].every(Number.isFinite) ||
+        commission < 0 || commission > 100 || processing < 0 || processing > 100 || fixed < 0 || fixed > 100
+      ) {
+        return res.status(400).json({ error: `Frais ${platform} invalides` });
+      }
+      setSetting(`fees_${platform}`, JSON.stringify({ commission, processing, fixed }));
+    }
+  }
+  res.json({
+    vat_rate: parseFloat(getSetting('vat_rate', '20')),
+    fees: { whatnot: getFees('whatnot'), tiktok: getFees('tiktok') },
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -444,9 +491,13 @@ const sessionExtras = db.prepare('SELECT * FROM live_extras WHERE session_id = ?
 
 // Les cadeaux (is_gift=1) ont un prix de vente de 0 : leur coût d'achat est
 // déduit de la marge. Les ventes en échec de paiement sont exclues du CA et
-// de la marge. Gains nets = « Statut du gains » de la plateforme (après
-// commission et frais) quand il est importé, sinon prix vendu − frais.
+// de la marge. Gains nets = « Statut du gains » de la plateforme quand il est
+// importé ; sinon estimation avec le barème de frais de la plateforme
+// (commission % + traitement % + fixe €).
 function sessionSummary(session) {
+  const fees = getFees(session.platform);
+  const feePct = (fees.commission + fees.processing) / 100;
+  const feeFixed = fees.fixed;
   const agg = db
     .prepare(
       `SELECT COALESCE(SUM(CASE WHEN m.is_gift = 0 THEN -m.delta ELSE 0 END),0) AS items,
@@ -454,14 +505,17 @@ function sessionSummary(session) {
               COALESCE(SUM(CASE WHEN COALESCE(m.payment_status,'paid') != 'failed'
                 THEN -m.delta * COALESCE(m.sold_price, p.price) ELSE 0 END),0) AS revenue,
               COALESCE(SUM(CASE WHEN COALESCE(m.payment_status,'paid') != 'failed'
-                THEN -m.delta * (COALESCE(m.net_amount, COALESCE(m.sold_price, p.price) - COALESCE(m.fees,0)) - p.cost)
+                THEN -m.delta * (COALESCE(m.net_amount,
+                  COALESCE(m.sold_price, p.price) - COALESCE(m.fees,
+                    CASE WHEN COALESCE(m.sold_price, p.price) > 0
+                      THEN COALESCE(m.sold_price, p.price) * ? + ? ELSE 0 END)) - p.cost)
                 ELSE 0 END),0) AS margin,
               COALESCE(SUM(CASE WHEN m.is_gift = 0 AND m.sold_price IS NOT NULL THEN 1 ELSE 0 END),0) AS reported,
               COALESCE(SUM(CASE WHEN m.is_gift = 0 AND m.payment_status IN ('failed','pending') THEN 1 ELSE 0 END),0) AS unpaid
        FROM movements m JOIN products p ON p.id = m.product_id
        WHERE m.session_id = ? AND m.delta < 0 AND m.cancelled = 0`
     )
-    .get(session.id);
+    .get(feePct, feeFixed, session.id);
   const extras = db
     .prepare(
       `SELECT COUNT(*) AS n,
@@ -520,6 +574,7 @@ app.get('/api/lives/:id', (req, res) => {
     ...sessionSummary(session),
     sales: sessionSales.all(session.id),
     extra_lines: sessionExtras.all(session.id),
+    fee_config: getFees(session.platform),
   });
 });
 
@@ -581,9 +636,12 @@ app.get('/api/lives/:id/export.csv', (req, res) => {
     return /[;"\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
   };
   const PAYMENT_FR = { paid: 'payé', pending: 'en attente', failed: 'échec' };
+  const feeCfg = getFees(session.platform);
+  const estFees = (price) =>
+    price > 0 ? (price * (feeCfg.commission + feeCfg.processing)) / 100 + feeCfg.fixed : 0;
   const lines = sales.map((m) => {
     const eff = m.sold_price != null ? m.sold_price : m.product_price;
-    const net = m.net_amount != null ? m.net_amount : eff - (m.fees || 0);
+    const net = m.net_amount != null ? m.net_amount : eff - (m.fees != null ? m.fees : estFees(eff));
     const margin = m.cancelled ? '' : (net - m.product_cost).toFixed(2);
     return [
       m.sale_no ? `Vue à l'écran #${m.sale_no}` : '',
@@ -620,10 +678,10 @@ app.get('/api/lives/:id/export.csv', (req, res) => {
 const REPORT_PATTERNS = {
   sale_no: /^#$|^#?\s*(n°|no\b|num[ée]ro|order|commande|vente|sale|listing|placement)/i,
   name: /(produit|product|nom|name|titre|title|listing|article|description)/i,
-  sold_price: /(prix de vente|prix vendu|sold ?price|sale ?price|final ?price|sous.total|subtotal|price)/i,
-  net_amount: /(statut? du gain|gains?|earn|net|payout|revers|vers[ée])/i,
+  sold_price: /(prix de vente|prix vendu|^prix$|total de la commande|sold ?price|sale ?price|final ?price|sous.total|subtotal|price|montant)/i,
+  net_amount: /(gains? nets?|statut? du gain|gains?|earn|net|payout|revers|vers[ée])/i,
   payment_status: /(statut.*(paiement|commande)|paiement|payment|pay[ée]|status)/i,
-  fees: /(frais|fee|commission)/i,
+  fees: /(frais de traitement|commission|frais|fee)/i,
 };
 
 // Statut de paiement normalisé depuis le texte de la plateforme

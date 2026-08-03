@@ -108,15 +108,31 @@ async function loadStats() {
 }
 
 // ---------------------------------------------------------------------------
-// Réglage du taux de TVA
+// Réglages : taux de TVA + barème de frais des plateformes
 // ---------------------------------------------------------------------------
+let platformFees = {
+  whatnot: { commission: 6.67, processing: 2.42, fixed: 0.25 },
+  tiktok: { commission: 0, processing: 0, fixed: 0 },
+};
+
+function fillFeesInputs() {
+  $('#feeWnComm').value = platformFees.whatnot.commission;
+  $('#feeWnProc').value = platformFees.whatnot.processing;
+  $('#feeWnFixed').value = platformFees.whatnot.fixed;
+  $('#feeTtComm').value = platformFees.tiktok.commission;
+  $('#feeTtProc').value = platformFees.tiktok.processing;
+  $('#feeTtFixed').value = platformFees.tiktok.fixed;
+}
+
 async function loadSettings() {
   try {
     const s = await api('/api/settings');
     vatRate = s.vat_rate;
     $('#vatRate').value = vatRate;
+    if (s.fees) platformFees = s.fees;
+    fillFeesInputs();
   } catch (e) {
-    /* valeur par défaut conservée */
+    /* valeurs par défaut conservées */
   }
 }
 
@@ -129,6 +145,34 @@ $('#vatRate').addEventListener('change', async () => {
     });
     vatRate = s.vat_rate;
     toast(`Taux de TVA enregistré : ${vatRate} %`);
+  } catch (e) {
+    toast(e.message, true);
+  }
+});
+
+$('#btnSaveFees').addEventListener('click', async () => {
+  try {
+    const s = await api('/api/settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        fees: {
+          whatnot: {
+            commission: parseFloat($('#feeWnComm').value),
+            processing: parseFloat($('#feeWnProc').value),
+            fixed: parseFloat($('#feeWnFixed').value),
+          },
+          tiktok: {
+            commission: parseFloat($('#feeTtComm').value),
+            processing: parseFloat($('#feeTtProc').value),
+            fixed: parseFloat($('#feeTtFixed').value),
+          },
+        },
+      }),
+    });
+    platformFees = s.fees;
+    toast('Frais des plateformes enregistrés');
+    loadLives();
   } catch (e) {
     toast(e.message, true);
   }
@@ -521,6 +565,7 @@ $('#btnEndLive').addEventListener('click', async () => {
         <div class="stat"><div class="value">${dur} min</div><div class="label">Durée</div></div>
         <div class="stat"><div class="value">${session.items}${session.gifts ? ` <small>+ ${session.gifts} 🎁</small>` : ''}</div><div class="label">Articles vendus${session.gifts ? ' + cadeaux' : ''}</div></div>
         <div class="stat"><div class="value">${euro(session.revenue)}</div><div class="label">Chiffre d'affaires</div></div>
+        <div class="stat"><div class="value">${euro(session.margin)}</div><div class="label">Marge nette estimée (frais déduits)</div></div>
       </div>
       <p class="muted">💡 Importez ensuite le rapport CSV de la plateforme depuis l'onglet <strong>Lives</strong> → Détail, pour récupérer les prix de vente réels et calculer votre marge.</p>
       <p><a class="btn" href="/api/lives/${session.id}/export.csv">⬇ Exporter les ventes de ce live (CSV)</a></p>`;
@@ -599,13 +644,18 @@ async function loadLives() {
     : '<tr><td colspan="8">Aucun live pour l\'instant — cliquez sur « 🔴 Lancer un live » pour commencer</td></tr>';
 }
 
-// Marge d'une vente : gains nets de la plateforme (« Statut du gains ») si
-// importés, sinon prix vendu − frais ; moins le coût d'achat
-const saleNet = (m) =>
-  m.net_amount != null
-    ? m.net_amount
-    : (m.sold_price != null ? m.sold_price : m.product_price) - (m.fees || 0);
+// Marge d'une vente : gains nets de la plateforme si importés, sinon
+// estimation avec le barème de frais (commission % + traitement % + fixe €)
+let detailFees = { commission: 0, processing: 0, fixed: 0 }; // frais du live affiché
+const estPlatformFees = (price) =>
+  price > 0 ? (price * (detailFees.commission + detailFees.processing)) / 100 + detailFees.fixed : 0;
+const saleNet = (m) => {
+  if (m.net_amount != null) return m.net_amount;
+  const eff = m.sold_price != null ? m.sold_price : m.product_price;
+  return eff - (m.fees != null ? m.fees : estPlatformFees(eff));
+};
 const saleMargin = (m) => saleNet(m) - m.product_cost;
+const saleNetIsEstimated = (m) => m.net_amount == null && m.fees == null;
 
 const PAYMENT_LABELS = {
   paid: '<span class="pay-badge paid">payé</span>',
@@ -621,6 +671,7 @@ const EXTRA_KIND_LABELS = {
 window.showLiveDetail = async (id) => {
   try {
     const l = await api(`/api/lives/${id}`);
+    if (l.fee_config) detailFees = l.fee_config;
     const valid = l.sales.filter((m) => !m.cancelled);
 
     // Récap des produits vendus (agrégé) — les cadeaux sur une ligne à part
@@ -658,7 +709,11 @@ window.showLiveDetail = async (id) => {
           <td>${escapeHtml(m.product_name)}${m.product_sku ? ` <span class="product-sku">(${escapeHtml(m.product_sku)})</span>` : ''}</td>
           <td>${euro(m.product_price)}</td>
           <td>${m.is_gift ? '<span class="muted-cell">offert</span>' : m.sold_price != null ? `<strong>${euro(m.sold_price)}</strong>` : '<span class="muted-cell">—</span>'}</td>
-          <td>${m.net_amount != null && !m.is_gift ? euro(m.net_amount) : m.fees != null && !m.is_gift ? euro((m.sold_price ?? m.product_price) - m.fees) : '<span class="muted-cell">—</span>'}</td>
+          <td>${m.is_gift
+            ? '<span class="muted-cell">—</span>'
+            : saleNetIsEstimated(m)
+              ? `<span class="muted-cell" title="Estimation avec le barème de frais — importez le rapport pour la valeur exacte">≈ ${euro(saleNet(m))}</span>`
+              : `<strong>${euro(saleNet(m))}</strong>`}</td>
           <td class="${margin >= 0 ? 'delta-pos' : 'delta-neg'}">${m.cancelled || failed ? '' : euro(margin)}</td>
           <td>${m.payment_status && !m.is_gift ? PAYMENT_LABELS[m.payment_status] || m.payment_status : '<span class="muted-cell">—</span>'}</td>
           <td>${m.cancelled

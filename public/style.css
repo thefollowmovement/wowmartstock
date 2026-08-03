@@ -546,6 +546,25 @@ form input {
 
 /* ---------- Vérification des lives (rapport / validation) ---------- */
 .lives-head { display: flex; justify-content: space-between; gap: 16px; align-items: flex-start; flex-wrap: wrap; }
+.settings-side { display: flex; flex-direction: column; gap: 10px; align-items: flex-end; }
+.fees-setting {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 8px 12px;
+  font-size: .85rem;
+  max-width: 340px;
+}
+.fees-setting summary { cursor: pointer; color: var(--muted); font-weight: 600; }
+.fees-setting .muted.small { margin: 8px 0; }
+.fees-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.fees-grid strong { grid-column: 1 / -1; margin-top: 4px; }
+.fees-grid label { display: flex; flex-direction: column; gap: 3px; font-size: .78rem; color: var(--muted); }
+.fees-grid input { padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; width: 100%; }
 .vat-setting { display: flex; flex-direction: column; gap: 4px; font-size: .85rem; color: var(--muted); }
 .vat-setting span { display: flex; align-items: center; gap: 6px; }
 .vat-setting input {
