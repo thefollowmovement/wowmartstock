@@ -67,11 +67,34 @@ CREATE TABLE IF NOT EXISTS live_sessions (
 );
 `);
 
-// Migration : ajout des colonnes session_id / cancelled aux bases existantes
+// Migration : ajout des colonnes session_id / cancelled / sale_no / sold_price / fees
 {
   const mcols = db.prepare('PRAGMA table_info(movements)').all().map((c) => c.name);
   if (!mcols.includes('session_id')) db.exec('ALTER TABLE movements ADD COLUMN session_id INTEGER');
   if (!mcols.includes('cancelled')) db.exec('ALTER TABLE movements ADD COLUMN cancelled INTEGER NOT NULL DEFAULT 0');
+  if (!mcols.includes('sale_no')) db.exec('ALTER TABLE movements ADD COLUMN sale_no INTEGER');
+  if (!mcols.includes('sold_price')) db.exec('ALTER TABLE movements ADD COLUMN sold_price REAL');
+  if (!mcols.includes('fees')) db.exec('ALTER TABLE movements ADD COLUMN fees REAL');
+
+  // Numérotation rétroactive des ventes des lives existants (#1, #2… par ordre chronologique)
+  const toNumber = db
+    .prepare(
+      `SELECT id, session_id FROM movements
+       WHERE session_id IS NOT NULL AND delta < 0 AND sale_no IS NULL
+       ORDER BY session_id, id`
+    )
+    .all();
+  if (toNumber.length) {
+    withTransaction(() => {
+      const counters = new Map();
+      const upd = db.prepare('UPDATE movements SET sale_no = ? WHERE id = ?');
+      for (const m of toNumber) {
+        const n = (counters.get(m.session_id) || 0) + 1;
+        counters.set(m.session_id, n);
+        upd.run(n, m.id);
+      }
+    });
+  }
 }
 
 // Migration depuis l'ancien schéma à stock par canal → stock unique partagé.
@@ -106,13 +129,13 @@ const MOVEMENT_CHANNELS = [...SALE_CHANNELS, 'live', 'adjust'];
 
 const now = () => new Date().toISOString();
 
-function logMovement(productId, channel, delta, stockAfter, reason, sessionId = null) {
+function logMovement(productId, channel, delta, stockAfter, reason, sessionId = null, saleNo = null) {
   return db
     .prepare(
-      `INSERT INTO movements (product_id, channel, delta, stock_after, reason, created_at, session_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO movements (product_id, channel, delta, stock_after, reason, created_at, session_id, sale_no)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
     )
-    .run(productId, channel, delta, stockAfter, reason || '', now(), sessionId).lastInsertRowid;
+    .run(productId, channel, delta, stockAfter, reason || '', now(), sessionId, saleNo).lastInsertRowid;
 }
 
 // ---------------------------------------------------------------------------
@@ -269,14 +292,22 @@ app.post('/api/products/:id/stock', (req, res) => {
   }
   const after = Math.max(0, existing.stock + delta);
   const realDelta = after - existing.stock;
-  if (realDelta === 0) return res.json({ product: existing, movement_id: null });
+  if (realDelta === 0) return res.json({ product: existing, movement_id: null, sale_no: null });
   db.prepare('UPDATE products SET stock = ?, updated_at = ? WHERE id = ?').run(after, now(), id);
   const defaultReason =
     realDelta < 0 && SALE_CHANNELS.includes(channel) ? 'Vente' : 'Ajustement rapide';
-  const movementId = logMovement(id, channel, realDelta, after, req.body.reason || defaultReason, sessionId);
+  // Numéro de vente séquentiel dans le live (#1, #2…), comme sur Whatnot / TikTok
+  let saleNo = null;
+  if (sessionId && realDelta < 0) {
+    saleNo = db
+      .prepare('SELECT COALESCE(MAX(sale_no), 0) + 1 AS n FROM movements WHERE session_id = ?')
+      .get(sessionId).n;
+  }
+  const movementId = logMovement(id, channel, realDelta, after, req.body.reason || defaultReason, sessionId, saleNo);
   res.json({
     product: db.prepare('SELECT * FROM products WHERE id = ?').get(id),
     movement_id: movementId,
+    sale_no: saleNo,
   });
 });
 
@@ -336,25 +367,31 @@ app.get('/api/stats', (req, res) => {
 // ---------------------------------------------------------------------------
 // Lives (sessions TikTok / Whatnot)
 // ---------------------------------------------------------------------------
+// Prix effectif d'une vente : le prix réel du rapport de la plateforme
+// (sold_price) s'il a été importé, sinon le prix catalogue du produit.
+// Marge = prix effectif − frais de la plateforme − coût d'achat.
 const sessionSales = db.prepare(
   `SELECT m.id, m.created_at, m.delta, m.channel, m.reason, m.cancelled,
+          m.sale_no, m.sold_price, m.fees,
           p.id AS product_id, p.name AS product_name, p.sku AS product_sku,
-          p.price AS product_price, p.photo AS product_photo
+          p.price AS product_price, p.cost AS product_cost, p.photo AS product_photo
    FROM movements m JOIN products p ON p.id = m.product_id
    WHERE m.session_id = ? AND m.delta < 0
-   ORDER BY m.id DESC`
+   ORDER BY m.sale_no DESC, m.id DESC`
 );
 
 function sessionSummary(session) {
   const agg = db
     .prepare(
       `SELECT COALESCE(SUM(-m.delta),0) AS items,
-              COALESCE(SUM(-m.delta * p.price),0) AS revenue
+              COALESCE(SUM(-m.delta * COALESCE(m.sold_price, p.price)),0) AS revenue,
+              COALESCE(SUM(-m.delta * (COALESCE(m.sold_price, p.price) - COALESCE(m.fees,0) - p.cost)),0) AS margin,
+              COUNT(m.sold_price) AS reported
        FROM movements m JOIN products p ON p.id = m.product_id
        WHERE m.session_id = ? AND m.delta < 0 AND m.cancelled = 0`
     )
     .get(session.id);
-  return { ...session, items: agg.items, revenue: agg.revenue };
+  return { ...session, items: agg.items, revenue: agg.revenue, margin: agg.margin, reported: agg.reported };
 }
 
 // Démarrer un live : { platform: "tiktok"|"whatnot", name? }
@@ -411,17 +448,120 @@ app.get('/api/lives/:id/export.csv', (req, res) => {
     const s = String(v ?? '');
     return /[;"\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
   };
-  const lines = sales.map((m) =>
-    [
+  const lines = sales.map((m) => {
+    const eff = m.sold_price != null ? m.sold_price : m.product_price;
+    const margin = m.cancelled ? '' : (eff - (m.fees || 0) - m.product_cost).toFixed(2);
+    return [
+      m.sale_no ? `#${m.sale_no}` : '',
       new Date(m.created_at).toLocaleString('fr-FR'),
-      m.product_sku, m.product_name, -m.delta, m.product_price,
+      m.product_sku, m.product_name,
+      m.product_price,
+      m.sold_price != null ? m.sold_price : '',
+      m.fees != null ? m.fees : '',
+      margin,
       m.cancelled ? 'annulée' : '',
-    ].map(esc).join(';')
-  );
+    ].map(esc).join(';');
+  });
   const date = new Date(session.started_at).toISOString().slice(0, 10);
   res.setHeader('Content-Type', 'text/csv; charset=utf-8');
   res.setHeader('Content-Disposition', `attachment; filename="live-${session.platform}-${date}.csv"`);
-  res.send('﻿' + ['Heure;SKU;Produit;Quantité;Prix;Statut', ...lines].join('\n'));
+  res.send('﻿' + ['N°;Heure;SKU;Produit;Prix catalogue;Prix vendu;Frais;Marge;Statut', ...lines].join('\n'));
+});
+
+// ---------------------------------------------------------------------------
+// Import du rapport de ventes de la plateforme (CSV Whatnot / TikTok)
+// Chaque ligne du rapport est associée à la vente enregistrée dans l'app
+// grâce à son numéro (#1, #2…) — on y récupère le prix de vente réel et
+// les frais, pour calculer la marge.
+// ---------------------------------------------------------------------------
+const REPORT_PATTERNS = {
+  sale_no: /^#$|^#?\s*(n°|no|num[ée]ro|order|commande|vente|sale)/i,
+  sold_price: /(prix de vente|prix vendu|sold ?price|sale ?price|final ?price|montant|amount|sous.total|subtotal|price)/i,
+  fees: /(frais|fee|commission)/i,
+  name: /(produit|product|nom|name|titre|title|listing|article)/i,
+};
+
+function guessReportMapping(headers) {
+  const mapping = {};
+  const used = new Set();
+  for (const [field, re] of Object.entries(REPORT_PATTERNS)) {
+    for (const h of headers) {
+      if (used.has(h)) continue;
+      if (re.test(String(h).trim())) {
+        mapping[field] = h;
+        used.add(h);
+        break;
+      }
+    }
+  }
+  return mapping;
+}
+
+app.post('/api/lives/:id/report/preview', uploadImport.single('file'), (req, res) => {
+  const session = db.prepare('SELECT * FROM live_sessions WHERE id = ?').get(Number(req.params.id));
+  if (!session) return res.status(404).json({ error: 'Live introuvable' });
+  if (!req.file) return res.status(400).json({ error: 'Aucun fichier reçu' });
+  let workbook;
+  try {
+    workbook = XLSX.read(req.file.buffer, { type: 'buffer', codepage: 65001, raw: true });
+  } catch (e) {
+    return res.status(400).json({ error: 'Fichier illisible : format Excel ou CSV attendu' });
+  }
+  const sheet = workbook.Sheets[workbook.SheetNames[0]];
+  const rows = XLSX.utils.sheet_to_json(sheet, { defval: '' });
+  if (!rows.length) return res.status(400).json({ error: 'Le fichier est vide' });
+  const headers = Object.keys(rows[0]);
+  const importId = crypto.randomBytes(8).toString('hex');
+  pendingImports.set(importId, { rows, headers, expires: Date.now() + 30 * 60 * 1000 });
+  res.json({
+    importId,
+    headers,
+    rowCount: rows.length,
+    preview: rows.slice(0, 5),
+    mapping: guessReportMapping(headers),
+  });
+});
+
+app.post('/api/lives/:id/report/commit', (req, res) => {
+  const session = db.prepare('SELECT * FROM live_sessions WHERE id = ?').get(Number(req.params.id));
+  if (!session) return res.status(404).json({ error: 'Live introuvable' });
+  const { importId, mapping = {} } = req.body || {};
+  const pending = pendingImports.get(importId);
+  if (!pending) return res.status(410).json({ error: 'Import expiré, merci de renvoyer le fichier' });
+  if (!mapping.sale_no || !mapping.sold_price) {
+    return res.status(400).json({ error: 'Associez les colonnes Numéro de vente et Prix de vente' });
+  }
+
+  const sales = db
+    .prepare('SELECT id, sale_no FROM movements WHERE session_id = ? AND delta < 0 AND sale_no IS NOT NULL')
+    .all(session.id);
+  const byNo = new Map(sales.map((s) => [s.sale_no, s.id]));
+
+  let matched = 0;
+  let skipped = 0;
+  const unmatched = [];
+  withTransaction(() => {
+    const upd = db.prepare('UPDATE movements SET sold_price = ?, fees = ? WHERE id = ?');
+    for (const row of pending.rows) {
+      const rawNo = row[mapping.sale_no];
+      const n = parseInt(String(rawNo).replace(/[^0-9]/g, ''), 10);
+      if (!Number.isFinite(n) || n <= 0) {
+        skipped++;
+        continue;
+      }
+      const movementId = byNo.get(n);
+      if (!movementId) {
+        unmatched.push(`#${n}`);
+        continue;
+      }
+      const price = toNum(row[mapping.sold_price]);
+      const fees = mapping.fees ? toNum(row[mapping.fees]) : null;
+      upd.run(price, fees, movementId);
+      matched++;
+    }
+  });
+  pendingImports.delete(importId);
+  res.json({ matched, skipped, unmatched, session: sessionSummary(session) });
 });
 
 app.get('/api/movements', (req, res) => {

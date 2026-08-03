@@ -524,6 +524,28 @@ form input {
   gap: 10px;
   margin: 12px 0;
 }
+.recap-grid.wide { grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); }
+
+.live-sale-no {
+  font-weight: 800;
+  color: var(--primary);
+  min-width: 32px;
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+}
+.muted-cell { color: var(--muted); }
+.export-link { font-size: .85rem; font-weight: 400; margin-left: 10px; }
+
+.report-import {
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+  padding: 14px 16px;
+  margin: 14px 0;
+  background: var(--bg);
+}
+.report-import .muted.small { margin: 6px 0 10px; }
+#reportConfig { margin-top: 14px; }
+#reportConfig .mapping-grid { margin-top: 10px; }
 
 @media (max-width: 760px) {
   .live-body { flex-direction: column; overflow-y: auto; }

@@ -16,13 +16,23 @@ Chaque produit a **un seul stock**, partagé entre tous les canaux : le même mu
 Cliquez sur **« Lancer un live »**, choisissez la plateforme (TikTok ou Whatnot) : une **session datée** démarre.
 
 - **Recherche instantanée** par référence ou nom : tapez quelques lettres, le produit apparaît.
-- Un clic sur le produit = **vendu**, enregistré **avec l'heure exacte** (à la seconde).
+- Un clic sur le produit = **vendu**, enregistré **avec l'heure exacte** (à la seconde) et **numéroté #1, #2, #3…** comme sur Whatnot et TikTok.
 - La liste des ventes du live défile à droite, avec un bouton **↩ annuler** en cas de mauvais clic (le stock est restauré).
 - En haut : chrono du live, nombre de ventes et chiffre d'affaires en temps réel.
 - **« Terminer le live »** affiche le récap : durée, articles vendus, chiffre d'affaires.
 - Si la page se recharge pendant un live, la session en cours est **reprise automatiquement**.
 
-L'onglet **Lives** garde l'historique de toutes vos sessions : date et heure, plateforme, durée, ventes horodatées, chiffre d'affaires — avec **export CSV** par live.
+## 📄 Rapport de la plateforme et marge
+
+Après le live, exportez le CSV des ventes depuis Whatnot ou TikTok et importez-le dans le **détail du live** (onglet Lives → Détail → « Choisir le fichier CSV ») :
+
+- chaque ligne du rapport est **associée à la vente correspondante grâce à son numéro** (#1, #2…) ;
+- l'application récupère le **prix de vente réel** (enchères, promos…) et les **frais de la plateforme** ;
+- votre **marge** est calculée automatiquement : prix vendu − frais − coût d'achat.
+
+Le détail d'un live affiche alors : chiffre d'affaires réel, marge totale, récapitulatif par produit (quantités, total, marge) et chaque vente numérotée et horodatée — le tout exportable en CSV.
+
+L'onglet **Lives** garde l'historique de toutes vos sessions : date et heure, plateforme, durée, articles vendus, chiffre d'affaires et marge.
 
 ## Fonctionnalités
 

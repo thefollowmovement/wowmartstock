@@ -208,6 +208,7 @@ function openLiveMode(session, sales) {
   liveSession = session;
   liveSalesLog = sales.map((m) => ({
     movement_id: m.id,
+    sale_no: m.sale_no,
     product_id: m.product_id,
     name: m.product_name,
     sku: m.product_sku,
@@ -291,6 +292,7 @@ window.liveSell = async (id) => {
     const result = await moveStock(id, liveSession.platform, -1, 'Vente live', liveSession.id);
     liveSalesLog.unshift({
       movement_id: result.movement_id,
+      sale_no: result.sale_no,
       product_id: id,
       name: p.name,
       sku: p.sku,
@@ -314,6 +316,7 @@ function renderLiveSales() {
         .map(
           (s, i) => `
       <div class="live-sale ${s.cancelled ? 'cancelled' : ''}">
+        <span class="live-sale-no">${s.sale_no ? '#' + s.sale_no : ''}</span>
         <span class="live-sale-time">${timeFr(s.time)}</span>
         <span class="live-sale-name">${escapeHtml(s.name)}${s.sku ? ` <small>(${escapeHtml(s.sku)})</small>` : ''}</span>
         <span class="live-sale-price">${euro(s.price)}</span>
@@ -361,6 +364,7 @@ $('#btnEndLive').addEventListener('click', async () => {
         <div class="stat"><div class="value">${session.items}</div><div class="label">Articles vendus</div></div>
         <div class="stat"><div class="value">${euro(session.revenue)}</div><div class="label">Chiffre d'affaires</div></div>
       </div>
+      <p class="muted">💡 Importez ensuite le rapport CSV de la plateforme depuis l'onglet <strong>Lives</strong> → Détail, pour récupérer les prix de vente réels et calculer votre marge.</p>
       <p><a class="btn" href="/api/lives/${session.id}/export.csv">⬇ Exporter les ventes de ce live (CSV)</a></p>`;
     $('#recapModal').hidden = false;
   } catch (e) {
@@ -412,40 +416,176 @@ async function loadLives() {
         <td>${dur}</td>
         <td>${l.items}</td>
         <td>${euro(l.revenue)}</td>
+        <td>${l.reported > 0 ? euro(l.margin) : '<span class="muted-cell">—</span>'}</td>
         <td><button class="btn small" onclick="showLiveDetail(${l.id})">Détail</button></td>
       </tr>`;
         })
         .join('')
-    : '<tr><td colspan="6">Aucun live pour l\'instant — cliquez sur « 🔴 Lancer un live » pour commencer</td></tr>';
+    : '<tr><td colspan="7">Aucun live pour l\'instant — cliquez sur « 🔴 Lancer un live » pour commencer</td></tr>';
 }
+
+// Marge d'une vente : prix vendu réel (rapport plateforme) sinon prix
+// catalogue, moins les frais et le coût d'achat
+const saleMargin = (m) =>
+  (m.sold_price != null ? m.sold_price : m.product_price) - (m.fees || 0) - m.product_cost;
 
 window.showLiveDetail = async (id) => {
   try {
     const l = await api(`/api/lives/${id}`);
+    const valid = l.sales.filter((m) => !m.cancelled);
+
+    // Récap des produits vendus (agrégé)
+    const byProduct = new Map();
+    for (const m of valid) {
+      const e = byProduct.get(m.product_id) || {
+        name: m.product_name, sku: m.product_sku, qty: 0, total: 0, margin: 0,
+      };
+      e.qty += 1;
+      e.total += m.sold_price != null ? m.sold_price : m.product_price;
+      e.margin += saleMargin(m);
+      byProduct.set(m.product_id, e);
+    }
+    const productRows = [...byProduct.values()]
+      .sort((a, b) => b.qty - a.qty)
+      .map(
+        (e) => `<tr>
+        <td>${escapeHtml(e.name)}${e.sku ? ` <span class="product-sku">(${escapeHtml(e.sku)})</span>` : ''}</td>
+        <td>${e.qty}</td>
+        <td>${euro(e.total)}</td>
+        <td class="${e.margin >= 0 ? 'delta-pos' : 'delta-neg'}">${euro(e.margin)}</td>
+      </tr>`
+      )
+      .join('');
+
     const rows = l.sales.length
       ? l.sales
-          .map(
-            (m) => `<tr class="${m.cancelled ? 'row-cancelled' : ''}">
+          .map((m) => {
+            const eff = m.sold_price != null ? m.sold_price : m.product_price;
+            const margin = saleMargin(m);
+            return `<tr class="${m.cancelled ? 'row-cancelled' : ''}">
+          <td><strong>${m.sale_no ? '#' + m.sale_no : ''}</strong></td>
           <td>${timeFr(m.created_at)}</td>
           <td>${escapeHtml(m.product_name)}${m.product_sku ? ` <span class="product-sku">(${escapeHtml(m.product_sku)})</span>` : ''}</td>
           <td>${euro(m.product_price)}</td>
+          <td>${m.sold_price != null ? `<strong>${euro(m.sold_price)}</strong>` : '<span class="muted-cell">—</span>'}</td>
+          <td>${m.fees != null ? euro(m.fees) : '<span class="muted-cell">—</span>'}</td>
+          <td class="${margin >= 0 ? 'delta-pos' : 'delta-neg'}">${m.cancelled ? '' : euro(margin)}</td>
           <td>${m.cancelled ? 'annulée' : 'vendue'}</td>
-        </tr>`
-          )
+        </tr>`;
+          })
           .join('')
-      : '<tr><td colspan="4">Aucune vente pendant ce live</td></tr>';
+      : '<tr><td colspan="8">Aucune vente pendant ce live</td></tr>';
+
     $('#liveDetail').innerHTML = `
       <h3>${PLATFORM_LABELS[l.platform]} — ${dateFr(l.started_at)}</h3>
-      <p class="muted">${l.items} article(s) vendu(s) · ${euro(l.revenue)}
-        · <a href="/api/lives/${l.id}/export.csv">⬇ Exporter en CSV</a></p>
+      <div class="recap-grid wide">
+        <div class="stat"><div class="value">${l.items}</div><div class="label">Articles vendus</div></div>
+        <div class="stat"><div class="value">${euro(l.revenue)}</div><div class="label">Chiffre d'affaires${l.reported > 0 ? ' (réel)' : ' (catalogue)'}</div></div>
+        <div class="stat"><div class="value">${euro(l.margin)}</div><div class="label">Marge estimée</div></div>
+        <div class="stat"><div class="value">${l.reported}/${l.items}</div><div class="label">Ventes associées au rapport</div></div>
+      </div>
+
+      <div class="report-import">
+        <strong>📄 Rapport de la plateforme</strong>
+        <p class="muted small">Importez le CSV des ventes exporté depuis ${PLATFORM_LABELS[l.platform]} :
+          chaque ligne est associée à la vente correspondante grâce à son numéro (#1, #2…),
+          pour récupérer le prix de vente réel et calculer votre marge.</p>
+        <button class="btn primary" onclick="document.getElementById('reportFile').click()">Choisir le fichier CSV</button>
+        <input type="file" id="reportFile" accept=".csv,.xlsx,.xls,.tsv" hidden onchange="previewReport(${l.id}, this.files[0])">
+        <div id="reportConfig" hidden></div>
+        <div id="reportResult" hidden></div>
+      </div>
+
+      ${productRows ? `
+      <h4>Produits vendus</h4>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Heure</th><th>Produit</th><th>Prix</th><th>Statut</th></tr></thead>
+          <thead><tr><th>Produit</th><th>Quantité</th><th>Total</th><th>Marge</th></tr></thead>
+          <tbody>${productRows}</tbody>
+        </table>
+      </div>` : ''}
+
+      <h4>Toutes les ventes <a class="export-link" href="/api/lives/${l.id}/export.csv">⬇ Exporter en CSV</a></h4>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>N°</th><th>Heure</th><th>Produit</th><th>Prix catalogue</th><th>Prix vendu</th><th>Frais</th><th>Marge</th><th>Statut</th></tr></thead>
           <tbody>${rows}</tbody>
         </table>
       </div>`;
     $('#liveDetail').hidden = false;
     $('#liveDetail').scrollIntoView({ behavior: 'smooth' });
+  } catch (e) {
+    toast(e.message, true);
+  }
+};
+
+// ---------------------------------------------------------------------------
+// Import du rapport de ventes de la plateforme (dans le détail d'un live)
+// ---------------------------------------------------------------------------
+const REPORT_FIELDS = [
+  { key: 'sale_no', label: 'Numéro de vente (#)' },
+  { key: 'sold_price', label: 'Prix de vente' },
+  { key: 'fees', label: 'Frais / commission (optionnel)' },
+];
+let currentReport = null; // { liveId, importId, headers, ... }
+
+window.previewReport = async (liveId, file) => {
+  if (!file) return;
+  const fd = new FormData();
+  fd.set('file', file);
+  try {
+    const data = await api(`/api/lives/${liveId}/report/preview`, { method: 'POST', body: fd });
+    currentReport = { ...data, liveId };
+    const selects = REPORT_FIELDS.map((f) => {
+      const options = ['<option value="">— Ignorer —</option>']
+        .concat(
+          data.headers.map(
+            (h) => `<option value="${escapeHtml(h)}" ${data.mapping[f.key] === h ? 'selected' : ''}>${escapeHtml(h)}</option>`
+          )
+        )
+        .join('');
+      return `<label>${f.label}<select data-report-field="${f.key}">${options}</select></label>`;
+    }).join('');
+    const previewHead = data.headers.map((h) => `<th>${escapeHtml(h)}</th>`).join('');
+    const previewBody = data.preview
+      .map((row) => `<tr>${data.headers.map((h) => `<td>${escapeHtml(row[h])}</td>`).join('')}</tr>`)
+      .join('');
+    document.getElementById('reportConfig').innerHTML = `
+      <p><strong>📄 ${escapeHtml(file.name)}</strong> — ${data.rowCount} ligne(s)</p>
+      <div class="mapping-grid">${selects}</div>
+      <div class="table-wrap"><table><thead><tr>${previewHead}</tr></thead><tbody>${previewBody}</tbody></table></div>
+      <div class="actions">
+        <button class="btn primary" onclick="commitReport()">Associer les ventes</button>
+      </div>`;
+    document.getElementById('reportConfig').hidden = false;
+    document.getElementById('reportResult').hidden = true;
+  } catch (e) {
+    toast(e.message, true);
+  }
+};
+
+window.commitReport = async () => {
+  if (!currentReport) return;
+  const mapping = {};
+  document.querySelectorAll('[data-report-field]').forEach((sel) => {
+    if (sel.value) mapping[sel.dataset.reportField] = sel.value;
+  });
+  try {
+    const result = await api(`/api/lives/${currentReport.liveId}/report/commit`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ importId: currentReport.importId, mapping }),
+    });
+    const liveId = currentReport.liveId;
+    currentReport = null;
+    let msg = `✅ ${result.matched} vente(s) associée(s)`;
+    if (result.unmatched.length) {
+      msg += ` — non trouvées dans ce live : ${result.unmatched.slice(0, 10).join(', ')}${result.unmatched.length > 10 ? '…' : ''}`;
+    }
+    if (result.skipped) msg += ` · ${result.skipped} ligne(s) sans numéro ignorée(s)`;
+    toast(msg);
+    await loadLives();
+    await showLiveDetail(liveId);
   } catch (e) {
     toast(e.message, true);
   }
