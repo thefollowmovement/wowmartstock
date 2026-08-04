@@ -808,6 +808,45 @@ tr.row-unpaid td { background: #fef2f2; }
 .ai-report ul { margin: 6px 0 6px 22px; display: flex; flex-direction: column; gap: 4px; }
 .ai-report p { margin: 6px 0; }
 
+/* ---------- Connexion et sécurité ---------- */
+.login-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--ink);
+}
+.login-box {
+  background: var(--card);
+  border-radius: 18px;
+  box-shadow: var(--shadow-lift);
+  padding: 34px 36px;
+  width: min(92vw, 380px);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  text-align: center;
+}
+.login-brand { font-family: var(--font-display); font-size: 1.3rem; }
+.login-box input {
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: 1rem;
+  text-align: center;
+}
+.login-error { color: var(--danger); font-weight: 600; font-size: .9rem; }
+.sec-grid { display: flex; gap: 14px; flex-wrap: wrap; margin-bottom: 12px; }
+.sec-grid label { display: flex; flex-direction: column; gap: 4px; font-size: .88rem; font-weight: 600; min-width: 240px; }
+.sec-grid input {
+  padding: 9px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: .95rem;
+}
+
 /* ---------- Modale Ventes par photos ---------- */
 .photo-sales-modal {
   max-width: 920px;

@@ -196,6 +196,25 @@
     <div id="importResult" class="card success" hidden></div>
 
     <div class="card">
+      <h2>🔒 Protection par mot de passe</h2>
+      <p class="muted">Optionnelle sur votre ordinateur, <strong>indispensable si l'app est accessible depuis Internet</strong> (serveur, autre appareil…) :
+        sans mot de passe, n'importe qui pourrait voir vos ventes, modifier votre stock et utiliser votre clé API.</p>
+      <div id="secStatus" class="muted"></div>
+      <div class="sec-grid">
+        <label id="secCurrentWrap" hidden>Mot de passe actuel
+          <input type="password" id="secCurrent" autocomplete="current-password">
+        </label>
+        <label>Nouveau mot de passe <span class="muted small">(8 caractères min. — vide pour retirer la protection)</span>
+          <input type="password" id="secNew" autocomplete="new-password">
+        </label>
+      </div>
+      <div class="backup-row">
+        <button class="btn primary" id="btnSavePassword">Enregistrer</button>
+        <button class="btn" id="btnLogout" hidden>Se déconnecter</button>
+      </div>
+    </div>
+
+    <div class="card">
       <h2>💾 Sauvegarde automatique</h2>
       <p class="muted">Une copie de votre base (produits, ventes, lives) et de vos photos est faite <strong>chaque jour automatiquement</strong>
         dans le dossier de votre choix — mettez-y un dossier synchronisé (iCloud Drive, Dropbox…) ou un disque externe.
@@ -393,6 +412,7 @@
           <li><code>data/stock.db</code> — la base de données (produits, ventes, lives, réglages) ;</li>
           <li><code>uploads/</code> — les photos des produits et des ventes.</li>
         </ul>
+        <p><strong>🔒 Sécurité</strong> : votre clé API est <strong>chiffrée</strong> dans la base et n'est jamais renvoyée au navigateur. Dans l'onglet <em>Importer</em>, vous pouvez définir un <strong>mot de passe</strong> qui verrouille toute l'app (données et photos) — indispensable si elle est accessible depuis Internet ou un autre appareil.</p>
         <p><strong>💾 Sauvegarde automatique</strong> : dans l'onglet <em>Importer</em>, indiquez un dossier de sauvegarde (idéalement synchronisé : iCloud Drive, Dropbox… ou un disque externe). Une copie complète (base + photos) y est faite <strong>chaque jour automatiquement</strong>, les 14 dernières sont conservées, et le bouton <span class="tuto-btn">↩ Restaurer</span> permet de revenir à n'importe laquelle en un clic.</p>
       </div>
     </details>
@@ -593,6 +613,17 @@
         <button type="button" class="btn primary" id="btnCommitInventory">✅ Valider l'inventaire</button>
       </div>
     </div>
+  </div>
+
+  <!-- ===================== CONNEXION ===================== -->
+  <div id="loginOverlay" class="login-overlay" hidden>
+    <form id="loginForm" class="login-box">
+      <div class="login-brand">📦 <strong>WowMart Stock</strong></div>
+      <p class="muted">Cette application est protégée par un mot de passe.</p>
+      <input type="password" id="loginPassword" placeholder="Mot de passe" autocomplete="current-password" autofocus>
+      <button class="btn primary" type="submit">Se connecter</button>
+      <p id="loginError" class="login-error" hidden></p>
+    </form>
   </div>
 
   <div id="toast" class="toast" hidden></div>

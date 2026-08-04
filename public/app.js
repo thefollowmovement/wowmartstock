@@ -60,9 +60,41 @@ function toast(msg, isError = false) {
 async function api(url, options = {}) {
   const res = await fetch(url, options);
   const data = await res.json().catch(() => ({}));
+  if (res.status === 401 && data.auth_required) {
+    showLogin();
+    throw new Error('Connexion requise');
+  }
   if (!res.ok) throw new Error(data.error || `Erreur ${res.status}`);
   return data;
 }
+
+// ---------------------------------------------------------------------------
+// Connexion (quand un mot de passe est défini)
+// ---------------------------------------------------------------------------
+function showLogin() {
+  $('#loginOverlay').hidden = false;
+  setTimeout(() => $('#loginPassword').focus(), 100);
+}
+
+document.getElementById('loginForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  $('#loginError').hidden = true;
+  try {
+    const res = await fetch('/api/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password: $('#loginPassword').value }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || 'Connexion impossible');
+    location.reload();
+  } catch (err) {
+    $('#loginError').textContent = err.message;
+    $('#loginError').hidden = false;
+    $('#loginPassword').value = '';
+    $('#loginPassword').focus();
+  }
+});
 
 const euro = (n) => Number(n).toLocaleString('fr-FR', { style: 'currency', currency: 'EUR' });
 const isLow = (p) => p.min_stock > 0 && p.stock <= p.min_stock;
@@ -1820,7 +1852,45 @@ async function loadBackup() {
   } catch (e) {
     /* pas bloquant */
   }
+  loadSecurity();
 }
+
+// ---- Carte « Protection par mot de passe » ----
+async function loadSecurity() {
+  try {
+    const st = await fetch('/api/auth/status').then((r) => r.json());
+    $('#secStatus').innerHTML = st.protected
+      ? '✅ L\'application est <strong>protégée par un mot de passe</strong>. Votre clé API est chiffrée dans la base.'
+      : '⚠ Aucun mot de passe : toute personne pouvant ouvrir cette page a accès à tout.';
+    $('#secCurrentWrap').hidden = !st.protected;
+    $('#btnLogout').hidden = !st.protected;
+  } catch (e) {
+    /* pas bloquant */
+  }
+}
+
+$('#btnSavePassword').addEventListener('click', async () => {
+  const newPass = $('#secNew').value;
+  if (!newPass && !confirm('Retirer la protection par mot de passe ?')) return;
+  try {
+    const r = await api('/api/auth/password', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ current_password: $('#secCurrent').value, new_password: newPass }),
+    });
+    $('#secCurrent').value = '';
+    $('#secNew').value = '';
+    toast(r.protected ? '🔒 Mot de passe enregistré — les autres appareils devront se reconnecter' : 'Protection retirée');
+    loadSecurity();
+  } catch (e) {
+    toast(e.message, true);
+  }
+});
+
+$('#btnLogout').addEventListener('click', async () => {
+  await fetch('/api/auth/logout', { method: 'POST' });
+  location.reload();
+});
 
 $('#btnSaveBackupDir').addEventListener('click', async () => {
   try {
@@ -1998,5 +2068,18 @@ $('#btnCommitInventory').addEventListener('click', async () => {
 });
 
 // ---------------------------------------------------------------------------
-loadSettings();
-loadProducts().then(resumeActiveLive);
+// Démarrage : si un mot de passe est défini et la session absente/expirée,
+// l'écran de connexion s'affiche avant de charger quoi que ce soit
+(async () => {
+  try {
+    const st = await fetch('/api/auth/status').then((r) => r.json());
+    if (st.protected && !st.authenticated) {
+      showLogin();
+      return;
+    }
+  } catch (e) {
+    /* serveur injoignable : les appels suivants afficheront l'erreur */
+  }
+  loadSettings();
+  loadProducts().then(resumeActiveLive);
+})();

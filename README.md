@@ -114,6 +114,18 @@ La première ligne du fichier doit contenir les noms de colonnes. Exemples recon
 
 Les produits existants sont reconnus par SKU (ou par nom) : pas de doublons, leur stock est mis à jour.
 
+## 🔒 Sécurité
+
+- **Clé API chiffrée** : la clé Anthropic est stockée **chiffrée (AES-256-GCM)** dans la base, avec un secret local (`data/.secret`, hors git et hors sauvegardes). Une sauvegarde volée sur iCloud/Dropbox ne permet donc pas de lire la clé. Elle n'est **jamais renvoyée au navigateur**. Une clé enregistrée en clair par une ancienne version est chiffrée automatiquement au démarrage.
+- **Protection par mot de passe** (onglet Importer) : optionnelle en local, **obligatoire avant d'exposer l'app sur un serveur**. Toutes les données (`/api`) et les photos (`/uploads`) sont bloquées sans session ; hachage scrypt, sessions signées (30 jours), 8 essais max par IP puis 10 min d'attente ; changer le mot de passe déconnecte tous les appareils.
+
+### Déployer sur un serveur
+
+1. **Définissez un mot de passe** dans l'app (onglet Importer → 🔒) avant d'ouvrir l'accès.
+2. Passez la clé API par variable d'environnement plutôt qu'en base : `ANTHROPIC_API_KEY=sk-ant-… npm start`.
+3. Mettez l'app **derrière HTTPS** (reverse proxy Caddy ou nginx + certificat — Caddy le fait tout seul). Ne servez jamais le port 3000 directement sur Internet en HTTP.
+4. Sauvegardez `data/` et `uploads/` côté serveur. Note : `data/.secret` est propre à chaque machine — si vous restaurez la base sur une autre machine, il faudra resaisir la clé API (c'est voulu).
+
 ## Données
 
 - Base de données SQLite : `data/stock.db` (créée automatiquement)

@@ -21,6 +21,46 @@ const DB_PATH = path.join(DATA_DIR, 'stock.db');
 const db = new DatabaseSync(DB_PATH);
 db.exec('PRAGMA journal_mode = WAL');
 
+// ---------------------------------------------------------------------------
+// Secret local : sert à chiffrer la clé API dans la base et à signer les
+// sessions. Stocké dans data/.secret (hors git, hors sauvegardes) : une
+// sauvegarde volée sur iCloud/Dropbox ne permet donc PAS de lire la clé API.
+// ---------------------------------------------------------------------------
+const SECRET_PATH = path.join(DATA_DIR, '.secret');
+let APP_SECRET;
+if (fs.existsSync(SECRET_PATH)) {
+  APP_SECRET = Buffer.from(fs.readFileSync(SECRET_PATH, 'utf8').trim(), 'hex');
+} else {
+  APP_SECRET = crypto.randomBytes(32);
+  fs.writeFileSync(SECRET_PATH, APP_SECRET.toString('hex'), { mode: 0o600 });
+}
+if (APP_SECRET.length !== 32) {
+  console.error('data/.secret corrompu — supprimez-le pour en générer un nouveau (la clé API devra être resaisie)');
+  process.exit(1);
+}
+
+// Chiffrement AES-256-GCM des valeurs sensibles stockées en base
+function encryptSecret(text) {
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', APP_SECRET, iv);
+  const enc = Buffer.concat([cipher.update(text, 'utf8'), cipher.final()]);
+  return `enc:v1:${iv.toString('base64')}:${cipher.getAuthTag().toString('base64')}:${enc.toString('base64')}`;
+}
+
+function decryptSecret(stored) {
+  if (!stored) return '';
+  if (!stored.startsWith('enc:v1:')) return stored; // ancienne valeur en clair (migrée au démarrage)
+  try {
+    const [, , ivB, tagB, dataB] = stored.split(':');
+    const decipher = crypto.createDecipheriv('aes-256-gcm', APP_SECRET, Buffer.from(ivB, 'base64'));
+    decipher.setAuthTag(Buffer.from(tagB, 'base64'));
+    return Buffer.concat([decipher.update(Buffer.from(dataB, 'base64')), decipher.final()]).toString('utf8');
+  } catch (e) {
+    // secret différent (base restaurée sur une autre machine) : clé illisible
+    return '';
+  }
+}
+
 function withTransaction(fn) {
   db.exec('BEGIN');
   try {
@@ -226,8 +266,141 @@ const uploadLivePhotos = multer({
 });
 
 const app = express();
+app.disable('x-powered-by');
 app.use(express.json());
+app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  next();
+});
+// L'interface (HTML/CSS/JS, sans aucune donnée) reste servie librement :
+// nécessaire pour afficher l'écran de connexion. Les données (/api) et les
+// photos (/uploads) sont derrière l'authentification.
 app.use(express.static(path.join(__dirname, 'public')));
+
+// ---------------------------------------------------------------------------
+// Protection par mot de passe (optionnelle en local, indispensable sur un
+// serveur). Session = cookie signé HMAC avec le secret local ; le hachage du
+// mot de passe entre dans la signature, donc changer le mot de passe
+// déconnecte toutes les sessions. Hachage scrypt (résistant au brute-force).
+// ---------------------------------------------------------------------------
+function hashPassword(password) {
+  const salt = crypto.randomBytes(16);
+  const hash = crypto.scryptSync(password, salt, 32, { N: 16384, r: 8, p: 1 });
+  return `scrypt:${salt.toString('hex')}:${hash.toString('hex')}`;
+}
+
+function verifyPassword(password, stored) {
+  const [, saltHex, hashHex] = String(stored).split(':');
+  if (!saltHex || !hashHex) return false;
+  const hash = crypto.scryptSync(password, Buffer.from(saltHex, 'hex'), 32, { N: 16384, r: 8, p: 1 });
+  return crypto.timingSafeEqual(hash, Buffer.from(hashHex, 'hex'));
+}
+
+const SESSION_DAYS = 30;
+function sessionSignature(expires, passwordHash) {
+  return crypto.createHmac('sha256', APP_SECRET).update(`session:${expires}:${passwordHash}`).digest('hex');
+}
+
+function makeSessionToken() {
+  const expires = Date.now() + SESSION_DAYS * 24 * 3600 * 1000;
+  return `${expires}.${sessionSignature(expires, getSetting('app_password', ''))}`;
+}
+
+function isValidSession(token) {
+  const [expiresStr, sig] = String(token || '').split('.');
+  const expires = Number(expiresStr);
+  if (!Number.isFinite(expires) || expires < Date.now() || !sig) return false;
+  const expected = sessionSignature(expires, getSetting('app_password', ''));
+  return sig.length === expected.length && crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected));
+}
+
+function readCookie(req, name) {
+  const header = req.headers.cookie || '';
+  for (const part of header.split(';')) {
+    const [k, ...v] = part.trim().split('=');
+    if (k === name) return decodeURIComponent(v.join('='));
+  }
+  return '';
+}
+
+function setSessionCookie(req, res) {
+  const secure = req.secure || req.headers['x-forwarded-proto'] === 'https' ? '; Secure' : '';
+  res.setHeader(
+    'Set-Cookie',
+    `wm_session=${makeSessionToken()}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${SESSION_DAYS * 24 * 3600}${secure}`
+  );
+}
+
+const isAuthenticated = (req) => isValidSession(readCookie(req, 'wm_session'));
+
+// Anti brute-force : 8 essais par IP puis 10 minutes d'attente
+const loginAttempts = new Map();
+function loginAllowed(ip) {
+  const e = loginAttempts.get(ip);
+  if (!e || e.reset < Date.now()) return true;
+  return e.count < 8;
+}
+function recordLoginFailure(ip) {
+  const e = loginAttempts.get(ip);
+  if (!e || e.reset < Date.now()) loginAttempts.set(ip, { count: 1, reset: Date.now() + 10 * 60 * 1000 });
+  else e.count++;
+}
+
+app.get('/api/auth/status', (req, res) => {
+  const protected_ = !!getSetting('app_password', '');
+  res.json({ protected: protected_, authenticated: !protected_ || isAuthenticated(req) });
+});
+
+app.post('/api/auth/login', (req, res) => {
+  const stored = getSetting('app_password', '');
+  if (!stored) return res.json({ ok: true });
+  const ip = req.ip || 'inconnue';
+  if (!loginAllowed(ip)) {
+    return res.status(429).json({ error: 'Trop d’essais — réessayez dans 10 minutes' });
+  }
+  if (!verifyPassword(String(req.body.password || ''), stored)) {
+    recordLoginFailure(ip);
+    return res.status(401).json({ error: 'Mot de passe incorrect' });
+  }
+  loginAttempts.delete(ip);
+  setSessionCookie(req, res);
+  res.json({ ok: true });
+});
+
+app.post('/api/auth/logout', (req, res) => {
+  res.setHeader('Set-Cookie', 'wm_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0');
+  res.json({ ok: true });
+});
+
+// Définir / changer / retirer le mot de passe. L'ancien mot de passe est
+// exigé dès qu'il en existe un.
+app.post('/api/auth/password', (req, res) => {
+  const stored = getSetting('app_password', '');
+  if (stored && !verifyPassword(String(req.body.current_password || ''), stored)) {
+    return res.status(401).json({ error: 'Mot de passe actuel incorrect' });
+  }
+  const next = String(req.body.new_password || '');
+  if (!next) {
+    db.prepare('DELETE FROM settings WHERE key = ?').run('app_password');
+    res.setHeader('Set-Cookie', 'wm_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0');
+    return res.json({ ok: true, protected: false });
+  }
+  if (next.length < 8) return res.status(400).json({ error: 'Le mot de passe doit faire au moins 8 caractères' });
+  setSetting('app_password', hashPassword(next));
+  setSessionCookie(req, res); // reste connecté sur cet appareil, les autres sessions tombent
+  res.json({ ok: true, protected: true });
+});
+
+// Tout le reste (/api/* et /uploads/*) exige une session valide dès qu'un
+// mot de passe est défini
+app.use((req, res, next) => {
+  if (!getSetting('app_password', '')) return next();
+  if (isAuthenticated(req)) return next();
+  res.status(401).json({ error: 'Connexion requise', auth_required: true });
+});
+
 app.use('/uploads', express.static(UPLOADS_DIR));
 
 // ---------------------------------------------------------------------------
@@ -471,9 +644,20 @@ function getFees(platform) {
 }
 
 // Clé API Anthropic pour l'analyse des photos de ventes (vision).
-// Priorité à la variable d'environnement, sinon la clé enregistrée dans l'app.
+// Priorité à la variable d'environnement (recommandé sur un serveur),
+// sinon la clé enregistrée dans l'app — chiffrée en base (AES-256-GCM).
 function getAnthropicKey() {
-  return process.env.ANTHROPIC_API_KEY || getSetting('anthropic_api_key', '') || '';
+  return process.env.ANTHROPIC_API_KEY || decryptSecret(getSetting('anthropic_api_key', '')) || '';
+}
+
+// Migration : une clé enregistrée en clair par une ancienne version est
+// chiffrée au premier démarrage
+{
+  const stored = getSetting('anthropic_api_key', '');
+  if (stored && !stored.startsWith('enc:v1:')) {
+    setSetting('anthropic_api_key', encryptSecret(stored));
+    console.log('Clé API existante chiffrée dans la base ✓');
+  }
 }
 
 const VISION_MODELS = ['claude-opus-5', 'claude-haiku-4-5'];
@@ -514,7 +698,7 @@ app.put('/api/settings', (req, res) => {
   }
   if (typeof req.body.anthropic_api_key === 'string') {
     const key = req.body.anthropic_api_key.trim();
-    if (key) setSetting('anthropic_api_key', key);
+    if (key) setSetting('anthropic_api_key', encryptSecret(key));
     else db.prepare('DELETE FROM settings WHERE key = ?').run('anthropic_api_key');
   }
   if (req.body.vision_model !== undefined) {
