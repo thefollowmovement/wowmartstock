@@ -854,7 +854,7 @@ window.showLiveDetail = async (id) => {
               : `<strong>${euro(saleNet(m))}</strong>`}</td>
           <td>${m.is_gift || m.cancelled || refunded
             ? '<span class="muted-cell">—</span>'
-            : `<input class="ship-input" type="number" step="0.01" min="0" value="${m.shipping_cost != null ? m.shipping_cost : ''}"
+            : `<input class="ship-input" type="number" step="any" min="0" value="${m.shipping_cost != null ? m.shipping_cost : ''}"
                  placeholder="0" title="Frais d'envoi et d'emballage payés par vous pour cette vente (déduits de la marge)"
                  onchange="setShipping(${m.id}, ${l.id}, this.value)">`}</td>
           <td class="${margin >= 0 ? 'delta-pos' : 'delta-neg'}">${m.cancelled || failed || refunded ? '' : euro(margin)}</td>
