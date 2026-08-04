@@ -155,6 +155,8 @@ let platformFees = {
 };
 let hasApiKey = false; // clé API Anthropic configurée (analyse des photos)
 let visionModel = 'claude-opus-5';
+let hasGoogleKey = false; // API Google Custom Search (photos web)
+let googleCx = '';
 
 function fillFeesInputs() {
   $('#feeWnComm').value = platformFees.whatnot.commission;
@@ -174,6 +176,8 @@ async function loadSettings() {
     hasApiKey = !!s.has_api_key;
     if (s.vision_model) visionModel = s.vision_model;
     $('#autoReport').checked = !!s.auto_report;
+    hasGoogleKey = !!s.has_google_key;
+    googleCx = s.google_cse_cx || '';
     fillFeesInputs();
   } catch (e) {
     /* valeurs par défaut conservées */
@@ -1941,16 +1945,53 @@ window.restoreBackup = async (name) => {
 // ---------------------------------------------------------------------------
 const wpChoices = new Map(); // product_id -> url choisie (absent = ignoré)
 let wpSearching = false;
+let wpProducts = []; // liste COMPLÈTE (indépendante du filtre de recherche en cours)
 
-$('#btnWebPhotos').addEventListener('click', () => {
+function wpEngineStatus() {
+  if (hasGoogleKey && googleCx) {
+    $('#wpEngineStatus').innerHTML = '<span class="delta-pos">API Google officielle ✓</span>';
+    $('#wpEngineSetup').open = false;
+  } else {
+    $('#wpEngineStatus').innerHTML = '<span class="delta-neg">non configuré — résultats peu fiables (Bing/DuckDuckGo)</span>';
+    $('#wpEngineSetup').open = true;
+  }
+  $('#wpGoogleCx').value = googleCx;
+}
+
+$('#btnWebPhotos').addEventListener('click', async () => {
   wpChoices.clear();
   $('#wpResults').innerHTML = '';
   $('#wpProgress').hidden = true;
   $('#btnWpApply').hidden = true;
   $('#wpCount').textContent = '';
-  const missing = products.filter((p) => !p.photo).length;
-  $('#wpInfo').textContent = `${missing} produit(s) sans photo sur ${products.length}.`;
+  try {
+    wpProducts = await api('/api/products');
+  } catch (e) {
+    wpProducts = products;
+  }
+  const missing = wpProducts.filter((p) => !p.photo).length;
+  $('#wpInfo').textContent = `${missing} produit(s) sans photo sur ${wpProducts.length}.`;
+  wpEngineStatus();
   $('#webPhotosModal').hidden = false;
+});
+
+$('#btnWpSaveEngine').addEventListener('click', async () => {
+  const key = $('#wpGoogleKey').value.trim();
+  const cx = $('#wpGoogleCx').value.trim();
+  try {
+    const s = await api('/api/settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...(key ? { google_cse_key: key } : {}), google_cse_cx: cx }),
+    });
+    hasGoogleKey = !!s.has_google_key;
+    googleCx = s.google_cse_cx || '';
+    $('#wpGoogleKey').value = '';
+    wpEngineStatus();
+    toast(hasGoogleKey && googleCx ? '✅ API Google configurée' : 'Configuration enregistrée (incomplète)');
+  } catch (e) {
+    toast(e.message, true);
+  }
 });
 $('#btnCloseWebPhotos').addEventListener('click', () => {
   $('#webPhotosModal').hidden = true;
@@ -1977,7 +2018,7 @@ window.wpSelect = (id, url, el) => {
 $('#btnWpSearch').addEventListener('click', async () => {
   if (wpSearching) return;
   const includeExisting = $('#wpIncludeExisting').checked;
-  const targets = products.filter((p) => includeExisting || !p.photo);
+  const targets = wpProducts.filter((p) => includeExisting || !p.photo);
   if (!targets.length) return toast('Tous les produits ont déjà une photo 🎉');
   wpSearching = true;
   $('#btnWpSearch').disabled = true;
@@ -1997,7 +2038,7 @@ $('#btnWpSearch').addEventListener('click', async () => {
         body: JSON.stringify({ ids: batch.map((p) => p.id) }),
       });
       for (const r of data.results) {
-        const p = products.find((x) => x.id === r.id);
+        const p = wpProducts.find((x) => x.id === r.id);
         if (!p) continue;
         const thumbs = r.candidates
           .map(
@@ -2025,6 +2066,13 @@ $('#btnWpSearch').addEventListener('click', async () => {
       }
       done += batch.length;
       wpUpdateCount();
+      // Erreur globale du moteur (quota Google, clé invalide…) : on arrête
+      // au lieu de répéter la même erreur sur chaque produit
+      const errs = data.results.filter((r) => r.error);
+      if (errs.length === data.results.length && errs.length && /google|quota/i.test(errs[0].error)) {
+        toast(errs[0].error, true);
+        break;
+      }
     }
   } catch (e) {
     toast(e.message, true);

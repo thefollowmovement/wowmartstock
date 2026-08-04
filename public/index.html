@@ -322,7 +322,7 @@
         <p>En haut : recherche par nom, SKU ou catégorie, et une case <em>« Stock bas uniquement »</em> pour ne voir que les produits à recommander.</p>
         <p><strong>Variantes</strong> : renseignez un <em>« Groupe de variantes »</em> (ex : T-shirt logo) sur plusieurs produits — ils s'affichent regroupés en une carte, chaque taille/couleur gardant son stock, son SKU et ses boutons de vente.</p>
         <p><strong>📋 Inventaire</strong> : le bouton en haut de l'onglet Produits ouvre le mode comptage — saisissez les quantités réelles ou scannez les codes-barres (+1 par scan), validez, et le stock est recalé avec un rapport des écarts.</p>
-        <p><strong>🖼 Photos web</strong> : ce bouton cherche des images sur le web pour vos produits sans photo (marque + référence + nom), vous propose plusieurs candidates et n'assigne que celles que vous validez d'un clic.</p>
+        <p><strong>🖼 Photos web</strong> : ce bouton cherche des images sur le web pour vos produits sans photo (marque + référence + nom), vous propose plusieurs candidates et n'assigne que celles que vous validez d'un clic. Configurez l'<strong>API Google officielle</strong> dans la modale (gratuite, 100 recherches/jour, guide inclus) pour des résultats fiables.</p>
         <p>Chaque opération est enregistrée dans l'onglet <em>Historique</em> — filtrable par produit, canal et période. C'est aussi là que le bouton <span class="tuto-btn">↩ Retour</span> enregistre un retour/remboursement : l'article revient en stock et la vente est retirée du CA et de la marge.</p>
       </div>
     </details>
@@ -607,6 +607,23 @@
       <p class="muted">L'app cherche des images avec <strong>marque + référence + nom</strong> de chaque produit,
         vous propose plusieurs candidates, et n'assigne que <strong>celles que vous validez</strong>.
         La première est présélectionnée — cliquez sur une autre pour la remplacer, ou sur 🚫 pour ignorer le produit.</p>
+      <details class="api-key-setup" id="wpEngineSetup">
+        <summary>⚙ Moteur de recherche : <span id="wpEngineStatus">…</span></summary>
+        <p class="muted small"><strong>Recommandé : l'API officielle Google</strong> (gratuite, 100 recherches/jour — 1 recherche par produit).
+          Sans elle, l'app se rabat sur Bing/DuckDuckGo, beaucoup moins fiables. Configuration en 3 minutes :</p>
+        <ol class="muted small wp-steps">
+          <li>Sur <a href="https://programmablesearchengine.google.com" target="_blank" rel="noopener">programmablesearchengine.google.com</a> :
+            créez un moteur, choisissez <em>« Rechercher sur l'ensemble du Web »</em> et activez la <em>recherche d'images</em>, puis copiez son <strong>ID de moteur</strong> (cx).</li>
+          <li>Sur <a href="https://console.cloud.google.com/apis/library/customsearch.googleapis.com" target="_blank" rel="noopener">console.cloud.google.com</a> :
+            activez <em>« Custom Search API »</em>, puis créez une <strong>clé API</strong> (menu Identifiants).</li>
+          <li>Collez les deux ci-dessous — la clé est stockée chiffrée, uniquement sur votre machine.</li>
+        </ol>
+        <div class="key-row wp-key-row">
+          <input type="password" id="wpGoogleKey" placeholder="Clé API Google (AIza…)" autocomplete="off">
+          <input type="text" id="wpGoogleCx" placeholder="ID du moteur (cx)" autocomplete="off">
+          <button class="btn primary" id="btnWpSaveEngine">Enregistrer</button>
+        </div>
+      </details>
       <div class="wp-head">
         <span id="wpInfo" class="muted"></span>
         <label class="check"><input type="checkbox" id="wpIncludeExisting"> Inclure les produits qui ont déjà une photo (remplacement)</label>

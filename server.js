@@ -669,6 +669,8 @@ app.get('/api/settings', (req, res) => {
     has_api_key: !!getAnthropicKey(),
     vision_model: getSetting('vision_model', 'claude-opus-5'),
     auto_report: getSetting('auto_report', '0') === '1',
+    has_google_key: !!getSetting('google_cse_key', ''),
+    google_cse_cx: getSetting('google_cse_cx', ''),
   });
 });
 
@@ -710,12 +712,25 @@ app.put('/api/settings', (req, res) => {
   if (req.body.auto_report !== undefined) {
     setSetting('auto_report', req.body.auto_report ? '1' : '0');
   }
+  // API Google Custom Search (recherche d'images fiable) — clé chiffrée
+  if (typeof req.body.google_cse_key === 'string') {
+    const key = req.body.google_cse_key.trim();
+    if (key) setSetting('google_cse_key', encryptSecret(key));
+    else db.prepare('DELETE FROM settings WHERE key = ?').run('google_cse_key');
+  }
+  if (typeof req.body.google_cse_cx === 'string') {
+    const cx = req.body.google_cse_cx.trim();
+    if (cx) setSetting('google_cse_cx', cx);
+    else db.prepare('DELETE FROM settings WHERE key = ?').run('google_cse_cx');
+  }
   res.json({
     vat_rate: parseFloat(getSetting('vat_rate', '20')),
     fees: { whatnot: getFees('whatnot'), tiktok: getFees('tiktok') },
     has_api_key: !!getAnthropicKey(),
     vision_model: getSetting('vision_model', 'claude-opus-5'),
     auto_report: getSetting('auto_report', '0') === '1',
+    has_google_key: !!getSetting('google_cse_key', ''),
+    google_cse_cx: getSetting('google_cse_cx', ''),
   });
 });
 
@@ -1233,17 +1248,50 @@ function fetchWithTimeout(url, options = {}, ms = 12000) {
   return fetch(url, { ...options, signal: ctrl.signal }).finally(() => clearTimeout(t));
 }
 
+// Moteur principal : l'API officielle Google Custom Search (fiable, 100
+// recherches gratuites par jour). Nécessite une clé API + un ID de moteur
+// (cx), enregistrés dans la modale « Photos web ».
+async function searchImagesGoogle(query) {
+  const key = decryptSecret(getSetting('google_cse_key', ''));
+  const cx = getSetting('google_cse_cx', '');
+  if (!key || !cx) return null; // non configurée
+  const url =
+    `https://www.googleapis.com/customsearch/v1?key=${encodeURIComponent(key)}&cx=${encodeURIComponent(cx)}` +
+    `&q=${encodeURIComponent(query)}&searchType=image&num=6&safe=active&gl=fr&hl=fr`;
+  const res = await fetchWithTimeout(url);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const reason = data.error && data.error.errors && data.error.errors[0] && data.error.errors[0].reason;
+    if (res.status === 429 || reason === 'rateLimitExceeded' || reason === 'dailyLimitExceeded') {
+      throw new Error('Quota Google gratuit atteint (100 recherches/jour) — réessayez demain');
+    }
+    if (res.status === 400 || res.status === 403) {
+      throw new Error(`Google : clé API ou ID de moteur invalide (${(data.error && data.error.message) || res.status})`);
+    }
+    throw new Error(`Google HTTP ${res.status}`);
+  }
+  return (data.items || []).map((it) => ({
+    full: it.link,
+    thumb: (it.image && it.image.thumbnailLink) || it.link,
+  }));
+}
+
 // Les URL d'images sont intégrées dans le HTML de Bing en JSON encodé
-// (attribut m="{...murl...}" des vignettes) — pas besoin d'exécuter de JS
+// (attribut m="{...murl...}" des vignettes) — pas besoin d'exécuter de JS.
+// Bing sert parfois une page « tendances » aux robots : on la détecte pour ne
+// pas renvoyer des images sans rapport avec la recherche.
 async function searchImagesBing(query) {
   const res = await fetchWithTimeout(
-    `https://www.bing.com/images/search?q=${encodeURIComponent(query)}&count=10`,
+    `https://www.bing.com/images/search?q=${encodeURIComponent(query)}&count=10&adlt=strict`,
     { headers: { 'User-Agent': IMG_UA, 'Accept-Language': 'fr-FR,fr;q=0.9' } }
   );
   if (!res.ok) throw new Error(`Bing HTTP ${res.status}`);
   const html = await res.text();
+  if (!html.includes('iusc') || !/images\/search/.test(res.url || '')) {
+    throw new Error('Bing a renvoyé une page inattendue (anti-robot)');
+  }
   const out = [];
-  const re = /m="({[^"]+})"/g;
+  const re = /class="iusc"[^>]*\sm="({[^"]+})"/g;
   let m;
   while ((m = re.exec(html)) && out.length < 6) {
     try {
@@ -1264,7 +1312,7 @@ async function searchImagesDdg(query) {
   const vqd = ((await res1.text()).match(/vqd=["']?([\d-]+)/) || [])[1];
   if (!vqd) throw new Error('jeton DuckDuckGo introuvable');
   const res2 = await fetchWithTimeout(
-    `https://duckduckgo.com/i.js?l=fr-fr&o=json&q=${encodeURIComponent(query)}&vqd=${vqd}`,
+    `https://duckduckgo.com/i.js?l=fr-fr&o=json&q=${encodeURIComponent(query)}&vqd=${vqd}&p=1`,
     { headers: { 'User-Agent': IMG_UA, Referer: 'https://duckduckgo.com/' } }
   );
   if (!res2.ok) throw new Error(`DuckDuckGo HTTP ${res2.status}`);
@@ -1280,6 +1328,12 @@ async function searchProductImages(query) {
       thumb: `/img/tiktok.svg?fake=${i}`,
     }));
   }
+  // 1. API Google officielle si configurée (fiable). Ses erreurs de quota ou
+  //    de clé sont remontées telles quelles : pas de repli silencieux vers un
+  //    moteur moins fiable.
+  const google = await searchImagesGoogle(query);
+  if (google !== null) return google;
+  // 2. Sinon : Bing puis DuckDuckGo (scraping, fiabilité limitée)
   try {
     const bing = await searchImagesBing(query);
     if (bing.length) return bing;
