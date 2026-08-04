@@ -1219,6 +1219,129 @@ app.get('/api/movements', (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
+// Recherche de photos produits sur le web (marque + référence + nom).
+// L'app propose plusieurs candidates par produit, l'utilisateur choisit,
+// puis le serveur télécharge l'image choisie dans uploads/.
+// Moteurs : Bing Images (HTML server-rendered), puis DuckDuckGo en secours.
+// ---------------------------------------------------------------------------
+const IMG_UA =
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36';
+
+function fetchWithTimeout(url, options = {}, ms = 12000) {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), ms);
+  return fetch(url, { ...options, signal: ctrl.signal }).finally(() => clearTimeout(t));
+}
+
+// Les URL d'images sont intégrées dans le HTML de Bing en JSON encodé
+// (attribut m="{...murl...}" des vignettes) — pas besoin d'exécuter de JS
+async function searchImagesBing(query) {
+  const res = await fetchWithTimeout(
+    `https://www.bing.com/images/search?q=${encodeURIComponent(query)}&count=10`,
+    { headers: { 'User-Agent': IMG_UA, 'Accept-Language': 'fr-FR,fr;q=0.9' } }
+  );
+  if (!res.ok) throw new Error(`Bing HTTP ${res.status}`);
+  const html = await res.text();
+  const out = [];
+  const re = /m="({[^"]+})"/g;
+  let m;
+  while ((m = re.exec(html)) && out.length < 6) {
+    try {
+      const obj = JSON.parse(m[1].replace(/&quot;/g, '"').replace(/&amp;/g, '&'));
+      if (obj.murl && /^https?:/i.test(obj.murl)) out.push({ full: obj.murl, thumb: obj.turl || obj.murl });
+    } catch (e) {
+      /* bloc non pertinent */
+    }
+  }
+  return out;
+}
+
+async function searchImagesDdg(query) {
+  const res1 = await fetchWithTimeout(
+    `https://duckduckgo.com/?q=${encodeURIComponent(query)}&iax=images&ia=images`,
+    { headers: { 'User-Agent': IMG_UA } }
+  );
+  const vqd = ((await res1.text()).match(/vqd=["']?([\d-]+)/) || [])[1];
+  if (!vqd) throw new Error('jeton DuckDuckGo introuvable');
+  const res2 = await fetchWithTimeout(
+    `https://duckduckgo.com/i.js?l=fr-fr&o=json&q=${encodeURIComponent(query)}&vqd=${vqd}`,
+    { headers: { 'User-Agent': IMG_UA, Referer: 'https://duckduckgo.com/' } }
+  );
+  if (!res2.ok) throw new Error(`DuckDuckGo HTTP ${res2.status}`);
+  const data = await res2.json();
+  return (data.results || []).slice(0, 6).map((r) => ({ full: r.image, thumb: r.thumbnail }));
+}
+
+async function searchProductImages(query) {
+  // Mode test hors ligne (WM_FAKE_IMAGES=1) : candidates locales factices
+  if (process.env.WM_FAKE_IMAGES) {
+    return [1, 2, 3].map((i) => ({
+      full: `http://localhost:${PORT}/img/tiktok.svg?fake=${i}`,
+      thumb: `/img/tiktok.svg?fake=${i}`,
+    }));
+  }
+  try {
+    const bing = await searchImagesBing(query);
+    if (bing.length) return bing;
+  } catch (e) {
+    /* on tente DuckDuckGo */
+  }
+  return searchImagesDdg(query);
+}
+
+// Recherche par lot : { ids: [productId, ...] } (10 max par appel)
+app.post('/api/photos/search', async (req, res) => {
+  const ids = (Array.isArray(req.body.ids) ? req.body.ids : []).slice(0, 10).map(Number);
+  if (!ids.length) return res.status(400).json({ error: 'Aucun produit demandé' });
+  const results = [];
+  for (const id of ids) {
+    const p = db.prepare('SELECT * FROM products WHERE id = ?').get(id);
+    if (!p) continue;
+    const query = [p.category, p.sku, p.name].filter(Boolean).join(' ').slice(0, 90);
+    try {
+      results.push({ id: p.id, query, candidates: await searchProductImages(query), error: null });
+    } catch (e) {
+      results.push({ id: p.id, query, candidates: [], error: e.message });
+    }
+  }
+  res.json({ results });
+});
+
+// Téléchargement des images choisies : { choices: [{ id, url }] }
+const IMG_TYPES = {
+  'image/jpeg': '.jpg', 'image/png': '.png', 'image/webp': '.webp',
+  'image/gif': '.gif', 'image/svg+xml': '.svg', 'image/avif': '.avif',
+};
+app.post('/api/photos/apply', async (req, res) => {
+  const choices = Array.isArray(req.body.choices) ? req.body.choices : [];
+  if (!choices.length) return res.status(400).json({ error: 'Aucune image choisie' });
+  let assigned = 0;
+  const failed = [];
+  for (const c of choices.slice(0, 30)) {
+    const p = db.prepare('SELECT * FROM products WHERE id = ?').get(Number(c.id));
+    if (!p || !/^https?:\/\//i.test(String(c.url || ''))) continue;
+    try {
+      const r = await fetchWithTimeout(c.url, { headers: { 'User-Agent': IMG_UA } }, 20000);
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const type = String(r.headers.get('content-type') || '').split(';')[0].trim();
+      const ext = IMG_TYPES[type];
+      if (!ext) throw new Error(`pas une image (${type || 'type inconnu'})`);
+      const buf = Buffer.from(await r.arrayBuffer());
+      if (buf.length > 8 * 1024 * 1024) throw new Error('image trop lourde (> 8 Mo)');
+      if (buf.length < 500) throw new Error('image vide');
+      const filename = `web-${p.id}-${Date.now()}${ext}`;
+      fs.writeFileSync(path.join(UPLOADS_DIR, filename), buf);
+      if (p.photo) fs.unlink(path.join(UPLOADS_DIR, path.basename(p.photo)), () => {});
+      db.prepare('UPDATE products SET photo = ?, updated_at = ? WHERE id = ?').run(`/uploads/${filename}`, now(), p.id);
+      assigned++;
+    } catch (e) {
+      failed.push({ id: p.id, name: p.name, error: e.message });
+    }
+  }
+  res.json({ assigned, failed });
+});
+
+// ---------------------------------------------------------------------------
 // Inventaire physique : on envoie les quantités comptées, le stock est recalé
 // et chaque écart est tracé dans l'historique. Seuls les produits comptés
 // sont ajustés (inventaire partiel possible).

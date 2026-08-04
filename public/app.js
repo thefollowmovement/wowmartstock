@@ -1936,6 +1936,138 @@ window.restoreBackup = async (name) => {
 };
 
 // ---------------------------------------------------------------------------
+// Photos depuis le web : recherche marque + référence + nom, validation
+// par l'utilisateur, puis téléchargement des images choisies
+// ---------------------------------------------------------------------------
+const wpChoices = new Map(); // product_id -> url choisie (absent = ignoré)
+let wpSearching = false;
+
+$('#btnWebPhotos').addEventListener('click', () => {
+  wpChoices.clear();
+  $('#wpResults').innerHTML = '';
+  $('#wpProgress').hidden = true;
+  $('#btnWpApply').hidden = true;
+  $('#wpCount').textContent = '';
+  const missing = products.filter((p) => !p.photo).length;
+  $('#wpInfo').textContent = `${missing} produit(s) sans photo sur ${products.length}.`;
+  $('#webPhotosModal').hidden = false;
+});
+$('#btnCloseWebPhotos').addEventListener('click', () => {
+  $('#webPhotosModal').hidden = true;
+  wpSearching = false;
+});
+
+function wpUpdateCount() {
+  $('#wpCount').textContent = `${wpChoices.size} photo(s) sélectionnée(s)`;
+  $('#btnWpApply').hidden = wpChoices.size === 0;
+}
+
+window.wpSelect = (id, url, el) => {
+  const row = el.closest('.wp-row');
+  row.querySelectorAll('.wp-thumb').forEach((t) => t.classList.remove('selected'));
+  if (url) {
+    wpChoices.set(id, url);
+    el.classList.add('selected');
+  } else {
+    wpChoices.delete(id);
+  }
+  wpUpdateCount();
+};
+
+$('#btnWpSearch').addEventListener('click', async () => {
+  if (wpSearching) return;
+  const includeExisting = $('#wpIncludeExisting').checked;
+  const targets = products.filter((p) => includeExisting || !p.photo);
+  if (!targets.length) return toast('Tous les produits ont déjà une photo 🎉');
+  wpSearching = true;
+  $('#btnWpSearch').disabled = true;
+  $('#wpResults').innerHTML = '';
+  wpChoices.clear();
+  wpUpdateCount();
+  const progress = $('#wpProgress');
+  progress.hidden = false;
+  let done = 0;
+  try {
+    for (let i = 0; i < targets.length && wpSearching; i += 6) {
+      const batch = targets.slice(i, i + 6);
+      progress.textContent = `🔎 Recherche ${done + 1}–${Math.min(done + batch.length, targets.length)} sur ${targets.length}…`;
+      const data = await api('/api/photos/search', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids: batch.map((p) => p.id) }),
+      });
+      for (const r of data.results) {
+        const p = products.find((x) => x.id === r.id);
+        if (!p) continue;
+        const thumbs = r.candidates
+          .map(
+            (c, idx) => `<img class="wp-thumb ${idx === 0 ? 'selected' : ''}" src="${escapeHtml(c.thumb)}"
+              loading="lazy" referrerpolicy="no-referrer" alt=""
+              onerror="this.remove()"
+              onclick="wpSelect(${r.id}, '${escapeHtml(c.full).replace(/'/g, '&#39;')}', this)">`
+          )
+          .join('');
+        if (r.candidates.length) wpChoices.set(r.id, r.candidates[0].full);
+        $('#wpResults').insertAdjacentHTML(
+          'beforeend',
+          `<div class="wp-row">
+            <div class="wp-product">
+              <strong>${escapeHtml(p.name)}</strong>
+              <span class="product-sku">${escapeHtml(p.category || '')} ${escapeHtml(p.sku || '')}</span>
+              ${r.error ? `<span class="pay-badge failed">⚠ ${escapeHtml(r.error)}</span>` : ''}
+              ${!r.error && !r.candidates.length ? '<span class="muted small">aucune image trouvée</span>' : ''}
+            </div>
+            <div class="wp-thumbs">${thumbs}
+              ${r.candidates.length ? `<button class="wp-skip" title="Ignorer ce produit" onclick="wpSelect(${r.id}, null, this)">🚫</button>` : ''}
+            </div>
+          </div>`
+        );
+      }
+      done += batch.length;
+      wpUpdateCount();
+    }
+  } catch (e) {
+    toast(e.message, true);
+  }
+  progress.textContent = wpSearching ? '✅ Recherche terminée — vérifiez les images puis validez.' : '';
+  wpSearching = false;
+  $('#btnWpSearch').disabled = false;
+});
+
+$('#btnWpApply').addEventListener('click', async () => {
+  const choices = [...wpChoices].map(([id, url]) => ({ id, url }));
+  if (!choices.length) return;
+  const btn = $('#btnWpApply');
+  btn.disabled = true;
+  const progress = $('#wpProgress');
+  progress.hidden = false;
+  let assigned = 0;
+  const failed = [];
+  try {
+    for (let i = 0; i < choices.length; i += 15) {
+      progress.textContent = `⬇ Téléchargement ${i + 1}–${Math.min(i + 15, choices.length)} sur ${choices.length}…`;
+      const r = await api('/api/photos/apply', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ choices: choices.slice(i, i + 15) }),
+      });
+      assigned += r.assigned;
+      failed.push(...r.failed);
+    }
+    let msg = `🖼 ${assigned} photo(s) assignée(s)`;
+    if (failed.length) msg += ` — ${failed.length} échec(s) : ${failed.slice(0, 3).map((f) => f.name).join(', ')}${failed.length > 3 ? '…' : ''}`;
+    toast(msg, failed.length > 0 && assigned === 0);
+    $('#webPhotosModal').hidden = true;
+    await loadProducts();
+  } catch (e) {
+    toast(e.message, true);
+  } finally {
+    btn.disabled = false;
+    progress.hidden = true;
+  }
+});
+
+// ---------------------------------------------------------------------------
 // Mode inventaire : comptage physique (saisie ou scan de codes-barres),
 // puis recalage du stock avec rapport des écarts
 // ---------------------------------------------------------------------------
