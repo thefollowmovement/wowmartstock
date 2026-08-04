@@ -1258,31 +1258,43 @@ setInterval(() => {
   for (const [k, v] of pendingImports) if (v.expires < t) pendingImports.delete(k);
 }, 60 * 1000).unref();
 
-// Détection automatique des colonnes selon leur nom (français / anglais)
+// Détection automatique des colonnes selon leur nom (français / anglais).
+// Chaque champ accepte plusieurs motifs, essayés dans l'ordre : le premier
+// (précis) gagne sur le second (générique) — ex : « Prix de vente suggéré »
+// est préféré à « Prix RMB » pour le prix de vente.
 // barcode est testé avant sku : une colonne « Code barre » / « EAN » doit lui
 // revenir, sinon le motif `code` du SKU la capturerait.
 const FIELD_PATTERNS = {
-  barcode: /^(code.?barres?|barcode|ean|upc|gencod|gtin)/i,
-  sku: /^(sku|ref|r[ée]f[ée]rence|code)/i,
-  variant_group: /^(groupe|variante|parent|mod[èe]le|model)/i,
-  name: /^(nom|name|produit|product|titre|title|d[ée]signation|article|libell[ée])/i,
-  category: /^(cat[ée]gorie|category|type|famille|collection)/i,
-  price: /^(prix|price|prix de vente|pv|tarif|selling)/i,
-  cost: /^(co[ûu]t|cost|prix d.achat|pa|achat|purchase)/i,
-  min_stock: /(min|seuil|alerte|reorder)/i,
-  stock: /^(stock|quantit[ée]|qte|qty|quantity|inventaire|inventory|disponible|available)/i,
+  barcode: [/^(code.?barres?|barcode|ean|upc|gencod|gtin)/i],
+  sku: [/^(sku|ref|r[ée]f[ée]rence|code)/i],
+  variant_group: [/^(groupe|variante|parent|mod[èe]le|model)/i],
+  name: [/^(nom|name|produit(?!\s*€)|product|titre|title|d[ée]signation|article|libell[ée])/i],
+  category: [/^(cat[ée]gorie|category|famille|collection)/i, /^(marque|brand|type)/i],
+  price: [
+    /^(prix de vente|pv\b|selling|tarif)/i,
+    /^(prix|price)(?!\s*(rmb|du gramme|de l.envoi|d.achat|produit|ht\b|avec tva|ttc))/i,
+  ],
+  cost: [
+    /^(co[ûu]t|cost|prix d.achat|pa\b|achat|purchase)/i,
+    /^(prix avec tva|prix ttc|landed)/i,
+    /^prix produit/i,
+  ],
+  min_stock: [/(min|seuil|alerte|reorder)/i],
+  stock: [/^(stock|quantit[ée]|qte|qty|quantity|inventaire|inventory|disponible|available)/i],
 };
 
 function guessMapping(headers) {
   const mapping = {};
   const used = new Set();
-  for (const [field, re] of Object.entries(FIELD_PATTERNS)) {
-    for (const h of headers) {
-      if (used.has(h)) continue;
-      if (re.test(String(h).trim())) {
-        mapping[field] = h;
-        used.add(h);
-        break;
+  for (const [field, patterns] of Object.entries(FIELD_PATTERNS)) {
+    outer: for (const re of patterns) {
+      for (const h of headers) {
+        if (used.has(h)) continue;
+        if (re.test(String(h).trim())) {
+          mapping[field] = h;
+          used.add(h);
+          break outer;
+        }
       }
     }
   }
@@ -1350,6 +1362,13 @@ app.post('/api/import/commit', (req, res) => {
       const barcode = String(get('barcode')).trim();
       const name = String(get('name')).trim();
       if (!sku && !name) {
+        skipped++;
+        continue;
+      }
+      // Ligne d'annotation (ex : détail des couleurs « Noir - 84 » sous un
+      // produit) : un libellé sans référence ni quantité, alors que le fichier
+      // a bien des colonnes référence et quantité → on l'ignore
+      if (mapping.sku && mapping.stock && !sku && !String(get('stock')).trim()) {
         skipped++;
         continue;
       }
