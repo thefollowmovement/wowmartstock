@@ -71,7 +71,11 @@ L'onglet Stats compare tous vos lives terminés : **CA et marge moyens par jour 
 
 ## 💾 Sauvegarde automatique
 
-Dans l'onglet Importer : choisissez un dossier (iCloud Drive, Dropbox, disque externe…) — une copie de la base et des photos y est faite **chaque jour automatiquement** (14 jours conservés), avec sauvegarde manuelle et **restauration en un clic** (l'app redémarre sur la sauvegarde choisie).
+Dans l'onglet Importer : **activation en un clic** (dossier proposé automatiquement — `/var/backups/wowmart` sur un serveur, iCloud Drive/Documents sur un Mac) — une copie de la base et des photos est faite **chaque jour** (14 jours conservés). En plus :
+
+- **⬇ Télécharger une copie complète** : archive `.tar.gz` de l'état actuel (base + photos) à garder sur votre ordinateur — indispensable quand l'app tourne sur un serveur ;
+- téléchargement de chaque sauvegarde quotidienne ;
+- **restauration en un clic** depuis une sauvegarde du serveur **ou depuis une archive téléchargée** (pratique aussi pour migrer ses données d'une machine à l'autre) — l'app redémarre sur les données restaurées (automatiquement via systemd sur un serveur).
 
 ## Fonctionnalités
 

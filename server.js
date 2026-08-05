@@ -2,6 +2,8 @@ const express = require('express');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
+const os = require('os');
+const { execFile } = require('child_process');
 const crypto = require('crypto');
 const { DatabaseSync } = require('node:sqlite');
 const XLSX = require('xlsx');
@@ -2139,6 +2141,17 @@ function backupRoot() {
   return dir ? path.join(dir, 'WowMart-sauvegardes') : '';
 }
 
+// Dossier proposé selon la machine : /var/backups/wowmart sur un serveur
+// Linux (créé par deploy/install.sh), iCloud Drive ou Documents sur un Mac
+function suggestedBackupDir() {
+  if (process.platform === 'darwin') {
+    const icloud = path.join(os.homedir(), 'Library/Mobile Documents/com~apple~CloudDocs');
+    if (fs.existsSync(icloud)) return path.join(icloud, 'WowMart');
+    return path.join(os.homedir(), 'Documents', 'WowMart-sauvegardes');
+  }
+  return '/var/backups/wowmart';
+}
+
 function listBackups() {
   const root = backupRoot();
   if (!root || !fs.existsSync(root)) return [];
@@ -2187,6 +2200,8 @@ function runBackup() {
 app.get('/api/backup', (req, res) => {
   res.json({
     dir: getSetting('backup_dir', ''),
+    suggested_dir: suggestedBackupDir(),
+    on_server: process.platform === 'linux',
     last_backup: getSetting('last_backup', '') || null,
     backups: listBackups(),
   });
@@ -2223,24 +2238,22 @@ app.post('/api/backup/run', (req, res) => {
 });
 
 // Restauration : la base et les photos sont remplacées par la sauvegarde,
-// puis l'application s'arrête (elle doit être relancée avec npm start).
-app.post('/api/backup/restore', (req, res) => {
-  const name = String(req.body.name || '');
-  if (!/^sauvegarde-\d{4}-\d{2}-\d{2}$/.test(name)) {
-    return res.status(400).json({ error: 'Sauvegarde invalide' });
-  }
-  const source = path.join(backupRoot(), name);
-  if (!fs.existsSync(path.join(source, 'stock.db'))) {
-    return res.status(404).json({ error: 'Sauvegarde introuvable' });
-  }
+// puis l'application s'arrête. Sur un serveur (systemd), elle redémarre
+// toute seule ; en local, la relancer avec npm start.
+const RESTART_MSG =
+  process.platform === 'linux'
+    ? 'Sauvegarde restaurée — l’application redémarre, rechargez la page dans quelques secondes'
+    : 'Sauvegarde restaurée — relancez l’application (npm start)';
+
+function performRestore(sourceDir, res, label) {
   try {
     db.close();
     for (const suffix of ['', '-wal', '-shm']) {
       const f = `${DB_PATH}${suffix}`;
       if (fs.existsSync(f)) fs.rmSync(f);
     }
-    fs.copyFileSync(path.join(source, 'stock.db'), DB_PATH);
-    const uploadsBackup = path.join(source, 'uploads');
+    fs.copyFileSync(path.join(sourceDir, 'stock.db'), DB_PATH);
+    const uploadsBackup = path.join(sourceDir, 'uploads');
     if (fs.existsSync(uploadsBackup)) {
       fs.cpSync(uploadsBackup, UPLOADS_DIR, { recursive: true, force: true });
     }
@@ -2252,9 +2265,95 @@ app.post('/api/backup/restore', (req, res) => {
     setTimeout(() => process.exit(1), 400);
     return;
   }
-  res.json({ ok: true, message: 'Sauvegarde restaurée — relancez l’application (npm start)' });
-  console.log(`Sauvegarde ${name} restaurée — arrêt de l'application, relancez avec npm start`);
+  res.json({ ok: true, message: RESTART_MSG });
+  console.log(`Sauvegarde ${label} restaurée — arrêt de l'application`);
   setTimeout(() => process.exit(0), 400);
+}
+
+app.post('/api/backup/restore', (req, res) => {
+  const name = String(req.body.name || '');
+  if (!/^sauvegarde-\d{4}-\d{2}-\d{2}$/.test(name)) {
+    return res.status(400).json({ error: 'Sauvegarde invalide' });
+  }
+  const source = path.join(backupRoot(), name);
+  if (!fs.existsSync(path.join(source, 'stock.db'))) {
+    return res.status(404).json({ error: 'Sauvegarde introuvable' });
+  }
+  performRestore(source, res, name);
+});
+
+// Télécharger une sauvegarde en archive .tar.gz (copie hors du serveur)
+app.get('/api/backup/download/:name', (req, res) => {
+  const name = String(req.params.name || '');
+  if (!/^sauvegarde-\d{4}-\d{2}-\d{2}$/.test(name)) {
+    return res.status(400).json({ error: 'Sauvegarde invalide' });
+  }
+  const root = backupRoot();
+  if (!root || !fs.existsSync(path.join(root, name, 'stock.db'))) {
+    return res.status(404).json({ error: 'Sauvegarde introuvable' });
+  }
+  const tmp = path.join(os.tmpdir(), `wowmart-${name}-${Date.now()}.tar.gz`);
+  execFile('tar', ['-czf', tmp, '-C', root, name], (err) => {
+    if (err) return res.status(500).json({ error: `Archive impossible : ${err.message}` });
+    res.download(tmp, `wowmart-${name}.tar.gz`, () => fs.rm(tmp, { force: true }, () => {}));
+  });
+});
+
+// Télécharger l'état ACTUEL (photo instantanée cohérente), même sans dossier
+// de sauvegarde configuré — pour garder une copie sur son ordinateur
+app.get('/api/backup/export', (req, res) => {
+  const day = localDay();
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wowmart-export-'));
+  const stage = path.join(tmpDir, `sauvegarde-${day}`);
+  fs.mkdirSync(stage);
+  try {
+    db.exec(`VACUUM INTO '${path.join(stage, 'stock.db').replace(/'/g, "''")}'`);
+    if (fs.existsSync(UPLOADS_DIR)) {
+      fs.cpSync(UPLOADS_DIR, path.join(stage, 'uploads'), { recursive: true });
+    }
+  } catch (e) {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+    return res.status(500).json({ error: `Export impossible : ${e.message}` });
+  }
+  const tmpFile = path.join(os.tmpdir(), `wowmart-export-${Date.now()}.tar.gz`);
+  execFile('tar', ['-czf', tmpFile, '-C', tmpDir, `sauvegarde-${day}`], (err) => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+    if (err) return res.status(500).json({ error: `Archive impossible : ${err.message}` });
+    res.download(tmpFile, `wowmart-${day}.tar.gz`, () => fs.rm(tmpFile, { force: true }, () => {}));
+  });
+});
+
+// Restaurer depuis une archive téléchargée (.tar.gz) — envoyée depuis le
+// navigateur, ex : rapatrier ses données du Mac vers le serveur
+const uploadArchive = multer({
+  dest: os.tmpdir(),
+  limits: { fileSize: 2 * 1024 * 1024 * 1024 },
+});
+app.post('/api/backup/upload', uploadArchive.single('archive'), (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'Aucun fichier reçu' });
+  const extract = fs.mkdtempSync(path.join(os.tmpdir(), 'wowmart-restore-'));
+  const cleanup = () => {
+    fs.rmSync(extract, { recursive: true, force: true });
+    fs.rmSync(req.file.path, { force: true });
+  };
+  execFile('tar', ['-xzf', req.file.path, '-C', extract], (err) => {
+    if (err) {
+      cleanup();
+      return res.status(400).json({ error: 'Archive illisible — attendu : un .tar.gz téléchargé depuis WowMart' });
+    }
+    // stock.db à la racine de l'archive, ou dans son unique dossier
+    let source = extract;
+    if (!fs.existsSync(path.join(source, 'stock.db'))) {
+      const sub = fs.readdirSync(extract).find((n) => fs.existsSync(path.join(extract, n, 'stock.db')));
+      if (!sub) {
+        cleanup();
+        return res.status(400).json({ error: 'Archive invalide : stock.db introuvable dedans' });
+      }
+      source = path.join(extract, sub);
+    }
+    performRestore(source, res, `archive ${req.file.originalname}`);
+    // le process s'arrête juste après : le nettoyage de /tmp suivra au reboot
+  });
 });
 
 // Une sauvegarde par jour, dès que l'app tourne (vérification toutes les 30 min)

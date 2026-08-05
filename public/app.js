@@ -1972,11 +1972,22 @@ $('#movNext').addEventListener('click', () => { movPage++; loadMovements(); });
 // ---------------------------------------------------------------------------
 function renderBackup(data) {
   $('#backupDir').value = data.dir || '';
+  const enableBtn = $('#btnBackupEnable');
+  if (!data.dir) {
+    enableBtn.hidden = false;
+    enableBtn.textContent = data.on_server
+      ? '⚡ Activer la sauvegarde quotidienne sur le serveur'
+      : '⚡ Activer la sauvegarde quotidienne';
+    enableBtn.title = `Dossier utilisé : ${data.suggested_dir}`;
+    enableBtn.dataset.dir = data.suggested_dir;
+  } else {
+    enableBtn.hidden = true;
+  }
   $('#backupStatus').innerHTML = data.dir
     ? data.last_backup
-      ? `✅ Dernière sauvegarde : <strong>${dateFr(data.last_backup)}</strong>`
-      : '⏳ Première sauvegarde dans quelques secondes…'
-    : '⚠ Aucun dossier configuré : <strong>vos données ne sont pas sauvegardées</strong>.';
+      ? `✅ Sauvegarde quotidienne active (<code>${escapeHtml(data.dir)}</code>) — dernière : <strong>${dateFr(data.last_backup)}</strong>`
+      : `⏳ Sauvegarde quotidienne active (<code>${escapeHtml(data.dir)}</code>) — première copie dans quelques secondes…`
+    : '⚠ Sauvegarde quotidienne <strong>désactivée</strong> — activez-la en un clic ci-dessous.';
   $('#backupList').innerHTML = data.backups && data.backups.length
     ? `<div class="table-wrap"><table>
         <thead><tr><th>Sauvegarde</th><th>Base</th><th></th></tr></thead>
@@ -1985,12 +1996,47 @@ function renderBackup(data) {
             (b) => `<tr>
           <td>📁 ${escapeHtml(b.date)}</td>
           <td>${(b.size / 1024).toFixed(0)} Ko</td>
-          <td><button class="btn small" onclick="restoreBackup('${escapeHtml(b.name)}')" title="Remplace la base et les photos actuelles par cette sauvegarde">↩ Restaurer</button></td>
+          <td>
+            <a class="btn small" href="/api/backup/download/${escapeHtml(b.name)}" title="Télécharger cette sauvegarde (.tar.gz) sur votre ordinateur">⬇</a>
+            <button class="btn small" onclick="restoreBackup('${escapeHtml(b.name)}')" title="Remplace la base et les photos actuelles par cette sauvegarde">↩ Restaurer</button>
+          </td>
         </tr>`
           )
           .join('')}</tbody></table></div>`
     : '';
 }
+
+$('#btnBackupEnable').addEventListener('click', async (e) => {
+  try {
+    const data = await api('/api/backup', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ dir: e.target.dataset.dir }),
+    });
+    renderBackup(data);
+    toast('💾 Sauvegarde quotidienne activée');
+  } catch (err) {
+    toast(err.message, true);
+  }
+});
+
+$('#backupUpload').addEventListener('change', async function () {
+  const file = this.files[0];
+  this.value = '';
+  if (!file) return;
+  if (!confirm(`Restaurer « ${file.name} » ?\n\nVos données ACTUELLES (base + photos) seront remplacées par le contenu de cette archive. L'application redémarrera ensuite.`)) return;
+  const fd = new FormData();
+  fd.set('archive', file);
+  try {
+    toast('⬆ Envoi de l’archive…');
+    const r = await api('/api/backup/upload', { method: 'POST', body: fd });
+    document.body.innerHTML = `<div class="restore-done"><h1>✅ ${escapeHtml(r.message)}</h1>
+      <p>Rechargez cette page dans quelques secondes.</p></div>`;
+    setTimeout(() => location.reload(), 5000);
+  } catch (e) {
+    toast(e.message, true);
+  }
+});
 
 async function loadBackup() {
   try {
@@ -2067,15 +2113,17 @@ $('#btnBackupNow').addEventListener('click', async () => {
 });
 
 window.restoreBackup = async (name) => {
-  if (!confirm(`Restaurer la sauvegarde du ${name.replace('sauvegarde-', '')} ?\n\nVos données ACTUELLES (base + photos) seront remplacées par cette sauvegarde. L'application s'arrêtera ensuite : relancez-la avec npm start.`)) return;
+  if (!confirm(`Restaurer la sauvegarde du ${name.replace('sauvegarde-', '')} ?\n\nVos données ACTUELLES (base + photos) seront remplacées par cette sauvegarde. L'application redémarrera ensuite.`)) return;
   try {
     const r = await api('/api/backup/restore', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name }),
     });
+    const auto = /redémarre/.test(r.message); // serveur : systemd relance tout seul
     document.body.innerHTML = `<div class="restore-done"><h1>✅ ${escapeHtml(r.message)}</h1>
-      <p>Retournez dans le Terminal et relancez <code>npm start</code>, puis rechargez cette page.</p></div>`;
+      <p>${auto ? 'Cette page va se recharger automatiquement.' : 'Relancez <code>npm start</code> dans le Terminal, puis rechargez cette page.'}</p></div>`;
+    if (auto) setTimeout(() => location.reload(), 5000);
   } catch (e) {
     toast(e.message, true);
   }

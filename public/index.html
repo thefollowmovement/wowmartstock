@@ -228,18 +228,30 @@
 
     <div class="card">
       <h2>💾 Sauvegarde automatique</h2>
-      <p class="muted">Une copie de votre base (produits, ventes, lives) et de vos photos est faite <strong>chaque jour automatiquement</strong>
-        dans le dossier de votre choix — mettez-y un dossier synchronisé (iCloud Drive, Dropbox…) ou un disque externe.
-        Les 14 dernières sauvegardes sont conservées.</p>
-      <div class="backup-row">
-        <input id="backupDir" type="text" placeholder="Ex : /Users/vous/Library/Mobile Documents/com~apple~CloudDocs" autocomplete="off">
-        <button class="btn primary" id="btnSaveBackupDir">Enregistrer</button>
-        <button class="btn" id="btnBackupNow">Sauvegarder maintenant</button>
-      </div>
-      <p class="muted small">💡 Sur Mac, glissez un dossier du Finder dans le Terminal pour obtenir son chemin, ou utilisez
-        <code>/Users/votrenom/Library/Mobile Documents/com~apple~CloudDocs</code> pour iCloud Drive.</p>
+      <p class="muted">Une copie de votre base (produits, ventes, lives) et de vos photos est faite <strong>chaque jour automatiquement</strong>.
+        Les 14 dernières sauvegardes sont conservées sur la machine, et vous pouvez
+        <strong>télécharger une archive sur votre ordinateur</strong> à tout moment — c'est votre vraie protection si le serveur meurt.</p>
       <div id="backupStatus" class="muted"></div>
+      <div class="backup-row">
+        <button class="btn primary" id="btnBackupEnable" hidden></button>
+        <button class="btn" id="btnBackupNow">💾 Sauvegarder maintenant</button>
+        <a class="btn" id="btnBackupExport" href="/api/backup/export" title="Télécharge une archive .tar.gz de l'état actuel (base + photos) sur votre ordinateur">⬇ Télécharger une copie complète</a>
+      </div>
+      <details class="api-key-setup">
+        <summary>⚙ Dossier de sauvegarde personnalisé</summary>
+        <div class="backup-row">
+          <input id="backupDir" type="text" placeholder="Chemin absolu du dossier" autocomplete="off">
+          <button class="btn primary" id="btnSaveBackupDir">Enregistrer</button>
+        </div>
+        <p class="muted small">Laissez vide et enregistrez pour désactiver. Sur Mac : un dossier iCloud Drive/Dropbox ; sur serveur : <code>/var/backups/wowmart</code>.</p>
+      </details>
       <div id="backupList"></div>
+      <details class="api-key-setup">
+        <summary>↩ Restaurer depuis un fichier téléchargé</summary>
+        <p class="muted small">Choisissez une archive <code>.tar.gz</code> téléchargée depuis WowMart (de cette machine ou d'une autre —
+          pratique pour rapatrier vos données du Mac vers le serveur). Vos données actuelles seront remplacées.</p>
+        <input type="file" id="backupUpload" accept=".gz,.tgz,application/gzip">
+      </details>
     </div>
   </main>
 
@@ -426,7 +438,7 @@
           <li><code>uploads/</code> — les photos des produits et des ventes.</li>
         </ul>
         <p><strong>🔒 Sécurité</strong> : votre clé API est <strong>chiffrée</strong> dans la base et n'est jamais renvoyée au navigateur. Dans l'onglet <em>Importer</em>, vous pouvez définir un <strong>mot de passe</strong> qui verrouille toute l'app (données et photos) — indispensable si elle est accessible depuis Internet ou un autre appareil.</p>
-        <p><strong>💾 Sauvegarde automatique</strong> : dans l'onglet <em>Importer</em>, indiquez un dossier de sauvegarde (idéalement synchronisé : iCloud Drive, Dropbox… ou un disque externe). Une copie complète (base + photos) y est faite <strong>chaque jour automatiquement</strong>, les 14 dernières sont conservées, et le bouton <span class="tuto-btn">↩ Restaurer</span> permet de revenir à n'importe laquelle en un clic.</p>
+        <p><strong>💾 Sauvegarde automatique</strong> : dans l'onglet <em>Importer</em>, activez-la <strong>en un clic</strong> (le bon dossier est proposé selon la machine). Une copie complète (base + photos) est faite <strong>chaque jour</strong>, les 14 dernières sont conservées. <span class="tuto-btn">⬇ Télécharger une copie complète</span> met une archive sur votre ordinateur — le réflexe à avoir régulièrement quand l'app est sur un serveur — et <span class="tuto-btn">↩ Restaurer</span> revient à n'importe quelle sauvegarde, y compris depuis une archive téléchargée (pour migrer d'une machine à l'autre).</p>
       </div>
     </details>
   </main>
