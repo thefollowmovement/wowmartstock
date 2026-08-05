@@ -37,6 +37,10 @@ npm install --omit=dev --no-audit --no-fund
 
 # ------------------------------------------------- utilisateur système dédié
 id -u "$SERVICE_USER" >/dev/null 2>&1 || useradd --system --home "$APP_DIR" --shell /usr/sbin/nologin "$SERVICE_USER"
+# git en root sur un dépôt appartenant à wowmart : autoriser une fois pour toutes
+if ! git config --global --get-all safe.directory 2>/dev/null | grep -qx "$APP_DIR"; then
+  git config --global --add safe.directory "$APP_DIR"
+fi
 mkdir -p "$APP_DIR/data" "$APP_DIR/uploads" "$BACKUP_DIR"
 chown -R "$SERVICE_USER:$SERVICE_USER" "$APP_DIR" "$BACKUP_DIR"
 
