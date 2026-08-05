@@ -902,6 +902,44 @@ app.post('/api/lives', (req, res) => {
   res.status(201).json(sessionSummary(db.prepare('SELECT * FROM live_sessions WHERE id = ?').get(info.lastInsertRowid)));
 });
 
+// Modifier un live terminé : plateforme, date et horaires.
+// Si la date de début change, les ventes du live sont décalées du même écart
+// pour garder leur position dans le déroulé ; si la plateforme change, le
+// canal des ventes suit (stats par plateforme).
+app.patch('/api/lives/:id', (req, res) => {
+  const session = db.prepare('SELECT * FROM live_sessions WHERE id = ?').get(Number(req.params.id));
+  if (!session) return res.status(404).json({ error: 'Live introuvable' });
+  if (!session.ended_at) return res.status(400).json({ error: 'Terminez le live avant de modifier ses informations' });
+
+  const platform = req.body.platform || session.platform;
+  if (!LIVE_PLATFORMS.includes(platform)) return res.status(400).json({ error: 'Plateforme invalide' });
+  const started = new Date(req.body.started_at || session.started_at);
+  const ended = new Date(req.body.ended_at || session.ended_at);
+  if (Number.isNaN(started.getTime()) || Number.isNaN(ended.getTime())) {
+    return res.status(400).json({ error: 'Dates invalides' });
+  }
+  if (ended <= started) return res.status(400).json({ error: 'La fin du live doit être après son début' });
+  if (started > new Date()) return res.status(400).json({ error: 'La date de début doit être dans le passé' });
+
+  withTransaction(() => {
+    const delta = started.getTime() - new Date(session.started_at).getTime();
+    if (delta !== 0) {
+      const rows = db.prepare('SELECT id, created_at FROM movements WHERE session_id = ?').all(session.id);
+      const upd = db.prepare('UPDATE movements SET created_at = ? WHERE id = ?');
+      for (const r of rows) {
+        upd.run(new Date(new Date(r.created_at).getTime() + delta).toISOString(), r.id);
+      }
+    }
+    if (platform !== session.platform) {
+      db.prepare(`UPDATE movements SET channel = ? WHERE session_id = ? AND channel IN ('tiktok', 'whatnot', 'live')`)
+        .run(platform, session.id);
+    }
+    db.prepare('UPDATE live_sessions SET platform = ?, started_at = ?, ended_at = ? WHERE id = ?')
+      .run(platform, started.toISOString(), ended.toISOString(), session.id);
+  });
+  res.json(sessionSummary(db.prepare('SELECT * FROM live_sessions WHERE id = ?').get(session.id)));
+});
+
 // Live en cours (pour reprendre après un rechargement de page)
 app.get('/api/lives/active', (req, res) => {
   const open = db.prepare('SELECT * FROM live_sessions WHERE ended_at IS NULL').get();

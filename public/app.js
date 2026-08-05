@@ -984,7 +984,8 @@ window.showLiveDetail = async (id) => {
 
     const ht = httc(l.revenue);
     $('#liveDetail').innerHTML = `
-      <h3>${PLATFORM_LABELS[l.platform]} — ${dateFr(l.started_at)}</h3>
+      <h3>${PLATFORM_LABELS[l.platform]} — ${dateFr(l.started_at)}
+        ${l.ended_at ? `<button class="btn small" onclick="editLive(${l.id})" title="Changer la plateforme, la date ou les horaires — les heures des ventes suivent le décalage">✏ Modifier ce live</button>` : ''}</h3>
       ${statusBlock}
       <div class="recap-grid wide">
         <div class="stat"><div class="value">${l.items}</div><div class="label">Articles vendus</div></div>
@@ -1484,6 +1485,71 @@ function renderPhotoReview() {
     </div>`;
   $('#photoReview').hidden = false;
 }
+
+// ---- Créer un live passé / modifier un live existant ----
+let editingLiveId = null; // null = création
+
+const timeFrShort = (iso) => {
+  const d = new Date(iso);
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+};
+
+function openLiveEditor(live = null) {
+  editingLiveId = live ? live.id : null;
+  $('#liveEditTitle').textContent = live ? '✏ Modifier ce live' : '➕ Ajouter un live passé';
+  $('#liveEditHint').hidden = !!live;
+  $('#leplatform').value = live ? live.platform : 'tiktok';
+  $('#leDate').value = (live ? new Date(live.started_at) : new Date()).toLocaleDateString('sv-SE');
+  $('#leStart').value = live ? timeFrShort(live.started_at) : '20:00';
+  $('#leEnd').value = live && live.ended_at ? timeFrShort(live.ended_at) : '22:00';
+  $('#liveEditModal').hidden = false;
+}
+
+$('#btnAddPastLive').addEventListener('click', () => openLiveEditor());
+$('#btnCloseLiveEdit').addEventListener('click', () => { $('#liveEditModal').hidden = true; });
+
+window.editLive = async (id) => {
+  try {
+    openLiveEditor(await api(`/api/lives/${id}`));
+  } catch (e) {
+    toast(e.message, true);
+  }
+};
+
+$('#btnLiveEditSave').addEventListener('click', async () => {
+  const date = $('#leDate').value;
+  const start = $('#leStart').value;
+  const end = $('#leEnd').value;
+  if (!date || !start || !end) return toast('Renseignez la date et les horaires', true);
+  const started = new Date(`${date}T${start}`);
+  let ended = new Date(`${date}T${end}`);
+  if (ended <= started) ended = new Date(ended.getTime() + 24 * 3600 * 1000); // fin après minuit
+  const body = {
+    platform: $('#leplatform').value,
+    started_at: started.toISOString(),
+    ended_at: ended.toISOString(),
+  };
+  try {
+    const live = editingLiveId
+      ? await api(`/api/lives/${editingLiveId}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        })
+      : await api('/api/lives', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+    $('#liveEditModal').hidden = true;
+    toast(editingLiveId ? '✏ Live modifié' : `✅ Live du ${dateFr(live.started_at)} créé`);
+    await loadLives();
+    await showLiveDetail(live.id);
+    loadStats();
+  } catch (e) {
+    toast(e.message, true);
+  }
+});
 
 // ---- Modale « Ventes par photos » : choix / création du live, puis analyse ----
 let psLives = []; // lives proposés dans le sélecteur
