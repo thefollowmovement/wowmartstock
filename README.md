@@ -88,7 +88,10 @@ Dans l'onglet Importer : choisissez un dossier (iCloud Drive, Dropbox, disque ex
 - **Alertes stock bas** : définissez un seuil par produit, les produits en dessous sont signalés.
 - **Historique des mouvements** : chaque vente, réassort ou import est tracé — **filtrable** par produit, canal et période, avec pagination.
 - **Rapport IA automatique** : option ☕ dans l'onglet Stats pour générer les conseils de l'IA chaque matin.
-- **Recherche** par nom, SKU ou catégorie.
+- **Marque et catégorie** distinctes sur chaque fiche, affichées en badges sur les cartes ; colonne `Marque` détectée à l'import.
+- **Prix HT / TTC** : les cartes affichent le prix de vente conseillé en HT (TTC en dessous), selon le taux de TVA configuré.
+- **Filtres et tri** : par marque, par catégorie, tri par meilleures ventes (30 j), prix croissant/décroissant, stock bas/haut.
+- **Recherche** par nom, SKU, marque ou catégorie.
 - **Onglet Aide** : tutoriel intégré à l'application, section par section (démarrage, produits, import, mode live, vérification des rapports, ventes par photos, stats, sauvegardes).
 
 ## Installation

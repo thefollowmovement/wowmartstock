@@ -27,7 +27,17 @@
   <!-- ===================== PRODUITS ===================== -->
   <main id="tab-products" class="tab-panel">
     <div class="toolbar">
-      <input id="search" type="search" placeholder="Rechercher un produit, SKU, code-barres, catégorie…">
+      <input id="search" type="search" placeholder="Rechercher un produit, SKU, code-barres, marque…">
+      <select id="filterBrand" title="Filtrer par marque"><option value="">Toutes les marques</option></select>
+      <select id="filterCategory" title="Filtrer par catégorie"><option value="">Toutes les catégories</option></select>
+      <select id="sortBy" title="Classement">
+        <option value="name">Tri : nom (A→Z)</option>
+        <option value="best">🏆 Meilleures ventes (30 j)</option>
+        <option value="price_desc">Prix décroissant</option>
+        <option value="price_asc">Prix croissant</option>
+        <option value="stock_asc">Stock bas d'abord</option>
+        <option value="stock_desc">Stock haut d'abord</option>
+      </select>
       <label class="check"><input type="checkbox" id="lowOnly"> Stock bas uniquement</label>
       <button class="btn" id="btnInventory" title="Recompter physiquement le stock et recaler la base">📋 Inventaire</button>
       <button class="btn" id="btnWebPhotos" title="Chercher les photos des produits sur le web (marque + référence) et les assigner après votre validation">🖼 Photos web</button>
@@ -319,7 +329,7 @@
           <li>Les boutons <span class="tuto-btn">+</span> / <span class="tuto-btn">−</span> servent aux <strong>réassorts et corrections</strong> (réception fournisseur, casse, erreur…). Ce ne sont pas des ventes.</li>
           <li>Cliquez sur la carte pour <strong>modifier la fiche</strong> (photo, prix, coût, seuil…).</li>
         </ul>
-        <p>En haut : recherche par nom, SKU ou catégorie, et une case <em>« Stock bas uniquement »</em> pour ne voir que les produits à recommander.</p>
+        <p>En haut : recherche par nom, SKU, marque ou catégorie, <strong>filtres par marque et par catégorie</strong>, et un <strong>tri</strong> (meilleures ventes 30 j, prix, stock bas/haut). La case <em>« Stock bas uniquement »</em> ne montre que les produits à recommander. Chaque carte affiche la marque et la catégorie en badges, et le <strong>prix de vente conseillé en HT</strong> (TTC en dessous) en bas à droite.</p>
         <p><strong>Variantes</strong> : renseignez un <em>« Groupe de variantes »</em> (ex : T-shirt logo) sur plusieurs produits — ils s'affichent regroupés en une carte, chaque taille/couleur gardant son stock, son SKU et ses boutons de vente.</p>
         <p><strong>📋 Inventaire</strong> : le bouton en haut de l'onglet Produits ouvre le mode comptage — saisissez les quantités réelles ou scannez les codes-barres (+1 par scan), validez, et le stock est recalé avec un rapport des écarts.</p>
         <p><strong>🖼 Photos web</strong> : ce bouton cherche des images sur le web pour vos produits sans photo (marque + référence + nom), vous propose plusieurs candidates et n'assigne que celles que vous validez d'un clic. Configurez l'<strong>API Google officielle</strong> dans la modale (gratuite, 100 recherches/jour, guide inclus) pour des résultats fiables.</p>
@@ -437,8 +447,9 @@
             <label>Nom du produit *<input name="name" required placeholder="Ex : T-shirt logo noir M"></label>
             <div class="row2">
               <label>SKU / Référence<input name="sku" placeholder="Ex : TSH-NOIR-M"></label>
-              <label>Catégorie<input name="category" placeholder="Ex : Vêtements"></label>
+              <label>Marque<input name="brand" list="brandList" placeholder="Ex : YESIDO" autocomplete="off"><datalist id="brandList"></datalist></label>
             </div>
+            <label>Catégorie<input name="category" list="categoryList" placeholder="Ex : Chargeurs" autocomplete="off"><datalist id="categoryList"></datalist></label>
             <label>Code-barres (EAN)
               <input name="barcode" placeholder="Ex : 3401234567890" inputmode="numeric" autocomplete="off">
               <span class="muted small">Facultatif — scannez ou tapez le code du produit, il servira à la préparation des colis.</span>
@@ -449,7 +460,7 @@
               <span class="muted small">Facultatif — les produits du même groupe (tailles, couleurs…) sont affichés regroupés, chacun gardant son stock et son SKU.</span>
             </label>
             <div class="row2">
-              <label>Prix de vente (€)<input name="price" type="number" step="any" min="0" value="0"></label>
+              <label>Prix de vente conseillé TTC (€)<input name="price" type="number" step="any" min="0" value="0"></label>
               <label>Coût d'achat (€)<input name="cost" type="number" step="any" min="0" value="0"></label>
             </div>
             <div class="row2">

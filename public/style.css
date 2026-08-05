@@ -978,6 +978,48 @@ tr.row-unpaid td { background: #fef2f2; }
 .sale-btn.mini { padding: 3px 7px; font-size: .8rem; }
 .sale-btn.mini .ico-tiktok { width: 14px; height: 14px; vertical-align: -2px; }
 
+/* ---------- Chips marque / catégorie, prix HT-TTC, filtres ---------- */
+.product-tags { display: flex; gap: 6px; flex-wrap: wrap; margin: 4px 0 2px; }
+.tag {
+  display: inline-block;
+  padding: 2px 9px;
+  border-radius: 999px;
+  font-size: .72rem;
+  font-weight: 700;
+  letter-spacing: .02em;
+}
+.tag-brand { background: var(--ink); color: #fff; }
+.tag-cat { background: var(--primary-soft); color: var(--primary-dark); border: 1px solid #c7d2fe; }
+.card-footer { display: flex; align-items: flex-end; gap: 10px; }
+.card-footer .btn { flex: none; }
+.price-block {
+  margin-left: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  line-height: 1.25;
+  text-align: right;
+}
+.price-caption { font-size: .68rem; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+.price-ht {
+  font-family: var(--font-display);
+  font-weight: 800;
+  font-size: 1.15rem;
+  color: var(--primary-dark);
+}
+.price-ht small { font-size: .7rem; font-weight: 700; color: var(--muted); }
+.price-ttc { font-size: .78rem; color: var(--muted); }
+.product-price small { font-size: .68rem; color: var(--muted); }
+.product-price .price-ttc { display: block; font-weight: 400; font-family: var(--font-body); }
+.toolbar select {
+  padding: 9px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--card);
+  font-size: .88rem;
+  max-width: 190px;
+}
+
 /* ---------- Photos depuis le web ---------- */
 .wp-modal { max-width: 980px; width: 96vw; max-height: 92vh; display: flex; flex-direction: column; }
 .wp-head { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; margin: 6px 0 10px; }

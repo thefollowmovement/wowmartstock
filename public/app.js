@@ -27,6 +27,7 @@ const MAPPING_FIELDS = [
   { key: 'sku', label: 'SKU / Référence' },
   { key: 'barcode', label: 'Code-barres (EAN)' },
   { key: 'variant_group', label: 'Groupe de variantes' },
+  { key: 'brand', label: 'Marque' },
   { key: 'name', label: 'Nom du produit' },
   { key: 'category', label: 'Catégorie' },
   { key: 'price', label: 'Prix de vente' },
@@ -238,6 +239,25 @@ async function loadProducts() {
   loadStats();
 }
 
+// Prix hors taxes à partir du prix TTC stocké et du taux de TVA configuré
+const priceHt = (ttc) => ttc / (1 + vatRate / 100);
+
+function productTags(p) {
+  return `
+    ${p.brand ? `<span class="tag tag-brand" title="Marque">${escapeHtml(p.brand)}</span>` : ''}
+    ${p.category ? `<span class="tag tag-cat" title="Catégorie">${escapeHtml(p.category)}</span>` : ''}`;
+}
+
+function priceBlock(p) {
+  if (!p.price) return '';
+  return `
+  <div class="price-block" title="Prix de vente conseillé — TVA ${vatRate} %">
+    <span class="price-caption">Prix de vente conseillé</span>
+    <span class="price-ht">${euro(priceHt(p.price))} <small>HT</small></span>
+    <span class="price-ttc">${euro(p.price)} TTC</span>
+  </div>`;
+}
+
 function productCard(p) {
   const photo = p.photo
     ? `<img class="product-photo" src="${escapeHtml(p.photo)}" alt="" loading="lazy" onclick="openEdit(${p.id})">`
@@ -254,9 +274,9 @@ function productCard(p) {
       <div class="product-head">
         <div>
           <div class="product-name">${escapeHtml(p.name)}</div>
-          <div class="product-sku">${escapeHtml(p.sku || '')}${p.category ? ' · ' + escapeHtml(p.category) : ''}${p.barcode ? ` · <span class="product-barcode" title="Code-barres">∥ ${escapeHtml(p.barcode)}</span>` : ''}</div>
+          <div class="product-tags">${productTags(p)}</div>
+          <div class="product-sku">${escapeHtml(p.sku || '')}${p.barcode ? ` · <span class="product-barcode" title="Code-barres">∥ ${escapeHtml(p.barcode)}</span>` : ''}${p.sold_30d ? ` · <span title="Ventes des 30 derniers jours">🔥 ${p.sold_30d} vendus/30 j</span>` : ''}</div>
         </div>
-        <div class="product-price">${euro(p.price)}</div>
       </div>
       ${isLow(p) ? '<span class="badge-low">⚠ Stock bas</span>' : ''}
       <div class="stock-row big">
@@ -266,8 +286,9 @@ function productCard(p) {
         <button onclick="adjust(${p.id}, 1)" title="Ajouter 1 (réassort)">+</button>
       </div>
       <div class="sale-row">${saleButtons}</div>
-      <div class="card-actions">
+      <div class="card-footer">
         <button class="btn" onclick="openEdit(${p.id})">✏ Modifier</button>
+        ${priceBlock(p)}
       </div>
     </div>
   </div>`;
@@ -290,7 +311,11 @@ function variantGroupCard(group, items) {
     ? `<img class="product-photo" src="${escapeHtml(withPhoto.photo)}" alt="" loading="lazy">`
     : `<div class="product-photo placeholder">📷</div>`;
   const prices = [...new Set(items.map((p) => p.price))];
-  const priceTxt = prices.length === 1 ? euro(prices[0]) : `${euro(Math.min(...prices))}–${euro(Math.max(...prices))}`;
+  const priceTxt =
+    prices.length === 1
+      ? `${euro(priceHt(prices[0]))} <small>HT</small><span class="price-ttc">${euro(prices[0])} TTC</span>`
+      : `${euro(priceHt(Math.min(...prices)))}–${euro(priceHt(Math.max(...prices)))} <small>HT</small>
+         <span class="price-ttc">${euro(Math.min(...prices))}–${euro(Math.max(...prices))} TTC</span>`;
   const rows = items
     .map(
       (v) => `<div class="variant-row ${isLow(v) ? 'low' : ''}">
@@ -312,6 +337,7 @@ function variantGroupCard(group, items) {
       <div class="product-head">
         <div>
           <div class="product-name">${escapeHtml(group)}</div>
+          <div class="product-tags">${productTags(items[0])}</div>
           <div class="product-sku">${items.length} variantes · 📦 ${total} au total</div>
         </div>
         <div class="product-price">${priceTxt}</div>
@@ -322,9 +348,37 @@ function variantGroupCard(group, items) {
   </div>`;
 }
 
+// Alimente les listes déroulantes Marque / Catégorie (en conservant la sélection)
+function fillFilterOptions() {
+  const fill = (sel, values, label) => {
+    const current = sel.value;
+    sel.innerHTML =
+      `<option value="">${label}</option>` +
+      values.map((v) => `<option value="${escapeHtml(v)}">${escapeHtml(v)}</option>`).join('');
+    if (values.includes(current)) sel.value = current;
+  };
+  fill($('#filterBrand'), [...new Set(products.map((p) => p.brand).filter(Boolean))].sort((a, b) => a.localeCompare(b)), 'Toutes les marques');
+  fill($('#filterCategory'), [...new Set(products.map((p) => p.category).filter(Boolean))].sort((a, b) => a.localeCompare(b)), 'Toutes les catégories');
+}
+
+const SORTS = {
+  name: (a, b) => a.name.localeCompare(b.name),
+  best: (a, b) => (b.sold_30d || 0) - (a.sold_30d || 0) || a.name.localeCompare(b.name),
+  price_desc: (a, b) => b.price - a.price,
+  price_asc: (a, b) => a.price - b.price,
+  stock_asc: (a, b) => a.stock - b.stock,
+  stock_desc: (a, b) => b.stock - a.stock,
+};
+
 function renderProducts() {
   const lowOnly = $('#lowOnly').checked;
-  const list = lowOnly ? products.filter(isLow) : products;
+  const brand = $('#filterBrand').value;
+  const cat = $('#filterCategory').value;
+  fillFilterOptions();
+  let list = products.filter(
+    (p) => (!lowOnly || isLow(p)) && (!brand || p.brand === brand) && (!cat || p.category === cat)
+  );
+  list = [...list].sort(SORTS[$('#sortBy').value] || SORTS.name);
   $('#emptyMsg').hidden = list.length > 0;
 
   // Regroupe les variantes (même variant_group) en une seule carte, à la
@@ -372,6 +426,9 @@ $('#search').addEventListener('input', () => {
   searchTimer = setTimeout(loadProducts, 250);
 });
 $('#lowOnly').addEventListener('change', renderProducts);
+$('#filterBrand').addEventListener('change', renderProducts);
+$('#filterCategory').addEventListener('change', renderProducts);
+$('#sortBy').addEventListener('change', renderProducts);
 
 // ---------------------------------------------------------------------------
 // MODE LIVE
@@ -461,6 +518,7 @@ function renderLiveResults() {
           (p.sku || '').toLowerCase().includes(q) ||
           (p.barcode || '').includes(q) ||
           p.name.toLowerCase().includes(q) ||
+          (p.brand || '').toLowerCase().includes(q) ||
           (p.category || '').toLowerCase().includes(q)
       )
     : products;
@@ -1550,10 +1608,13 @@ const modal = $('#modal');
 const form = $('#productForm');
 
 function openModal() {
-  // Suggestions de groupes de variantes existants
-  $('#variantGroups').innerHTML = [...new Set(products.map((p) => p.variant_group).filter(Boolean))]
-    .map((g) => `<option value="${escapeHtml(g)}">`)
-    .join('');
+  // Suggestions basées sur l'existant (groupes de variantes, marques, catégories)
+  const datalist = (id, values) => {
+    $(id).innerHTML = [...new Set(values.filter(Boolean))].map((v) => `<option value="${escapeHtml(v)}">`).join('');
+  };
+  datalist('#variantGroups', products.map((p) => p.variant_group));
+  datalist('#brandList', products.map((p) => p.brand));
+  datalist('#categoryList', products.map((p) => p.category));
   modal.hidden = false;
   form.name.focus();
 }
@@ -1586,6 +1647,7 @@ window.openEdit = (id) => {
   form.sku.value = p.sku || '';
   form.barcode.value = p.barcode || '';
   form.variant_group.value = p.variant_group || '';
+  form.brand.value = p.brand || '';
   form.category.value = p.category;
   form.price.value = p.price;
   form.cost.value = p.cost;

@@ -79,6 +79,7 @@ CREATE TABLE IF NOT EXISTS products (
   sku TEXT UNIQUE,
   barcode TEXT NOT NULL DEFAULT '',
   variant_group TEXT NOT NULL DEFAULT '',
+  brand TEXT NOT NULL DEFAULT '',
   name TEXT NOT NULL,
   category TEXT NOT NULL DEFAULT '',
   price REAL NOT NULL DEFAULT 0,
@@ -183,6 +184,8 @@ CREATE TABLE IF NOT EXISTS settings (
   // Groupe de variantes : les produits partageant le même groupe (ex : « T-shirt
   // logo ») sont affichés regroupés, chaque variante gardant son stock et son SKU
   if (!cols.includes('variant_group')) db.exec(`ALTER TABLE products ADD COLUMN variant_group TEXT NOT NULL DEFAULT ''`);
+  // Marque, distincte de la catégorie (ex : marque YESIDO, catégorie Chargeurs)
+  if (!cols.includes('brand')) db.exec(`ALTER TABLE products ADD COLUMN brand TEXT NOT NULL DEFAULT ''`);
   if (cols.includes('stock_online')) {
     withTransaction(() => {
       if (!cols.includes('stock')) {
@@ -408,18 +411,30 @@ app.use('/uploads', express.static(UPLOADS_DIR));
 // ---------------------------------------------------------------------------
 app.get('/api/products', (req, res) => {
   const search = (req.query.search || '').trim();
+  // sold_30d permet le tri « meilleures ventes » côté interface
+  const base = `
+    SELECT p.*, COALESCE(s.qty, 0) AS sold_30d
+    FROM products p
+    LEFT JOIN (
+      SELECT product_id, SUM(-delta) AS qty FROM movements
+      WHERE delta < 0 AND cancelled = 0 AND is_gift = 0
+        AND channel != 'adjust'
+        AND COALESCE(payment_status, 'paid') NOT IN ('failed', 'refunded')
+        AND created_at >= ?
+      GROUP BY product_id
+    ) s ON s.product_id = p.id`;
+  const since = new Date(Date.now() - 30 * 24 * 3600 * 1000).toISOString();
   let rows;
   if (search) {
     const like = `%${search}%`;
     rows = db
       .prepare(
-        `SELECT * FROM products
-         WHERE name LIKE ? OR sku LIKE ? OR category LIKE ? OR barcode LIKE ?
-         ORDER BY name COLLATE NOCASE`
+        `${base} WHERE p.name LIKE ? OR p.sku LIKE ? OR p.category LIKE ? OR p.barcode LIKE ? OR p.brand LIKE ?
+         ORDER BY p.name COLLATE NOCASE`
       )
-      .all(like, like, like, like);
+      .all(since, like, like, like, like, like);
   } else {
-    rows = db.prepare('SELECT * FROM products ORDER BY name COLLATE NOCASE').all();
+    rows = db.prepare(`${base} ORDER BY p.name COLLATE NOCASE`).all(since);
   }
   res.json(rows);
 });
@@ -429,6 +444,7 @@ function readProductBody(body) {
     sku: (body.sku || '').trim() || null,
     barcode: (body.barcode || '').trim(),
     variant_group: (body.variant_group || '').trim(),
+    brand: (body.brand || '').trim(),
     name: (body.name || '').trim(),
     category: (body.category || '').trim(),
     price: Number(body.price) || 0,
@@ -449,10 +465,10 @@ app.post('/api/products', uploadPhoto.single('photo'), (req, res) => {
   const ts = now();
   const info = db
     .prepare(
-      `INSERT INTO products (sku, barcode, variant_group, name, category, price, cost, photo, stock, min_stock, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO products (sku, barcode, variant_group, brand, name, category, price, cost, photo, stock, min_stock, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
-    .run(p.sku, p.barcode, p.variant_group, p.name, p.category, p.price, p.cost, photo, p.stock, p.min_stock, ts, ts);
+    .run(p.sku, p.barcode, p.variant_group, p.brand, p.name, p.category, p.price, p.cost, photo, p.stock, p.min_stock, ts, ts);
   const id = info.lastInsertRowid;
   if (p.stock > 0) logMovement(id, 'adjust', p.stock, p.stock, 'Création du produit');
   res.status(201).json(db.prepare('SELECT * FROM products WHERE id = ?').get(id));
@@ -483,9 +499,9 @@ app.put('/api/products/:id', uploadPhoto.single('photo'), (req, res) => {
   }
 
   db.prepare(
-    `UPDATE products SET sku=?, barcode=?, variant_group=?, name=?, category=?, price=?, cost=?, photo=?, stock=?, min_stock=?, updated_at=?
+    `UPDATE products SET sku=?, barcode=?, variant_group=?, brand=?, name=?, category=?, price=?, cost=?, photo=?, stock=?, min_stock=?, updated_at=?
      WHERE id=?`
-  ).run(p.sku, p.barcode, p.variant_group, p.name, p.category, p.price, p.cost, photo, p.stock, p.min_stock, now(), id);
+  ).run(p.sku, p.barcode, p.variant_group, p.brand, p.name, p.category, p.price, p.cost, photo, p.stock, p.min_stock, now(), id);
   res.json(db.prepare('SELECT * FROM products WHERE id = ?').get(id));
 });
 
@@ -1351,7 +1367,7 @@ app.post('/api/photos/search', async (req, res) => {
   for (const id of ids) {
     const p = db.prepare('SELECT * FROM products WHERE id = ?').get(id);
     if (!p) continue;
-    const query = [p.category, p.sku, p.name].filter(Boolean).join(' ').slice(0, 90);
+    const query = [p.brand || p.category, p.sku, p.name].filter(Boolean).join(' ').slice(0, 90);
     try {
       results.push({ id: p.id, query, candidates: await searchProductImages(query), error: null });
     } catch (e) {
@@ -1445,8 +1461,9 @@ const FIELD_PATTERNS = {
   barcode: [/^(code.?barres?|barcode|ean|upc|gencod|gtin)/i],
   sku: [/^(sku|ref|r[ée]f[ée]rence|code)/i],
   variant_group: [/^(groupe|variante|parent|mod[èe]le|model)/i],
+  brand: [/^(marque|brand|fabricant)/i],
   name: [/^(nom|name|produit(?!\s*€)|product|titre|title|d[ée]signation|article|libell[ée])/i],
-  category: [/^(cat[ée]gorie|category|famille|collection)/i, /^(marque|brand|type)/i],
+  category: [/^(cat[ée]gorie|category|famille|collection)/i, /^type/i],
   price: [
     /^(prix de vente|pv\b|selling|tarif)/i,
     /^(prix|price)(?!\s*(rmb|du gramme|de l.envoi|d.achat|produit|ht\b|avec tva|ttc))/i,
@@ -1524,8 +1541,8 @@ app.post('/api/import/commit', (req, res) => {
   const findByBarcode = db.prepare(`SELECT * FROM products WHERE barcode = ? AND barcode != ''`);
   const findByName = db.prepare('SELECT * FROM products WHERE name = ? COLLATE NOCASE');
   const insert = db.prepare(
-    `INSERT INTO products (sku, barcode, variant_group, name, category, price, cost, photo, stock, min_stock, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?)`
+    `INSERT INTO products (sku, barcode, variant_group, brand, name, category, price, cost, photo, stock, min_stock, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?)`
   );
 
   let created = 0;
@@ -1562,6 +1579,16 @@ app.post('/api/import/commit', (req, res) => {
         if (sku && sku !== existing.sku) { sets.push('sku = ?'); vals.push(sku); }
         if (barcode && barcode !== existing.barcode) { sets.push('barcode = ?'); vals.push(barcode); }
         if (mapping.variant_group) { sets.push('variant_group = ?'); vals.push(String(get('variant_group')).trim()); }
+        if (mapping.brand) {
+          const brandVal = String(get('brand')).trim();
+          sets.push('brand = ?');
+          vals.push(brandVal);
+          // Les anciens imports rangeaient la marque dans la catégorie : si la
+          // catégorie existante est justement cette marque, on la libère
+          if (brandVal && existing.category === brandVal && !mapping.category) {
+            sets.push(`category = ''`);
+          }
+        }
         if (mapping.category) { sets.push('category = ?'); vals.push(String(get('category')).trim()); }
         if (mapping.price) { sets.push('price = ?'); vals.push(toNum(get('price'))); }
         if (mapping.cost) { sets.push('cost = ?'); vals.push(toNum(get('cost'))); }
@@ -1583,7 +1610,7 @@ app.post('/api/import/commit', (req, res) => {
         updated++;
       } else {
         const info = insert.run(
-          sku, barcode, String(get('variant_group')).trim(), name || sku, String(get('category')).trim(),
+          sku, barcode, String(get('variant_group')).trim(), String(get('brand')).trim(), name || sku, String(get('category')).trim(),
           toNum(get('price')), toNum(get('cost')),
           stockVal, toInt(get('min_stock')), ts, ts
         );
@@ -2207,13 +2234,13 @@ setTimeout(maybeAutoBackup, 20 * 1000).unref();
 // ---------------------------------------------------------------------------
 app.get('/api/export.csv', (req, res) => {
   const rows = db.prepare('SELECT * FROM products ORDER BY name COLLATE NOCASE').all();
-  const header = 'SKU;Code barre;Nom;Groupe;Catégorie;Prix;Coût;Stock;Seuil alerte';
+  const header = 'SKU;Code barre;Nom;Marque;Groupe;Catégorie;Prix;Coût;Stock;Seuil alerte';
   const esc = (v) => {
     const s = String(v ?? '');
     return /[;"\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
   };
   const lines = rows.map((p) =>
-    [p.sku, p.barcode, p.name, p.variant_group, p.category, p.price, p.cost, p.stock, p.min_stock].map(esc).join(';')
+    [p.sku, p.barcode, p.name, p.brand, p.variant_group, p.category, p.price, p.cost, p.stock, p.min_stock].map(esc).join(';')
   );
   res.setHeader('Content-Type', 'text/csv; charset=utf-8');
   res.setHeader('Content-Disposition', 'attachment; filename="stock-wowmart.csv"');
