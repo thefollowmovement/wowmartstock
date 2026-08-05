@@ -132,12 +132,18 @@ Les produits existants sont reconnus par SKU (ou par nom) : pas de doublons, leu
 - **Clé API chiffrée** : la clé Anthropic est stockée **chiffrée (AES-256-GCM)** dans la base, avec un secret local (`data/.secret`, hors git et hors sauvegardes). Une sauvegarde volée sur iCloud/Dropbox ne permet donc pas de lire la clé. Elle n'est **jamais renvoyée au navigateur**. Une clé enregistrée en clair par une ancienne version est chiffrée automatiquement au démarrage.
 - **Protection par mot de passe** (onglet Importer) : optionnelle en local, **obligatoire avant d'exposer l'app sur un serveur**. Toutes les données (`/api`) et les photos (`/uploads`) sont bloquées sans session ; hachage scrypt, sessions signées (30 jours), 8 essais max par IP puis 10 min d'attente ; changer le mot de passe déconnecte tous les appareils.
 
-### Déployer sur un serveur
+### Déployer sur un serveur (VPS Ubuntu)
 
-1. **Définissez un mot de passe** dans l'app (onglet Importer → 🔒) avant d'ouvrir l'accès.
-2. Passez la clé API par variable d'environnement plutôt qu'en base : `ANTHROPIC_API_KEY=sk-ant-… npm start`.
-3. Mettez l'app **derrière HTTPS** (reverse proxy Caddy ou nginx + certificat — Caddy le fait tout seul). Ne servez jamais le port 3000 directement sur Internet en HTTP.
-4. Sauvegardez `data/` et `uploads/` côté serveur. Note : `data/.secret` est propre à chaque machine — si vous restaurez la base sur une autre machine, il faudra resaisir la clé API (c'est voulu).
+Un script d'installation automatique est fourni :
+
+```bash
+git clone -b claude/stock-management-app-k2kgb0 https://github.com/thefollowmovement/wowmartstock.git /opt/wowmartstock
+bash /opt/wowmartstock/deploy/install.sh
+```
+
+Il installe Node.js 22, crée un service systemd (démarrage automatique, redémarrage en cas de crash, utilisateur système dédié), propose le **HTTPS automatique via Caddy** (certificat Let's Encrypt sur le nom de domaine du VPS), configure le pare-feu et le fuseau horaire. Mises à jour ensuite avec `bash /opt/wowmartstock/deploy/update.sh`.
+
+Après l'installation : **définissez un mot de passe** (Importer → 🔒) immédiatement, configurez la sauvegarde vers `/var/backups/wowmart`, et resaisissez vos clés API (elles sont chiffrées avec un secret propre à chaque machine — c'est voulu). Recommandé : passer la clé Anthropic en variable d'environnement dans le service (`Environment=ANTHROPIC_API_KEY=…` dans `/etc/systemd/system/wowmartstock.service`).
 
 ## Données
 

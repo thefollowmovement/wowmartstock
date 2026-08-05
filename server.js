@@ -271,6 +271,9 @@ const uploadLivePhotos = multer({
 
 const app = express();
 app.disable('x-powered-by');
+// Derrière un reverse proxy local (Caddy/nginx) : fiabilise req.secure et
+// req.ip (cookies Secure, limitation des essais de connexion par IP)
+app.set('trust proxy', 'loopback');
 app.use(express.json());
 app.use((req, res, next) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
@@ -2253,7 +2256,8 @@ app.use((err, req, res, next) => {
   res.status(400).json({ error: err.message || 'Erreur inattendue' });
 });
 
-const server = app.listen(PORT, () => {
+// HOST=127.0.0.1 sur un serveur derrière un reverse proxy (voir deploy/)
+const server = app.listen(PORT, process.env.HOST || '0.0.0.0', () => {
   console.log(`✅ WowMart Stock démarré — ouvrez http://localhost:${PORT}`);
 });
 server.on('error', (err) => {
