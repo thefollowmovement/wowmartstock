@@ -101,6 +101,15 @@ npm install
 npm start
 ```
 
+## Remise à zéro
+
+```bash
+npm run reset        # vide produits, ventes, lives, historique, photos — réglages conservés
+npm run reset -- --tout   # supprime aussi les réglages (clés API, TVA, mot de passe…)
+```
+
+Confirmation demandée (tapez `OUI`). Arrêtez le serveur avant, et pensez à faire une sauvegarde si vous voulez pouvoir revenir en arrière.
+
 Puis ouvrez [http://localhost:3000](http://localhost:3000).
 
 ## Format de fichier d'import
