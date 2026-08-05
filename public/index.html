@@ -13,8 +13,10 @@
     <nav class="tabs">
       <button class="tab active" data-tab="products">Produits</button>
       <button class="tab" data-tab="lives">Lives</button>
+      <button class="tab" data-tab="stats">Stats</button>
       <button class="tab" data-tab="import">Importer</button>
       <button class="tab" data-tab="movements">Historique</button>
+      <button class="tab" data-tab="help">Aide</button>
     </nav>
     <button class="btn live-launch" id="btnStartLive">🔴 Lancer un live</button>
     <a class="btn ghost" href="/api/export.csv">⬇ CSV</a>
@@ -25,8 +27,20 @@
   <!-- ===================== PRODUITS ===================== -->
   <main id="tab-products" class="tab-panel">
     <div class="toolbar">
-      <input id="search" type="search" placeholder="Rechercher un produit, SKU, catégorie…">
+      <input id="search" type="search" placeholder="Rechercher un produit, SKU, code-barres, marque…">
+      <select id="filterBrand" title="Filtrer par marque"><option value="">Toutes les marques</option></select>
+      <select id="filterCategory" title="Filtrer par catégorie"><option value="">Toutes les catégories</option></select>
+      <select id="sortBy" title="Classement">
+        <option value="name">Tri : nom (A→Z)</option>
+        <option value="best">🏆 Meilleures ventes (30 j)</option>
+        <option value="price_desc">Prix décroissant</option>
+        <option value="price_asc">Prix croissant</option>
+        <option value="stock_asc">Stock bas d'abord</option>
+        <option value="stock_desc">Stock haut d'abord</option>
+      </select>
       <label class="check"><input type="checkbox" id="lowOnly"> Stock bas uniquement</label>
+      <button class="btn" id="btnInventory" title="Recompter physiquement le stock et recaler la base">📋 Inventaire</button>
+      <button class="btn" id="btnWebPhotos" title="Chercher les photos des produits sur le web (marque + référence) et les assigner après votre validation">🖼 Photos web</button>
       <button class="btn primary" id="btnAdd">+ Nouveau produit</button>
     </div>
     <div id="productList" class="product-grid"></div>
@@ -44,6 +58,8 @@
           <h2>Historique des lives</h2>
           <p class="muted">Chaque live est enregistré avec sa date, sa plateforme et toutes les ventes horodatées.<br>
           Après chaque live, <strong>importez le rapport CSV de la plateforme</strong> pour vérifier les paiements, puis validez le live.</p>
+          <button class="btn primary" id="btnPhotoSales">📸 Ventes par photos</button>
+          <span class="muted small">Importez les photos de vos produits vendus (étiquette #N) — même pour un live oublié : créez-le après coup avec sa vraie date.</span>
         </div>
         <div class="settings-side">
           <label class="vat-setting">Taux de TVA
@@ -58,7 +74,7 @@
               <label>Commission %<input id="feeWnComm" type="number" min="0" max="100" step="0.01"></label>
               <label>Traitement %<input id="feeWnProc" type="number" min="0" max="100" step="0.01"></label>
               <label>Fixe €<input id="feeWnFixed" type="number" min="0" max="100" step="0.01"></label>
-              <strong>🎵 TikTok</strong>
+              <strong><img src="img/tiktok.svg" class="ico-tiktok" alt=""> TikTok</strong>
               <label>Commission %<input id="feeTtComm" type="number" min="0" max="100" step="0.01"></label>
               <label>Traitement %<input id="feeTtProc" type="number" min="0" max="100" step="0.01"></label>
               <label>Fixe €<input id="feeTtFixed" type="number" min="0" max="100" step="0.01"></label>
@@ -77,6 +93,81 @@
       </div>
     </div>
     <div id="liveDetail" class="card" hidden></div>
+  </main>
+
+  <!-- ===================== STATISTIQUES ===================== -->
+  <main id="tab-stats" class="tab-panel" hidden>
+    <div class="card">
+      <div class="stats-page-head">
+        <h2>🏆 Meilleures ventes et marges</h2>
+        <div class="stats-filters">
+          <select id="statsDays">
+            <option value="7">7 derniers jours</option>
+            <option value="30" selected>30 derniers jours</option>
+            <option value="90">90 derniers jours</option>
+            <option value="0">Depuis le début</option>
+          </select>
+          <select id="statsChannel">
+            <option value="">Toutes les plateformes</option>
+            <option value="online">🌐 En ligne</option>
+            <option value="store">🏬 Boutique</option>
+            <option value="tiktok">TikTok</option>
+            <option value="whatnot">🟡 Whatnot</option>
+          </select>
+        </div>
+      </div>
+      <p class="muted">Classement par <strong>marge nette</strong> (frais des plateformes et coût d'achat déduits) — c'est elle qui compte, pas le volume.</p>
+      <div class="table-wrap">
+        <table id="statsTable">
+          <thead>
+            <tr><th>#</th><th>Produit</th><th>Vendus</th><th>CA TTC</th><th>Marge nette</th><th>Marge / unité</th><th>Par plateforme</th></tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>📦 À commander chez le fournisseur
+        <a class="export-link" href="/api/statistics/order.csv">⬇ Bon de commande CSV</a></h2>
+      <p class="muted">Produits sous leur seuil d'alerte — consultez cette liste chaque jour. La quantité conseillée est calculée d'après vos ventes des 30 derniers jours.</p>
+      <div class="table-wrap">
+        <table id="orderTable">
+          <thead>
+            <tr><th>Produit</th><th>Stock actuel</th><th>Seuil</th><th>Vendus 30 j</th><th>À commander</th></tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="stats-page-head">
+        <h2>🕐 Meilleurs créneaux de live</h2>
+        <div class="stats-filters">
+          <select id="slotPlatform">
+            <option value="">TikTok + Whatnot</option>
+            <option value="tiktok">TikTok</option>
+            <option value="whatnot">🟡 Whatnot</option>
+          </select>
+        </div>
+      </div>
+      <p class="muted">Quel jour et quelle heure rapportent le plus, et à quel moment vos lives s'essoufflent — d'après tous vos lives terminés.</p>
+      <div id="liveSlots"></div>
+    </div>
+
+    <div class="card">
+      <h2>🤖 Conseils de l'IA</h2>
+      <p class="muted">Claude analyse vos 30 derniers jours : produits à mettre en avant, produits à gros volume mais faible marge, réassorts prioritaires et idées concrètes.</p>
+      <div class="ai-report-actions">
+        <button class="btn primary" id="btnAiReport">✨ Générer le rapport</button>
+        <label class="check" title="Un rapport est généré une fois par jour, après 7 h, tant que l'app est lancée — utilise votre clé API (même coût qu'un rapport manuel)">
+          <input type="checkbox" id="autoReport"> ☕ Générer automatiquement chaque matin
+        </label>
+        <span id="aiReportInfo" class="muted small"></span>
+      </div>
+      <div id="aiReport" class="ai-report" hidden></div>
+    </div>
   </main>
 
   <!-- ===================== IMPORT ===================== -->
@@ -114,21 +205,229 @@
     </div>
 
     <div id="importResult" class="card success" hidden></div>
+
+    <div class="card">
+      <h2>🔒 Protection par mot de passe</h2>
+      <p class="muted">Optionnelle sur votre ordinateur, <strong>indispensable si l'app est accessible depuis Internet</strong> (serveur, autre appareil…) :
+        sans mot de passe, n'importe qui pourrait voir vos ventes, modifier votre stock et utiliser votre clé API.</p>
+      <div id="secStatus" class="muted"></div>
+      <div class="sec-grid">
+        <label id="secCurrentWrap" hidden>Mot de passe actuel
+          <input type="password" id="secCurrent" autocomplete="current-password">
+        </label>
+        <label>Nouveau mot de passe <span class="muted small">(8 caractères min. — vide pour retirer la protection)</span>
+          <input type="password" id="secNew" autocomplete="new-password">
+        </label>
+      </div>
+      <div class="backup-row">
+        <button class="btn primary" id="btnSavePassword">Enregistrer</button>
+        <button class="btn" id="btnLogout" hidden>Se déconnecter</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>💾 Sauvegarde automatique</h2>
+      <p class="muted">Une copie de votre base (produits, ventes, lives) et de vos photos est faite <strong>chaque jour automatiquement</strong>
+        dans le dossier de votre choix — mettez-y un dossier synchronisé (iCloud Drive, Dropbox…) ou un disque externe.
+        Les 14 dernières sauvegardes sont conservées.</p>
+      <div class="backup-row">
+        <input id="backupDir" type="text" placeholder="Ex : /Users/vous/Library/Mobile Documents/com~apple~CloudDocs" autocomplete="off">
+        <button class="btn primary" id="btnSaveBackupDir">Enregistrer</button>
+        <button class="btn" id="btnBackupNow">Sauvegarder maintenant</button>
+      </div>
+      <p class="muted small">💡 Sur Mac, glissez un dossier du Finder dans le Terminal pour obtenir son chemin, ou utilisez
+        <code>/Users/votrenom/Library/Mobile Documents/com~apple~CloudDocs</code> pour iCloud Drive.</p>
+      <div id="backupStatus" class="muted"></div>
+      <div id="backupList"></div>
+    </div>
   </main>
 
   <!-- ===================== MOUVEMENTS ===================== -->
   <main id="tab-movements" class="tab-panel" hidden>
     <div class="card">
-      <h2>Derniers mouvements de stock</h2>
+      <h2>Mouvements de stock</h2>
+      <div class="mov-filters">
+        <input id="movSearch" type="search" placeholder="🔍 Produit, SKU ou code-barres…">
+        <select id="movChannel">
+          <option value="">Tous les canaux</option>
+          <option value="online">🌐 En ligne</option>
+          <option value="store">🏬 Boutique</option>
+          <option value="tiktok">TikTok</option>
+          <option value="whatnot">🟡 Whatnot</option>
+          <option value="return">↩ Retours</option>
+          <option value="adjust">🔧 Ajustements</option>
+        </select>
+        <select id="movDays">
+          <option value="">Toute la période</option>
+          <option value="1">Aujourd'hui (24 h)</option>
+          <option value="7">7 derniers jours</option>
+          <option value="30">30 derniers jours</option>
+          <option value="90">90 derniers jours</option>
+        </select>
+      </div>
       <div class="table-wrap">
         <table id="movementsTable">
           <thead>
-            <tr><th>Date</th><th>Produit</th><th>Canal</th><th>Quantité</th><th>Stock après</th><th>Motif</th></tr>
+            <tr><th>Date</th><th>Produit</th><th>Canal</th><th>Quantité</th><th>Stock après</th><th>Motif</th><th></th></tr>
           </thead>
           <tbody></tbody>
         </table>
       </div>
+      <div class="mov-pager">
+        <button class="btn" id="movPrev">← Précédent</button>
+        <span id="movPageInfo" class="muted"></span>
+        <button class="btn" id="movNext">Suivant →</button>
+      </div>
     </div>
+  </main>
+
+  <!-- ===================== AIDE / TUTORIEL ===================== -->
+  <main id="tab-help" class="tab-panel" hidden>
+    <div class="card tuto-intro">
+      <h2>📖 Comment fonctionne WowMart Stock</h2>
+      <p class="muted">Le guide complet de l'application — cliquez sur chaque section pour l'ouvrir.</p>
+      <div class="tuto-principle">
+        <span class="tuto-principle-icon">💡</span>
+        <div>
+          <strong>Le principe : un seul stock, partagé entre tous vos canaux.</strong><br>
+          Le même mug peut partir en ligne 🌐, en boutique 🏬 ou en live (<img src="img/tiktok.svg" class="ico-tiktok" alt=""> TikTok / 🟡 Whatnot).
+          Chaque vente décompte du même total, mais le <strong>canal est toujours tracé</strong> — c'est ce qui alimente l'historique et les statistiques.
+        </div>
+      </div>
+      <h3 class="tuto-flow-title">Le cycle d'un live, en 5 étapes :</h3>
+      <ol class="tuto-flow">
+        <li><span class="tuto-step">1</span>🔴 Lancer le live<small>choix de la plateforme</small></li>
+        <li><span class="tuto-step">2</span>👆 Vendre en 1 clic<small>ventes numérotées #1, #2…</small></li>
+        <li><span class="tuto-step">3</span>⏹ Terminer<small>récap immédiat</small></li>
+        <li><span class="tuto-step">4</span>📄 Importer le rapport<small>CSV Whatnot / TikTok</small></li>
+        <li><span class="tuto-step">5</span>✅ Vérifier et valider<small>paiements, marge, TVA</small></li>
+      </ol>
+    </div>
+
+    <details class="card tuto-section" open>
+      <summary><span class="tuto-emoji">🚀</span> Bien démarrer : créer votre catalogue</summary>
+      <div class="tuto-body">
+        <p>Deux façons de remplir votre catalogue :</p>
+        <ul>
+          <li><strong>À la main</strong> — onglet <em>Produits</em> → bouton <span class="tuto-btn">+ Nouveau produit</span>. Glissez la photo directement dans la fiche, renseignez le nom, le SKU, le code-barres (EAN, si disponible — il servira à la préparation des colis), le prix de vente et le stock.</li>
+          <li><strong>Par fichier</strong> — onglet <em>Importer</em> : glissez votre fichier Excel ou CSV, tout est détecté automatiquement (voir la section Importer ci-dessous).</li>
+        </ul>
+        <p>Deux champs souvent oubliés mais très importants :</p>
+        <ul>
+          <li><strong>Coût d'achat</strong> — sans lui, l'app ne peut pas calculer votre <strong>marge</strong> (ni les stats, ni les conseils de l'IA).</li>
+          <li><strong>Seuil d'alerte stock bas</strong> — en dessous de ce seuil, le produit est signalé et apparaît dans la liste <em>« À commander chez le fournisseur »</em> de l'onglet Stats.</li>
+        </ul>
+      </div>
+    </details>
+
+    <details class="card tuto-section">
+      <summary><span class="tuto-emoji">📦</span> Produits : vendre et ajuster le stock</summary>
+      <div class="tuto-body">
+        <p>Sur chaque carte produit de l'onglet <em>Produits</em> :</p>
+        <ul>
+          <li>Les boutons <span class="tuto-btn">🌐 En ligne</span> <span class="tuto-btn">🏬 Boutique</span> <span class="tuto-btn"><img src="img/tiktok.svg" class="ico-tiktok" alt=""> TikTok</span> <span class="tuto-btn">🟡 Whatnot</span> enregistrent <strong>une vente sur ce canal</strong> : le stock baisse de 1 et la vente est tracée.</li>
+          <li>Les boutons <span class="tuto-btn">+</span> / <span class="tuto-btn">−</span> servent aux <strong>réassorts et corrections</strong> (réception fournisseur, casse, erreur…). Ce ne sont pas des ventes.</li>
+          <li>Cliquez sur la carte pour <strong>modifier la fiche</strong> (photo, prix, coût, seuil…).</li>
+        </ul>
+        <p>En haut : recherche par nom, SKU, marque ou catégorie, <strong>filtres par marque et par catégorie</strong>, et un <strong>tri</strong> (meilleures ventes 30 j, prix, stock bas/haut). La case <em>« Stock bas uniquement »</em> ne montre que les produits à recommander. Chaque carte affiche la marque et la catégorie en badges, et le <strong>prix de vente conseillé en HT</strong> (TTC en dessous) en bas à droite.</p>
+        <p><strong>Variantes</strong> : renseignez un <em>« Groupe de variantes »</em> (ex : T-shirt logo) sur plusieurs produits — ils s'affichent regroupés en une carte, chaque taille/couleur gardant son stock, son SKU et ses boutons de vente.</p>
+        <p><strong>📋 Inventaire</strong> : le bouton en haut de l'onglet Produits ouvre le mode comptage — saisissez les quantités réelles ou scannez les codes-barres (+1 par scan), validez, et le stock est recalé avec un rapport des écarts.</p>
+        <p><strong>🖼 Photos web</strong> : ce bouton cherche des images sur le web pour vos produits sans photo (marque + référence + nom), vous propose plusieurs candidates et n'assigne que celles que vous validez d'un clic. Configurez l'<strong>API Google officielle</strong> dans la modale (gratuite, 100 recherches/jour, guide inclus) pour des résultats fiables.</p>
+        <p>Chaque opération est enregistrée dans l'onglet <em>Historique</em> — filtrable par produit, canal et période. C'est aussi là que le bouton <span class="tuto-btn">↩ Retour</span> enregistre un retour/remboursement : l'article revient en stock et la vente est retirée du CA et de la marge.</p>
+      </div>
+    </details>
+
+    <details class="card tuto-section">
+      <summary><span class="tuto-emoji">📥</span> Importer un fichier Excel / CSV</summary>
+      <div class="tuto-body">
+        <ol class="tuto-steps">
+          <li>Onglet <em>Importer</em> → glissez votre fichier (<code>.xlsx</code>, <code>.xls</code>, <code>.csv</code>, <code>.tsv</code>, <code>.ods</code>). La première ligne doit contenir les noms de colonnes.</li>
+          <li>L'app <strong>détecte les colonnes automatiquement</strong> (Nom, SKU, Prix, Coût, Stock, Seuil…) — vérifiez la correspondance et corrigez si besoin.</li>
+          <li>Choisissez le mode : <strong>Remplacer</strong> le stock existant, ou <strong>Ajouter</strong> au stock existant (pratique pour une réception fournisseur).</li>
+          <li>Vérifiez l'aperçu des 5 premières lignes, puis <span class="tuto-btn">Importer</span>.</li>
+        </ol>
+        <p>Les produits existants sont reconnus par <strong>SKU</strong> (ou par nom) : pas de doublons, leur fiche est mise à jour. Le bouton <span class="tuto-btn">⬇ CSV</span> en haut à droite exporte tout votre stock à tout moment.</p>
+      </div>
+    </details>
+
+    <details class="card tuto-section">
+      <summary><span class="tuto-emoji">🔴</span> Le mode live (TikTok / Whatnot)</summary>
+      <div class="tuto-body">
+        <p>Cliquez sur <span class="tuto-btn live">🔴 Lancer un live</span> puis choisissez la plateforme : une <strong>session datée</strong> démarre en plein écran.</p>
+        <ul>
+          <li><strong>Recherche instantanée</strong> : tapez quelques lettres de la référence ou du nom, le produit apparaît.</li>
+          <li><strong>1 clic = 1 vente</strong>, enregistrée à la seconde près et <strong>numérotée #1, #2, #3…</strong> — les mêmes numéros que sur Whatnot et TikTok.</li>
+          <li>Mauvais clic ? Bouton <span class="tuto-btn">↩</span> à côté de la vente : elle est annulée et le stock restauré.</li>
+          <li>En haut : chrono, nombre de ventes et chiffre d'affaires en temps réel.</li>
+          <li>Si la page se recharge en plein live, la session <strong>reprend automatiquement</strong>.</li>
+        </ul>
+        <p><strong>🎁 Les cadeaux</strong> : le bouton 🎁 devant chaque vente permet d'ajouter un ou plusieurs produits offerts (ex : vente #8 = iPad + 🎁 câble + 🎁 stylet). Le cadeau est rattaché au numéro de la vente, déduit du stock à prix 0, et son coût d'achat est déduit de la marge.</p>
+        <p class="tuto-note">ℹ️ Le mode live correspond aux ventes <strong>« Vue à l'écran »</strong>. Les gives Whatnot et les produits référencés dans la boutique de la plateforme ont leur propre numérotation — ils seront récupérés à l'import du rapport (section suivante).</p>
+      </div>
+    </details>
+
+    <details class="card tuto-section">
+      <summary><span class="tuto-emoji">✅</span> Après le live : rapport, vérification, validation</summary>
+      <div class="tuto-body">
+        <p>Chaque live passe par 3 statuts dans l'onglet <em>Lives</em> :</p>
+        <p class="tuto-badges">
+          <span class="status-badge missing">⚠ Rapport à importer</span> →
+          <span class="status-badge tovalidate">🟠 À valider</span> →
+          <span class="status-badge validated">✅ Validé</span>
+        </p>
+        <ol class="tuto-steps">
+          <li><strong>Exportez le rapport CSV</strong> des ventes depuis Whatnot ou TikTok après le live.</li>
+          <li>Onglet <em>Lives</em> → <span class="tuto-btn">Détail</span> du live → <strong>importez le fichier</strong>. Les lignes « Vue à l'écran » sont associées à vos ventes grâce à leur numéro ; les <strong>gives</strong> (abonné / acheteur) et les <strong>ventes boutique</strong> sont ajoutés à part au bilan.</li>
+          <li>L'app récupère le <strong>prix réel (TTC)</strong>, les <strong>gains nets</strong> (après commission et frais de la plateforme) et le <strong>statut du paiement</strong> de chaque vente : <span class="pay-badge paid">payé</span> <span class="pay-badge pending">⏳ en attente</span> <span class="pay-badge failed">⚠ échec</span></li>
+          <li><strong>Vérifiez</strong> : les paiements en échec sont listés et exclus du CA — le bouton <span class="tuto-btn">↩ Restock</span> annule la vente et remet l'article en stock.</li>
+          <li><strong>Validez</strong> le live : la ligne passe au vert et l'alerte du tableau de bord disparaît.</li>
+        </ol>
+        <p>Le détail affiche aussi <strong>CA TTC, CA HT et TVA collectée</strong> (taux réglable dans l'onglet Lives), et la <strong>marge nette</strong> : gains nets − coût d'achat (cadeaux inclus). La colonne <strong>📮 Envoi</strong> permet de saisir vos frais d'expédition/emballage par vente — ils sont déduits de la marge. Et le petit bouton <span class="tuto-btn">↩</span> à côté d'une vente enregistre un <strong>retour/remboursement</strong>.</p>
+        <p class="tuto-note">💶 Avant l'import du rapport, la marge est <strong>estimée</strong> avec les frais des plateformes (réglables via <em>⚙ Frais des plateformes</em> : Whatnot 6,67 % + 2,42 % + 0,25 € par défaut). Après l'import, ce sont les <strong>chiffres réels</strong> qui comptent.</p>
+      </div>
+    </details>
+
+    <details class="card tuto-section">
+      <summary><span class="tuto-emoji">📸</span> Ventes par photos (IA)</summary>
+      <div class="tuto-body">
+        <p>Vous photographiez chaque produit vendu avec son étiquette <strong>#numéro</strong> pendant le live ? L'app peut créer les ventes à partir des photos :</p>
+        <ol class="tuto-steps">
+          <li>Onglet <em>Lives</em> → bouton <span class="tuto-btn">📸 Ventes par photos</span>.</li>
+          <li>Choisissez le live concerné — et si vous avez <strong>oublié de le lancer dans l'app</strong>, créez-le après coup avec sa vraie date et ses horaires (<span class="tuto-btn">➕ Créer un live passé</span>).</li>
+          <li>Importez toutes les photos d'un coup (elles sont compressées automatiquement avant envoi).</li>
+          <li><strong>Claude (IA vision)</strong> lit le numéro sur l'étiquette et reconnaît le produit dans votre catalogue.</li>
+          <li>Vous <strong>vérifiez la liste</strong> (numéro et produit modifiables), puis validez : les ventes sont créées, le stock décompté, et chaque vente garde sa photo.</li>
+          <li>Un cadeau à rattacher après coup ? Le bouton <strong>🎁</strong> devant chaque vente du détail du live marche aussi sur un live terminé.</li>
+        </ol>
+        <p class="tuto-note">🔑 Nécessite une <strong>clé API Anthropic</strong> (console.anthropic.com), à coller une seule fois dans la section — elle reste stockée uniquement sur votre ordinateur. Deux modèles au choix : <strong>Claude Opus 5</strong> (précis, ≈ 2-3 centimes/photo) ou <strong>Claude Haiku 4.5</strong> (économique, ≈ 0,3 centime/photo). La même clé sert aux conseils de l'IA dans l'onglet Stats.</p>
+      </div>
+    </details>
+
+    <details class="card tuto-section">
+      <summary><span class="tuto-emoji">📊</span> Stats et conseils de l'IA</summary>
+      <div class="tuto-body">
+        <p>L'onglet <em>Stats</em> répond à trois questions :</p>
+        <ul>
+          <li><strong>🏆 Qu'est-ce qui rapporte vraiment ?</strong> Classement par <strong>marge nette</strong> (pas par volume !) — filtrable par période et par plateforme. Vendre 100 câbles pour 20 € de bénéfice compte moins que 30 batteries pour 300 €.</li>
+          <li><strong>📦 Que commander aujourd'hui ?</strong> Liste quotidienne des produits sous leur seuil, avec une quantité conseillée calculée d'après vos ventes des 30 derniers jours — exportable en <strong>bon de commande CSV</strong> pour votre fournisseur.</li>
+          <li><strong>🕐 Quand faire vos lives ?</strong> CA et marge moyens par jour de la semaine et par heure de début, et le rythme des ventes par tranche de 15 min pour voir quand un live s'essouffle.</li>
+          <li><strong>🤖 Que mettre en avant ?</strong> Le bouton <span class="tuto-btn">✨ Générer le rapport</span> demande à Claude d'analyser vos chiffres réels : produits à pousser (et sur quelle plateforme), produits à gros volume mais faible marge, réassorts prioritaires, idées de bundles. Cochez <em>« ☕ Générer automatiquement chaque matin »</em> pour l'avoir prêt au réveil.</li>
+        </ul>
+      </div>
+    </details>
+
+    <details class="card tuto-section">
+      <summary><span class="tuto-emoji">💾</span> Vos données et sauvegardes</summary>
+      <div class="tuto-body">
+        <p>Tout est stocké <strong>sur votre ordinateur</strong>, rien ne part dans le cloud (sauf les photos envoyées à l'IA quand vous utilisez les ventes par photos) :</p>
+        <ul>
+          <li><code>data/stock.db</code> — la base de données (produits, ventes, lives, réglages) ;</li>
+          <li><code>uploads/</code> — les photos des produits et des ventes.</li>
+        </ul>
+        <p><strong>🔒 Sécurité</strong> : votre clé API est <strong>chiffrée</strong> dans la base et n'est jamais renvoyée au navigateur. Dans l'onglet <em>Importer</em>, vous pouvez définir un <strong>mot de passe</strong> qui verrouille toute l'app (données et photos) — indispensable si elle est accessible depuis Internet ou un autre appareil.</p>
+        <p><strong>💾 Sauvegarde automatique</strong> : dans l'onglet <em>Importer</em>, indiquez un dossier de sauvegarde (idéalement synchronisé : iCloud Drive, Dropbox… ou un disque externe). Une copie complète (base + photos) y est faite <strong>chaque jour automatiquement</strong>, les 14 dernières sont conservées, et le bouton <span class="tuto-btn">↩ Restaurer</span> permet de revenir à n'importe laquelle en un clic.</p>
+      </div>
+    </details>
   </main>
 
   <!-- ===================== MODALE PRODUIT ===================== -->
@@ -148,11 +447,21 @@
             <label>Nom du produit *<input name="name" required placeholder="Ex : T-shirt logo noir M"></label>
             <div class="row2">
               <label>SKU / Référence<input name="sku" placeholder="Ex : TSH-NOIR-M"></label>
-              <label>Catégorie<input name="category" placeholder="Ex : Vêtements"></label>
+              <label>Marque<input name="brand" list="brandList" placeholder="Ex : YESIDO" autocomplete="off"><datalist id="brandList"></datalist></label>
             </div>
+            <label>Catégorie<input name="category" list="categoryList" placeholder="Ex : Chargeurs" autocomplete="off"><datalist id="categoryList"></datalist></label>
+            <label>Code-barres (EAN)
+              <input name="barcode" placeholder="Ex : 3401234567890" inputmode="numeric" autocomplete="off">
+              <span class="muted small">Facultatif — scannez ou tapez le code du produit, il servira à la préparation des colis.</span>
+            </label>
+            <label>Groupe de variantes
+              <input name="variant_group" list="variantGroups" placeholder="Ex : T-shirt logo" autocomplete="off">
+              <datalist id="variantGroups"></datalist>
+              <span class="muted small">Facultatif — les produits du même groupe (tailles, couleurs…) sont affichés regroupés, chacun gardant son stock et son SKU.</span>
+            </label>
             <div class="row2">
-              <label>Prix de vente (€)<input name="price" type="number" step="0.01" min="0" value="0"></label>
-              <label>Coût d'achat (€)<input name="cost" type="number" step="0.01" min="0" value="0"></label>
+              <label>Prix de vente conseillé TTC (€)<input name="price" type="number" step="any" min="0" value="0"></label>
+              <label>Coût d'achat (€)<input name="cost" type="number" step="any" min="0" value="0"></label>
             </div>
             <div class="row2">
               <label>Stock<input name="stock" type="number" min="0" value="0"></label>
@@ -178,7 +487,7 @@
       <p class="muted">Sur quelle plateforme êtes-vous en live ?</p>
       <div class="platform-buttons">
         <button class="platform-btn tiktok" data-platform="tiktok">
-          <span class="platform-icon">🎵</span>TikTok
+          <span class="platform-icon"><img src="img/tiktok.svg" alt="TikTok"></span>TikTok
         </button>
         <button class="platform-btn whatnot" data-platform="whatnot">
           <span class="platform-icon">🟡</span>Whatnot
@@ -237,6 +546,137 @@
         <button class="btn primary" id="btnCloseRecap">Fermer</button>
       </div>
     </div>
+  </div>
+
+  <!-- ===================== VENTES PAR PHOTOS ===================== -->
+  <div id="photoSalesModal" class="modal-overlay" hidden>
+    <div class="modal photo-sales-modal">
+      <h2>📸 Ventes par photos</h2>
+      <p class="muted">Pendant le live, vous photographiez chaque produit vendu avec son étiquette <strong>#numéro</strong>.
+        Choisissez le live concerné (ou créez-le s'il n'existe pas), importez toutes les photos d'un coup :
+        l'IA lit le numéro et reconnaît le produit, vous vérifiez, les ventes sont créées.</p>
+
+      <div class="ps-step">
+        <strong>1. Le live concerné</strong>
+        <div class="ps-live-row">
+          <select id="psLive"></select>
+          <button class="btn" id="btnPsNewLive">➕ Créer un live passé</button>
+        </div>
+        <div id="psCreate" class="ps-create" hidden>
+          <p class="muted small">Vous avez oublié de lancer le live dans l'app ? Créez-le ici avec sa vraie date — vous pourrez ensuite y ajouter les ventes par photos, les cadeaux et le rapport de la plateforme.</p>
+          <div class="ps-create-grid">
+            <label>Plateforme
+              <select id="psPlatform">
+                <option value="tiktok">TikTok</option>
+                <option value="whatnot">🟡 Whatnot</option>
+              </select>
+            </label>
+            <label>Date<input type="date" id="psDate"></label>
+            <label>Début<input type="time" id="psStart" value="20:00"></label>
+            <label>Fin<input type="time" id="psEnd" value="22:00"></label>
+          </div>
+          <button class="btn primary" id="btnPsCreateLive">Créer ce live</button>
+        </div>
+      </div>
+
+      <div class="ps-step">
+        <strong>2. Les photos</strong>
+        <details class="api-key-setup" id="psKeySetup">
+          <summary>🔑 Clé API Anthropic</summary>
+          <p class="muted small">Créez une clé sur <a href="https://console.anthropic.com" target="_blank" rel="noopener">console.anthropic.com</a>
+            (API Keys), puis collez-la ici. Elle est stockée uniquement dans votre base locale.</p>
+          <div class="key-row">
+            <input type="password" id="apiKeyInput" placeholder="sk-ant-…" autocomplete="off">
+            <button class="btn primary" onclick="saveApiKey()">Enregistrer</button>
+          </div>
+        </details>
+        <div class="photos-actions">
+          <label class="muted small">Modèle d'analyse :
+            <select id="visionModel" onchange="saveVisionModel(this.value)">
+              <option value="claude-opus-5">Claude Opus 5 — précis (≈ 2-3 c€ / photo)</option>
+              <option value="claude-haiku-4-5">Claude Haiku 4.5 — économique (≈ 0,3 c€ / photo)</option>
+            </select>
+          </label>
+          <button class="btn primary" id="btnPsPhotos">📸 Choisir les photos</button>
+          <input type="file" id="livePhotos" accept="image/*" multiple hidden>
+        </div>
+        <div id="photoProgress" class="photo-progress" hidden></div>
+        <div id="photoReview" hidden></div>
+      </div>
+
+      <div class="actions">
+        <span class="spacer"></span>
+        <button type="button" class="btn" id="btnClosePhotoSales">Fermer</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================== PHOTOS DEPUIS LE WEB ===================== -->
+  <div id="webPhotosModal" class="modal-overlay" hidden>
+    <div class="modal wp-modal">
+      <h2>🖼 Photos des produits depuis le web</h2>
+      <p class="muted">L'app cherche des images avec <strong>marque + référence + nom</strong> de chaque produit,
+        vous propose plusieurs candidates, et n'assigne que <strong>celles que vous validez</strong>.
+        La première est présélectionnée — cliquez sur une autre pour la remplacer, ou sur 🚫 pour ignorer le produit.</p>
+      <details class="api-key-setup" id="wpEngineSetup">
+        <summary>⚙ Moteur de recherche : <span id="wpEngineStatus">…</span></summary>
+        <p class="muted small"><strong>Recommandé : l'API officielle Google</strong> (gratuite, 100 recherches/jour — 1 recherche par produit).
+          Sans elle, l'app se rabat sur Bing/DuckDuckGo, beaucoup moins fiables. Configuration en 3 minutes :</p>
+        <ol class="muted small wp-steps">
+          <li>Sur <a href="https://programmablesearchengine.google.com" target="_blank" rel="noopener">programmablesearchengine.google.com</a> :
+            créez un moteur, choisissez <em>« Rechercher sur l'ensemble du Web »</em> et activez la <em>recherche d'images</em>, puis copiez son <strong>ID de moteur</strong> (cx).</li>
+          <li>Sur <a href="https://console.cloud.google.com/apis/library/customsearch.googleapis.com" target="_blank" rel="noopener">console.cloud.google.com</a> :
+            activez <em>« Custom Search API »</em>, puis créez une <strong>clé API</strong> (menu Identifiants).</li>
+          <li>Collez les deux ci-dessous — la clé est stockée chiffrée, uniquement sur votre machine.</li>
+        </ol>
+        <div class="key-row wp-key-row">
+          <input type="password" id="wpGoogleKey" placeholder="Clé API Google (AIza…)" autocomplete="off">
+          <input type="text" id="wpGoogleCx" placeholder="ID du moteur (cx)" autocomplete="off">
+          <button class="btn primary" id="btnWpSaveEngine">Enregistrer</button>
+        </div>
+      </details>
+      <div class="wp-head">
+        <span id="wpInfo" class="muted"></span>
+        <label class="check"><input type="checkbox" id="wpIncludeExisting"> Inclure les produits qui ont déjà une photo (remplacement)</label>
+        <button class="btn primary" id="btnWpSearch">🔎 Lancer la recherche</button>
+      </div>
+      <div id="wpProgress" class="photo-progress" hidden></div>
+      <div id="wpResults" class="wp-results"></div>
+      <div class="actions">
+        <span id="wpCount" class="muted"></span>
+        <span class="spacer"></span>
+        <button type="button" class="btn" id="btnCloseWebPhotos">Fermer</button>
+        <button type="button" class="btn success-btn" id="btnWpApply" hidden>✅ Assigner les photos choisies</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================== MODE INVENTAIRE ===================== -->
+  <div id="inventoryModal" class="modal-overlay" hidden>
+    <div class="modal inv-modal">
+      <h2>📋 Inventaire physique</h2>
+      <p class="muted">Comptez vos produits et saisissez les quantités réelles — ou <strong>scannez les codes-barres</strong> :
+        chaque scan ajoute +1 au comptage du produit. Seuls les produits comptés seront recalés.</p>
+      <input id="invSearch" class="live-search" placeholder="🔍 Scanner un code-barres, ou chercher par réf / nom…" autocomplete="off">
+      <div id="invList" class="inv-list"></div>
+      <div class="actions inv-actions">
+        <span id="invCount" class="muted"></span>
+        <span class="spacer"></span>
+        <button type="button" class="btn" id="btnCloseInventory">Annuler</button>
+        <button type="button" class="btn primary" id="btnCommitInventory">✅ Valider l'inventaire</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================== CONNEXION ===================== -->
+  <div id="loginOverlay" class="login-overlay" hidden>
+    <form id="loginForm" class="login-box">
+      <div class="login-brand">📦 <strong>WowMart Stock</strong></div>
+      <p class="muted">Cette application est protégée par un mot de passe.</p>
+      <input type="password" id="loginPassword" placeholder="Mot de passe" autocomplete="current-password" autofocus>
+      <button class="btn primary" type="submit">Se connecter</button>
+      <p id="loginError" class="login-error" hidden></p>
+    </form>
   </div>
 
   <div id="toast" class="toast" hidden></div>
