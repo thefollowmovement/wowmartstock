@@ -1760,6 +1760,20 @@ function setPhoto(file) {
   reader.readAsDataURL(file);
 }
 
+// Coller une image (Ctrl/Cmd+V) pendant que la fiche produit est ouverte :
+// copiez une image n'importe où (Google Images, capture d'écran…) et collez
+document.addEventListener('paste', (e) => {
+  if (modal.hidden) return;
+  const item = [...((e.clipboardData && e.clipboardData.items) || [])].find((i) => i.type.startsWith('image/'));
+  if (!item) return;
+  e.preventDefault();
+  const file = item.getAsFile();
+  if (file) {
+    setPhoto(file);
+    toast('📷 Image collée');
+  }
+});
+
 form.addEventListener('submit', async (e) => {
   e.preventDefault();
   const fd = new FormData(form);

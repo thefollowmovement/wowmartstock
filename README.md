@@ -75,7 +75,7 @@ Dans l'onglet Importer : choisissez un dossier (iCloud Drive, Dropbox, disque ex
 
 ## Fonctionnalités
 
-- **Fiches produits avec photo** : ajoutez une photo en la glissant-déposant (ou en cliquant) directement dans l'application.
+- **Fiches produits avec photo** : glissez-déposez une photo, cliquez pour la choisir, ou **collez-la (Ctrl/⌘+V)** après l'avoir copiée n'importe où (Google Images, capture d'écran…).
 - **🖼 Photos depuis le web** : bouton dans l'onglet Produits — l'app cherche des images (marque + référence + nom), vous propose plusieurs candidates par produit et n'assigne que celles que vous validez. **Moteur recommandé : l'API officielle Google Custom Search** (gratuite, 100 recherches/jour, configuration guidée dans la modale — clé stockée chiffrée) ; sans elle, repli sur Bing/DuckDuckGo, nettement moins fiables.
 - **Code-barres (EAN)** : champ facultatif sur chaque fiche, importable depuis vos fichiers (colonne `Code barre`, `EAN`…), inclus dans l'export CSV et cherchable partout (recherche produits, mode live, cadeaux) — prévu pour servir plus tard à la préparation des colis au scanner.
 - **Boutons de vente par canal** : sur chaque carte produit, un clic sur « En ligne », « Boutique », « TikTok » ou « Whatnot » enregistre une vente sur ce canal. Les boutons **+ / −** servent aux réassorts et corrections.
