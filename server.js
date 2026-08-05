@@ -8,6 +8,7 @@ const XLSX = require('xlsx');
 const Anthropic = require('@anthropic-ai/sdk');
 
 const PORT = process.env.PORT || 3000;
+console.log('WowMart Stock — démarrage…');
 const DATA_DIR = path.join(__dirname, 'data');
 const UPLOADS_DIR = path.join(__dirname, 'uploads');
 fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -2252,6 +2253,15 @@ app.use((err, req, res, next) => {
   res.status(400).json({ error: err.message || 'Erreur inattendue' });
 });
 
-app.listen(PORT, () => {
-  console.log(`WowMart Stock démarré sur http://localhost:${PORT}`);
+const server = app.listen(PORT, () => {
+  console.log(`✅ WowMart Stock démarré — ouvrez http://localhost:${PORT}`);
+});
+server.on('error', (err) => {
+  if (err.code === 'EADDRINUSE') {
+    console.error(`⚠ Le port ${PORT} est déjà utilisé : l'application tourne probablement déjà.`);
+    console.error(`  → Essayez d'ouvrir http://localhost:${PORT} dans votre navigateur.`);
+    console.error(`  → Sinon, fermez l'autre fenêtre Terminal qui la lance (ou tapez : pkill -f "node server.js"), puis relancez npm start.`);
+    process.exit(1);
+  }
+  throw err;
 });
