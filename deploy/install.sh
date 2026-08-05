@@ -113,7 +113,10 @@ RestartSec=3
 WantedBy=multi-user.target
 EOF
 systemctl daemon-reload
-systemctl enable --now wowmartstock
+systemctl enable wowmartstock >/dev/null 2>&1
+# restart (et pas seulement enable --now) : applique la nouvelle configuration
+# même si le service tournait déjà, ex. réinstallation pour activer le HTTPS
+systemctl restart wowmartstock
 sleep 2
 systemctl --no-pager --lines=3 status wowmartstock || true
 
