@@ -941,10 +941,13 @@ const EXTRA_KIND_LABELS = {
   order: '📦 Commande boutique',
 };
 
+let liveDetailSaleNos = []; // numéros existants du live affiché (pour « ajouter une vente »)
+
 window.showLiveDetail = async (id) => {
   try {
     const l = await api(`/api/lives/${id}`);
     if (l.fee_config) detailFees = l.fee_config;
+    liveDetailSaleNos = l.sales.filter((m) => !m.is_gift && !m.cancelled && m.sale_no).map((m) => m.sale_no);
     const valid = l.sales.filter((m) => !m.cancelled && m.payment_status !== 'refunded');
 
     // Récap des produits vendus (agrégé) — les cadeaux sur une ligne à part
@@ -980,7 +983,10 @@ window.showLiveDetail = async (id) => {
             return `<tr class="${m.cancelled ? 'row-cancelled' : ''} ${failed || refunded ? 'row-unpaid' : ''}">
           <td>${!m.is_gift && !m.cancelled && m.sale_no
             ? `<button class="live-gift-btn" onclick="openGiftPicker(${m.sale_no}, ${l.id})" title="Ajouter un cadeau à la vente #${m.sale_no}">🎁</button>`
-            : ''}<strong>${m.is_gift ? '🎁 ' : ''}${m.sale_no ? '#' + m.sale_no : ''}</strong></td>
+            : ''}<strong>${m.is_gift ? '🎁 ' : ''}${m.sale_no ? '#' + m.sale_no : ''}</strong>
+            ${!m.cancelled && !refunded
+              ? `<button class="btn ghost-mini" onclick="openSaleEdit(${m.id}, ${l.id}, ${m.sale_no || 1}, ${m.product_id}, ${m.is_gift ? 1 : 0})" title="Corriger cette vente : numéro ou produit">✏</button>`
+              : ''}</td>
           <td>${timeFr(m.created_at)}</td>
           <td>${m.photo ? `<a href="${escapeHtml(m.photo)}" target="_blank" rel="noopener"><img class="sale-photo-thumb" src="${escapeHtml(m.photo)}" alt=""></a> ` : ''}${escapeHtml(m.product_name)}${m.product_sku ? ` <span class="product-sku">(${escapeHtml(m.product_sku)})</span>` : ''}</td>
           <td>${euro(m.product_price)}</td>
@@ -1065,8 +1071,22 @@ window.showLiveDetail = async (id) => {
     const ht = httc(l.revenue);
     $('#liveDetail').innerHTML = `
       <h3>${PLATFORM_LABELS[l.platform]} — ${dateFr(l.started_at)}
-        ${l.ended_at ? `<button class="btn small" onclick="editLive(${l.id})" title="Changer la plateforme, la date ou les horaires — les heures des ventes suivent le décalage">✏ Modifier ce live</button>` : ''}</h3>
+        ${l.ended_at ? `<button class="btn small" onclick="editLive(${l.id})" title="Changer la plateforme, la date ou les horaires — les heures des ventes suivent le décalage">✏ Modifier ce live</button>
+        <button class="btn small" onclick="reopenLive(${l.id})" title="Le live redevient « en cours » : les prochaines ventes continuent la numérotation (#suivants)">▶ Reprendre ce live</button>` : ''}</h3>
       ${statusBlock}
+      <details class="fees-setting live-fees">
+        <summary>⚙ Frais de ce live — ${l.fee_config && l.fee_config.custom ? '<strong>personnalisés</strong>' : 'barème de la plateforme'}</summary>
+        <p class="muted small">Utilisés pour estimer les gains nets de CE live (promotion de la plateforme ce soir-là, barème différent…).
+          Les gains réels importés du rapport restent prioritaires.</p>
+        <div class="fees-grid">
+          <strong>${PLATFORM_LABELS[l.platform]}</strong>
+          <label>Commission %<input id="lfComm" type="number" min="0" max="100" step="any" value="${detailFees.commission}"></label>
+          <label>Traitement %<input id="lfProc" type="number" min="0" max="100" step="any" value="${detailFees.processing}"></label>
+          <label>Fixe €<input id="lfFixed" type="number" min="0" max="100" step="any" value="${detailFees.fixed}"></label>
+        </div>
+        <button class="btn primary" onclick="saveLiveFees(${l.id})">Enregistrer pour ce live</button>
+        ${l.fee_config && l.fee_config.custom ? `<button class="btn" onclick="resetLiveFees(${l.id})">Revenir au barème de la plateforme</button>` : ''}
+      </details>
       <div class="recap-grid wide">
         <div class="stat"><div class="value">${l.items}</div><div class="label">Articles vendus</div></div>
         <div class="stat"><div class="value">${l.gifts}</div><div class="label">🎁 Cadeaux offerts</div></div>
@@ -1105,7 +1125,9 @@ window.showLiveDetail = async (id) => {
         </table>
       </div>` : ''}
 
-      <h4>Ventes « Vue à l'écran » <a class="export-link" href="/api/lives/${l.id}/export.csv">⬇ Exporter en CSV</a></h4>
+      <h4>Ventes « Vue à l'écran »
+        <button class="btn small" onclick="openSaleAdd(${l.id})" title="Ajouter une vente oubliée à ce live">➕ Ajouter une vente</button>
+        <a class="export-link" href="/api/lives/${l.id}/export.csv">⬇ Exporter en CSV</a></h4>
       <div class="table-wrap">
         <table>
           <thead><tr><th>N°</th><th>Heure</th><th>Produit</th><th>Prix catalogue</th><th>Prix vendu</th><th>Gains nets</th><th title="Frais d'envoi et d'emballage payés par vous, déduits de la marge">📮 Envoi</th><th>Marge</th><th>Paiement</th><th>Statut</th></tr></thead>
@@ -1565,6 +1587,140 @@ function renderPhotoReview() {
     </div>`;
   $('#photoReview').hidden = false;
 }
+
+// ---- Frais propres à un live ----
+window.saveLiveFees = async (liveId) => {
+  try {
+    await api(`/api/lives/${liveId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        fees: { commission: $('#lfComm').value, processing: $('#lfProc').value, fixed: $('#lfFixed').value },
+      }),
+    });
+    toast('⚙ Frais de ce live enregistrés');
+    await loadLives();
+    await showLiveDetail(liveId);
+  } catch (e) {
+    toast(e.message, true);
+  }
+};
+
+window.resetLiveFees = async (liveId) => {
+  try {
+    await api(`/api/lives/${liveId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ fees: null }),
+    });
+    toast('Frais du live remis au barème de la plateforme');
+    await loadLives();
+    await showLiveDetail(liveId);
+  } catch (e) {
+    toast(e.message, true);
+  }
+};
+
+// ---- Reprendre un live terminé (fin par erreur, plantage…) ----
+window.reopenLive = async (liveId) => {
+  if (!confirm('Reprendre ce live ? Il redevient « en cours » et les prochaines ventes continueront la numérotation (#suivants).')) return;
+  try {
+    const live = await api(`/api/lives/${liveId}/reopen`, { method: 'POST' });
+    localStorage.setItem('wm_live_owner', String(live.id));
+    openLiveMode(live, live.sales || []);
+    toast('▶ Live repris — les ventes continuent');
+    loadLives();
+  } catch (e) {
+    toast(e.message, true);
+  }
+};
+
+// ---- Corriger une vente (numéro / produit) ou en ajouter une ----
+let seContext = null; // { mode: 'edit'|'add', movementId, liveId }
+
+function fillSaleProductSelect(selectedId) {
+  $('#seProduct').innerHTML = products
+    .map(
+      (p) =>
+        `<option value="${p.id}" ${p.id === selectedId ? 'selected' : ''}>${escapeHtml(p.name)}${p.sku ? ` (${escapeHtml(p.sku)})` : ''} · stock ${p.stock}</option>`
+    )
+    .join('');
+}
+
+window.openSaleEdit = (movementId, liveId, saleNo, productId, isGift) => {
+  seContext = { mode: 'edit', movementId, liveId };
+  $('#saleEditTitle').textContent = isGift ? '✏ Corriger le cadeau' : '✏ Corriger la vente';
+  $('#seHint').textContent = isGift
+    ? 'Changer le numéro rattache ce cadeau à une autre vente.'
+    : 'Changer le produit ajuste le stock (l’ancien revient, le nouveau part). Les cadeaux rattachés suivent le nouveau numéro.';
+  $('#seNo').value = saleNo;
+  fillSaleProductSelect(productId);
+  $('#btnSeCancelSale').hidden = false;
+  $('#saleEditModal').hidden = false;
+};
+
+window.openSaleAdd = (liveId) => {
+  seContext = { mode: 'add', liveId };
+  $('#saleEditTitle').textContent = '➕ Ajouter une vente à ce live';
+  $('#seHint').textContent = 'La vente est créée avec ce numéro, datée dans la fenêtre du live, et le stock est décompté.';
+  const nos = liveDetailSaleNos || [];
+  $('#seNo').value = (nos.length ? Math.max(...nos) : 0) + 1;
+  fillSaleProductSelect(null);
+  $('#btnSeCancelSale').hidden = true;
+  $('#saleEditModal').hidden = false;
+};
+
+$('#btnCloseSaleEdit').addEventListener('click', () => { $('#saleEditModal').hidden = true; });
+
+$('#btnSeSave').addEventListener('click', async () => {
+  if (!seContext) return;
+  const saleNo = parseInt($('#seNo').value, 10);
+  const productId = parseInt($('#seProduct').value, 10);
+  if (!Number.isFinite(saleNo) || saleNo <= 0) return toast('Numéro invalide', true);
+  try {
+    if (seContext.mode === 'edit') {
+      await api(`/api/movements/${seContext.movementId}/edit`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sale_no: saleNo, product_id: productId }),
+      });
+      toast('✏ Vente corrigée');
+    } else {
+      const r = await api(`/api/lives/${seContext.liveId}/photo-sales`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sales: [{ product_id: productId, sale_no: saleNo }] }),
+      });
+      if (!r.created) throw new Error(r.skipped[0] || 'Vente non créée');
+      toast('➕ Vente ajoutée');
+    }
+    $('#saleEditModal').hidden = true;
+    const liveId = seContext.liveId;
+    seContext = null;
+    await loadProducts();
+    await loadLives();
+    await showLiveDetail(liveId);
+  } catch (e) {
+    toast(e.message, true);
+  }
+});
+
+$('#btnSeCancelSale').addEventListener('click', async () => {
+  if (!seContext || seContext.mode !== 'edit') return;
+  if (!confirm('Annuler cette vente ? L’article revient en stock (à utiliser pour une erreur de saisie — pour un remboursement client, utilisez ↩ Retour).')) return;
+  try {
+    await api(`/api/movements/${seContext.movementId}/cancel`, { method: 'POST' });
+    toast('✖ Vente annulée, article remis en stock');
+    $('#saleEditModal').hidden = true;
+    const liveId = seContext.liveId;
+    seContext = null;
+    await loadProducts();
+    await loadLives();
+    await showLiveDetail(liveId);
+  } catch (e) {
+    toast(e.message, true);
+  }
+});
 
 // ---- Créer un live passé / modifier un live existant ----
 let editingLiveId = null; // null = création

@@ -156,6 +156,10 @@ CREATE TABLE IF NOT EXISTS settings (
   const scols = db.prepare('PRAGMA table_info(live_sessions)').all().map((c) => c.name);
   if (!scols.includes('report_imported_at')) db.exec('ALTER TABLE live_sessions ADD COLUMN report_imported_at TEXT');
   if (!scols.includes('validated_at')) db.exec('ALTER TABLE live_sessions ADD COLUMN validated_at TEXT');
+  // Frais propres à un live (sinon barème de la plateforme)
+  if (!scols.includes('fee_commission')) db.exec('ALTER TABLE live_sessions ADD COLUMN fee_commission REAL');
+  if (!scols.includes('fee_processing')) db.exec('ALTER TABLE live_sessions ADD COLUMN fee_processing REAL');
+  if (!scols.includes('fee_fixed')) db.exec('ALTER TABLE live_sessions ADD COLUMN fee_fixed REAL');
 
   // Numérotation rétroactive des ventes des lives existants (#1, #2… par ordre chronologique)
   const toNumber = db
@@ -665,6 +669,21 @@ function getFees(platform) {
   return base;
 }
 
+// Frais effectifs d'un live : ceux enregistrés sur le live s'il en a
+// (ex : promotion Whatnot ce soir-là), sinon le barème de la plateforme
+function feesForSession(session) {
+  if (session.fee_commission != null || session.fee_processing != null || session.fee_fixed != null) {
+    const base = getFees(session.platform);
+    return {
+      commission: session.fee_commission != null ? session.fee_commission : base.commission,
+      processing: session.fee_processing != null ? session.fee_processing : base.processing,
+      fixed: session.fee_fixed != null ? session.fee_fixed : base.fixed,
+      custom: true,
+    };
+  }
+  return { ...getFees(session.platform), custom: false };
+}
+
 // Clé API Anthropic pour l'analyse des photos de ventes (vision).
 // Priorité à la variable d'environnement (recommandé sur un serveur),
 // sinon la clé enregistrée dans l'app — chiffrée en base (AES-256-GCM).
@@ -822,7 +841,7 @@ const sessionExtras = db.prepare('SELECT * FROM live_extras WHERE session_id = ?
 // importé ; sinon estimation avec le barème de frais de la plateforme
 // (commission % + traitement % + fixe €).
 function sessionSummary(session) {
-  const fees = getFees(session.platform);
+  const fees = feesForSession(session);
   const feePct = (fees.commission + fees.processing) / 100;
   const feeFixed = fees.fixed;
   const agg = db
@@ -911,6 +930,32 @@ app.post('/api/lives', (req, res) => {
 app.patch('/api/lives/:id', (req, res) => {
   const session = db.prepare('SELECT * FROM live_sessions WHERE id = ?').get(Number(req.params.id));
   if (!session) return res.status(404).json({ error: 'Live introuvable' });
+
+  // Frais propres à ce live (modifiables même live terminé) :
+  // { fees: { commission, processing, fixed } } ou { fees: null } → barème plateforme
+  if ('fees' in req.body) {
+    if (req.body.fees === null) {
+      db.prepare('UPDATE live_sessions SET fee_commission = NULL, fee_processing = NULL, fee_fixed = NULL WHERE id = ?')
+        .run(session.id);
+    } else {
+      const f = req.body.fees || {};
+      const commission = parseFloat(f.commission);
+      const processing = parseFloat(f.processing);
+      const fixed = parseFloat(f.fixed);
+      if (
+        ![commission, processing, fixed].every(Number.isFinite) ||
+        commission < 0 || commission > 100 || processing < 0 || processing > 100 || fixed < 0 || fixed > 100
+      ) {
+        return res.status(400).json({ error: 'Frais invalides' });
+      }
+      db.prepare('UPDATE live_sessions SET fee_commission = ?, fee_processing = ?, fee_fixed = ? WHERE id = ?')
+        .run(commission, processing, fixed, session.id);
+    }
+    if (!req.body.platform && !req.body.started_at && !req.body.ended_at) {
+      return res.json(sessionSummary(db.prepare('SELECT * FROM live_sessions WHERE id = ?').get(session.id)));
+    }
+  }
+
   if (!session.ended_at) return res.status(400).json({ error: 'Terminez le live avant de modifier ses informations' });
 
   const platform = req.body.platform || session.platform;
@@ -942,6 +987,77 @@ app.patch('/api/lives/:id', (req, res) => {
   res.json(sessionSummary(db.prepare('SELECT * FROM live_sessions WHERE id = ?').get(session.id)));
 });
 
+// Reprendre un live terminé (fin par erreur, plantage…) : il redevient « en
+// cours » et les prochaines ventes continuent la numérotation (#suivants)
+app.post('/api/lives/:id/reopen', (req, res) => {
+  const session = db.prepare('SELECT * FROM live_sessions WHERE id = ?').get(Number(req.params.id));
+  if (!session) return res.status(404).json({ error: 'Live introuvable' });
+  if (!session.ended_at) return res.status(400).json({ error: 'Ce live est déjà en cours' });
+  const open = db.prepare('SELECT id FROM live_sessions WHERE ended_at IS NULL').get();
+  if (open) return res.status(409).json({ error: 'Un autre live est déjà en cours, terminez-le d’abord' });
+  db.prepare('UPDATE live_sessions SET ended_at = NULL, validated_at = NULL WHERE id = ?').run(session.id);
+  const reopened = db.prepare('SELECT * FROM live_sessions WHERE id = ?').get(session.id);
+  res.json({ ...sessionSummary(reopened), sales: sessionSales.all(session.id) });
+});
+
+// Corriger une vente de live : numéro (#) et/ou produit.
+// { sale_no?, product_id? } — le stock suit un changement de produit
+// (l'ancien revient, le nouveau part), et les cadeaux rattachés suivent le
+// changement de numéro.
+app.patch('/api/movements/:id/edit', (req, res) => {
+  const m = db.prepare('SELECT * FROM movements WHERE id = ?').get(Number(req.params.id));
+  if (!m) return res.status(404).json({ error: 'Mouvement introuvable' });
+  if (m.delta >= 0 || !m.session_id) return res.status(400).json({ error: 'Seule une vente de live est modifiable ici' });
+  if (m.cancelled) return res.status(400).json({ error: 'Cette vente est annulée' });
+
+  let newSaleNo = m.sale_no;
+  if (req.body.sale_no !== undefined) {
+    newSaleNo = parseInt(req.body.sale_no, 10);
+    if (!Number.isFinite(newSaleNo) || newSaleNo <= 0) {
+      return res.status(400).json({ error: 'Numéro de vente invalide' });
+    }
+    if (!m.is_gift && newSaleNo !== m.sale_no) {
+      const dup = db
+        .prepare('SELECT id FROM movements WHERE session_id = ? AND sale_no = ? AND is_gift = 0 AND delta < 0 AND cancelled = 0 AND id != ?')
+        .get(m.session_id, newSaleNo, m.id);
+      if (dup) return res.status(409).json({ error: `Le n° #${newSaleNo} existe déjà dans ce live` });
+    }
+  }
+
+  let newProductId = m.product_id;
+  if (req.body.product_id !== undefined) {
+    newProductId = Number(req.body.product_id);
+    if (newProductId !== m.product_id) {
+      const target = db.prepare('SELECT * FROM products WHERE id = ?').get(newProductId);
+      if (!target) return res.status(404).json({ error: 'Produit introuvable' });
+      if (target.stock < -m.delta) return res.status(400).json({ error: `Stock insuffisant pour « ${target.name} »` });
+    }
+  }
+
+  withTransaction(() => {
+    if (newProductId !== m.product_id) {
+      const qty = -m.delta;
+      const oldP = db.prepare('SELECT * FROM products WHERE id = ?').get(m.product_id);
+      if (oldP) {
+        db.prepare('UPDATE products SET stock = stock + ?, updated_at = ? WHERE id = ?').run(qty, now(), oldP.id);
+      }
+      db.prepare('UPDATE products SET stock = stock - ?, updated_at = ? WHERE id = ?').run(qty, now(), newProductId);
+      db.prepare('UPDATE movements SET product_id = ? WHERE id = ?').run(newProductId, m.id);
+    }
+    if (newSaleNo !== m.sale_no) {
+      db.prepare('UPDATE movements SET sale_no = ? WHERE id = ?').run(newSaleNo, m.id);
+      if (!m.is_gift) {
+        // les cadeaux rattachés à cette vente suivent son nouveau numéro
+        db.prepare('UPDATE movements SET sale_no = ? WHERE session_id = ? AND sale_no = ? AND is_gift = 1 AND id != ?')
+          .run(newSaleNo, m.session_id, m.sale_no, m.id);
+      }
+    }
+    // la vérification devra être refaite
+    db.prepare('UPDATE live_sessions SET validated_at = NULL WHERE id = ?').run(m.session_id);
+  });
+  res.json({ ok: true });
+});
+
 // Live en cours (pour reprendre après un rechargement de page)
 app.get('/api/lives/active', (req, res) => {
   const open = db.prepare('SELECT * FROM live_sessions WHERE ended_at IS NULL').get();
@@ -963,7 +1079,7 @@ app.get('/api/lives/:id', (req, res) => {
     ...sessionSummary(session),
     sales: sessionSales.all(session.id),
     extra_lines: sessionExtras.all(session.id),
-    fee_config: getFees(session.platform),
+    fee_config: feesForSession(session),
   });
 });
 
@@ -1033,7 +1149,7 @@ app.get('/api/lives/:id/export.csv', (req, res) => {
     return /[;"\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
   };
   const PAYMENT_FR = { paid: 'payé', pending: 'en attente', failed: 'échec', refunded: 'remboursé' };
-  const feeCfg = getFees(session.platform);
+  const feeCfg = feesForSession(session);
   const estFees = (price) =>
     price > 0 ? (price * (feeCfg.commission + feeCfg.processing)) / 100 + feeCfg.fixed : 0;
   const lines = sales.map((m) => {
