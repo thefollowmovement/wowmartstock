@@ -44,6 +44,7 @@ let vatRate = 20; // taux de TVA (%), modifiable dans l'onglet Lives
 let liveSession = null; // session en cours { id, platform, started_at, ... }
 let liveSalesLog = []; // [{ movement_id, product_id, name, sku, price, time, cancelled }]
 let liveTimerInterval = null;
+let liveSyncInterval = null; // synchronisation multi-appareils du live
 
 // ---------------------------------------------------------------------------
 // Utilitaires
@@ -452,6 +453,7 @@ document.querySelectorAll('.platform-btn').forEach((btn) => {
         body: JSON.stringify({ platform: btn.dataset.platform }),
       });
       $('#platformModal').hidden = true;
+      localStorage.setItem('wm_live_owner', String(session.id));
       openLiveMode(session, []);
     } catch (e) {
       toast(e.message, true);
@@ -459,21 +461,50 @@ document.querySelectorAll('.platform-btn').forEach((btn) => {
   });
 });
 
-function openLiveMode(session, sales) {
-  liveSession = session;
-  liveSalesLog = sales.map((m) => ({
+// Journal des ventes reconstruit depuis le serveur (source de vérité —
+// permet à plusieurs appareils de vendre dans le même live)
+function salesFromServer(sales) {
+  return sales.map((m) => ({
     movement_id: m.id,
     sale_no: m.sale_no,
     product_id: m.product_id,
     name: m.product_name,
     sku: m.product_sku,
-    price: m.is_gift ? 0 : m.product_price,
+    price: m.is_gift ? 0 : m.sold_price != null ? m.sold_price : m.product_price,
+    cost: m.product_cost,
     is_gift: !!m.is_gift,
     time: m.created_at,
     cancelled: !!m.cancelled,
   }));
+}
+
+// Synchronisation : toutes les 8 s, le journal est rafraîchi depuis le
+// serveur — les ventes faites sur un autre appareil apparaissent, et si le
+// live est terminé ailleurs, l'écran se ferme proprement
+async function syncLiveFromServer() {
+  if (!liveSession) return;
+  try {
+    const active = await api('/api/lives/active');
+    if (!active || active.id !== liveSession.id) {
+      toast('Le live a été terminé sur un autre appareil');
+      closeLiveMode();
+      return;
+    }
+    liveSalesLog = salesFromServer(active.sales || []);
+    renderLiveSales();
+    updateLiveCounters();
+    loadProducts(); // stock à jour dans la recherche (ventes des autres appareils)
+  } catch (e) {
+    /* réessaiera au prochain tick */
+  }
+}
+
+function openLiveMode(session, sales) {
+  liveSession = session;
+  liveSalesLog = salesFromServer(sales);
   $('#livePlatformBadge').innerHTML = PLATFORM_LABELS[session.platform] || escapeHtml(session.platform);
   $('#liveOverlay').hidden = false;
+  $('#liveIndicator').hidden = true;
   $('#liveSearch').value = '';
   document.body.classList.add('no-scroll');
   renderLiveResults();
@@ -482,6 +513,8 @@ function openLiveMode(session, sales) {
   clearInterval(liveTimerInterval);
   liveTimerInterval = setInterval(updateLiveTimer, 1000);
   updateLiveTimer();
+  clearInterval(liveSyncInterval);
+  liveSyncInterval = setInterval(syncLiveFromServer, 8000);
   setTimeout(() => $('#liveSearch').focus(), 100);
 }
 
@@ -500,13 +533,17 @@ function liveTotals() {
     items: valid.filter((s) => !s.is_gift).length,
     gifts: valid.filter((s) => s.is_gift).length,
     revenue: valid.reduce((sum, s) => sum + (Number(s.price) || 0), 0),
+    // dépense totale : coût d'achat de tout ce qui est parti (cadeaux inclus)
+    cost: valid.reduce((sum, s) => sum + (Number(s.cost) || 0), 0),
   };
 }
 
 function updateLiveCounters() {
   const t = liveTotals();
-  $('#liveCounters').textContent =
-    `${t.items} vente(s)${t.gifts ? ` · ${t.gifts} 🎁` : ''} · ${euro(t.revenue)}`;
+  $('#liveCounters').innerHTML =
+    `${t.items} vente(s)${t.gifts ? ` · ${t.gifts} 🎁` : ''}` +
+    ` · <span title="Chiffre d'affaires du live">CA ${euro(t.revenue)}</span>` +
+    ` · <span class="live-cost" title="Dépense totale : coût d'achat des produits partis (cadeaux inclus)">💸 ${euro(t.cost)}</span>`;
 }
 
 // Recherche rapide par référence ou nom (insensible à la casse)
@@ -560,6 +597,7 @@ window.liveSell = async (id) => {
       name: p.name,
       sku: p.sku,
       price: p.price,
+      cost: p.cost,
       is_gift: false,
       time: new Date().toISOString(),
       cancelled: false,
@@ -721,6 +759,7 @@ window.giveGift = async (productId) => {
         name: p.name,
         sku: p.sku,
         price: 0,
+        cost: p.cost,
         is_gift: true,
         time: new Date().toISOString(),
         cancelled: false,
@@ -770,22 +809,63 @@ function closeLiveMode() {
   liveSession = null;
   liveSalesLog = [];
   clearInterval(liveTimerInterval);
+  clearInterval(liveSyncInterval);
+  localStorage.removeItem('wm_live_owner');
   $('#liveOverlay').hidden = true;
+  $('#liveIndicator').hidden = true;
   document.body.classList.remove('no-scroll');
   loadProducts();
 }
+
+// Réduire le live : l'écran se ferme mais le live CONTINUE (sur cet appareil
+// via « Rejoindre », ou sur un autre) — pour gérer les produits pendant
+// qu'une autre personne enregistre les ventes
+$('#btnMinimizeLive').addEventListener('click', () => {
+  liveSession = null;
+  liveSalesLog = [];
+  clearInterval(liveTimerInterval);
+  clearInterval(liveSyncInterval);
+  localStorage.removeItem('wm_live_owner');
+  $('#liveOverlay').hidden = true;
+  $('#liveIndicator').hidden = false;
+  document.body.classList.remove('no-scroll');
+  loadProducts();
+  toast('Live réduit — il continue ! « 🔴 Rejoindre » pour y revenir');
+});
+
+// Rejoindre le live en cours (depuis la pastille de la barre du haut)
+$('#liveIndicator').addEventListener('click', async () => {
+  try {
+    const active = await api('/api/lives/active');
+    if (!active) {
+      $('#liveIndicator').hidden = true;
+      toast('Le live est terminé');
+      return;
+    }
+    localStorage.setItem('wm_live_owner', String(active.id));
+    openLiveMode(active, active.sales || []);
+  } catch (e) {
+    toast(e.message, true);
+  }
+});
 
 $('#btnCloseRecap').addEventListener('click', () => {
   $('#recapModal').hidden = true;
 });
 
-// Reprise d'un live en cours après rechargement de la page
+// Un live est en cours quelque part : l'écran live ne s'ouvre TOUT SEUL que
+// sur l'appareil qui l'a lancé (reprise après rechargement). Les autres
+// appareils voient une pastille « Rejoindre » et gardent l'app utilisable
+// (fiches produits, imports… pendant que quelqu'un d'autre vend).
 async function resumeActiveLive() {
   try {
     const active = await api('/api/lives/active');
-    if (active) {
+    if (!active) return;
+    if (localStorage.getItem('wm_live_owner') === String(active.id)) {
       openLiveMode(active, active.sales || []);
       toast('Live en cours repris');
+    } else {
+      $('#liveIndicator').hidden = false;
     }
   } catch (e) {
     /* pas bloquant */

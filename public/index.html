@@ -18,6 +18,7 @@
       <button class="tab" data-tab="movements">Historique</button>
       <button class="tab" data-tab="help">Aide</button>
     </nav>
+    <button class="btn live-indicator-btn" id="liveIndicator" hidden title="Un live est en cours sur un autre appareil — cliquez pour le rejoindre (les ventes des deux appareils se cumulent)">🔴 Live en cours — Rejoindre</button>
     <button class="btn live-launch" id="btnStartLive">🔴 Lancer un live</button>
     <a class="btn ghost" href="/api/export.csv">⬇ CSV</a>
   </header>
@@ -375,6 +376,7 @@
           <li>Si la page se recharge en plein live, la session <strong>reprend automatiquement</strong>.</li>
         </ul>
         <p><strong>🎁 Les cadeaux</strong> : le bouton 🎁 devant chaque vente permet d'ajouter un ou plusieurs produits offerts (ex : vente #8 = iPad + 🎁 câble + 🎁 stylet). Le cadeau est rattaché au numéro de la vente, déduit du stock à prix 0, et son coût d'achat est déduit de la marge.</p>
+        <p><strong>👥 À plusieurs</strong> : en haut du live, le bandeau affiche en temps réel les ventes, le CA et <strong>💸 la dépense totale</strong> (coût d'achat de tout ce qui part, cadeaux inclus). Pendant qu'une personne vend, une autre peut se connecter sur un autre appareil : elle voit une pastille <span class="tuto-btn">🔴 Live en cours — Rejoindre</span> et garde l'app utilisable (fiches produits, imports…). Elle peut aussi <strong>rejoindre le live</strong> — les ventes des deux appareils se cumulent avec les bons numéros et se synchronisent toutes les 8 secondes. Le bouton <span class="tuto-btn">⤵ Réduire</span> ferme l'écran live sans terminer le live.</p>
         <p class="tuto-note">ℹ️ Le mode live correspond aux ventes <strong>« Vue à l'écran »</strong>. Les gives Whatnot et les produits référencés dans la boutique de la plateforme ont leur propre numérotation — ils seront récupérés à l'import du rapport (section suivante).</p>
       </div>
     </details>
@@ -521,6 +523,7 @@
       <span id="liveTimer" class="live-timer">00:00</span>
       <span id="liveCounters" class="live-counters"></span>
       <span class="spacer"></span>
+      <button class="btn ghost" id="btnMinimizeLive" title="Fermer cet écran SANS terminer le live — pour gérer les produits pendant qu'une autre personne enregistre les ventes">⤵ Réduire</button>
       <button class="btn danger" id="btnEndLive">⏹ Terminer le live</button>
     </header>
     <div class="live-body">

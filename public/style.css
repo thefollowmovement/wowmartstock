@@ -808,6 +808,26 @@ tr.row-unpaid td { background: #fef2f2; }
 .ai-report ul { margin: 6px 0 6px 22px; display: flex; flex-direction: column; gap: 4px; }
 .ai-report p { margin: 6px 0; }
 
+/* ---------- Live : pastille « rejoindre » et coût ---------- */
+.live-indicator-btn {
+  background: #fee2e2;
+  border: 1px solid var(--danger);
+  color: var(--danger);
+  font-weight: 700;
+  animation: live-pulse 2s infinite;
+}
+@keyframes live-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(229, 72, 77, .35); }
+  50% { box-shadow: 0 0 0 6px rgba(229, 72, 77, 0); }
+}
+.live-cost { color: #fbbf24; }
+.live-header .btn.ghost {
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, .35);
+  color: rgba(255, 255, 255, .9);
+}
+.live-header .btn.ghost:hover { background: rgba(255, 255, 255, .12); }
+
 /* ---------- Connexion et sécurité ---------- */
 .login-overlay {
   position: fixed;
