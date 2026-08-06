@@ -125,6 +125,10 @@ h1, h2, h3, h4, .brand, .modal h2 {
 
 /* ---------- Boutons ---------- */
 .btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
   border: 1px solid var(--border);
   background: var(--card);
   padding: 9px 16px;
@@ -135,6 +139,8 @@ h1, h2, h3, h4, .brand, .modal h2 {
   cursor: pointer;
   text-decoration: none;
   color: var(--text);
+  white-space: nowrap;
+  vertical-align: middle;
   transition: filter .15s, transform .1s, box-shadow .15s;
 }
 .btn:hover { filter: brightness(.96); }
@@ -1319,6 +1325,50 @@ form label .muted.small { display: block; margin-top: 4px; font-weight: 400; }
 }
 .tuto-badges { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .tuto-btn .ico-tiktok { vertical-align: -3px; }
+
+/* ==========================================================================
+   Espacement et alignement — passe UI/UX globale
+   Tout groupe de boutons respire : titres avec actions, cellules de tableau,
+   blocs repliables, panneaux de vérification.
+   ========================================================================== */
+
+/* Titres de cartes contenant des boutons ou liens d'action */
+.card h2, .card h3, .card h4, #liveDetail h3, #liveDetail h4 {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.card h2 .export-link, .card h4 .export-link { margin-left: auto; }
+
+/* Boutons voisins dans une cellule de tableau (⬇ + ↩ Restaurer, etc.) */
+td .btn + .btn, td .btn + a.btn, td a.btn + .btn { margin-left: 6px; }
+td .btn { vertical-align: middle; }
+
+/* Boutons à l'intérieur des blocs repliables (frais, clé API, sauvegarde) */
+.fees-setting .btn, .api-key-setup > .btn { margin: 8px 8px 4px 0; }
+details.api-key-setup { margin: 12px 0; }
+
+/* En-tête de l'onglet Lives : boutons + note sur leur propre ligne */
+.lives-head .btn + .btn { margin-left: 8px; }
+.lives-head > div > .muted.small { display: block; margin-top: 8px; }
+
+/* Panneau de vérification : bouton valider détaché de la liste */
+.verify-panel .success-btn { margin-top: 12px; }
+.verify-list li { margin-bottom: 6px; }
+.verify-list li .btn { margin-left: 6px; }
+
+/* Zones d'import (rapport, photos) : boutons espacés du texte */
+.report-import .btn { margin-top: 4px; }
+.report-import .btn + input + div { margin-top: 12px; }
+
+/* Barres d'actions génériques : jamais de boutons collés */
+.actions { flex-wrap: wrap; }
+.backup-row .btn { flex: none; }
+
+/* Petites zones où des boutons se suivent hors flex */
+.photos-actions { row-gap: 10px; }
+.wp-head { row-gap: 10px; }
 
 @media (max-width: 760px) {
   .live-body { flex-direction: column; overflow-y: auto; }
