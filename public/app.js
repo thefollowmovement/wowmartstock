@@ -435,7 +435,13 @@ $('#sortBy').addEventListener('change', renderProducts);
 // MODE LIVE
 // ---------------------------------------------------------------------------
 $('#btnStartLive').addEventListener('click', () => {
+  $('#liveStartNo').value = 1;
+  $('#startNoPreview').textContent = '#1';
+  document.querySelector('.start-no-setup').open = false;
   $('#platformModal').hidden = false;
+});
+$('#liveStartNo').addEventListener('input', () => {
+  $('#startNoPreview').textContent = `#${Math.max(1, parseInt($('#liveStartNo').value, 10) || 1)}`;
 });
 $('#btnClosePlatform').addEventListener('click', () => {
   $('#platformModal').hidden = true;
@@ -450,7 +456,10 @@ document.querySelectorAll('.platform-btn').forEach((btn) => {
       const session = await api('/api/lives', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ platform: btn.dataset.platform }),
+        body: JSON.stringify({
+          platform: btn.dataset.platform,
+          start_no: Math.max(1, parseInt($('#liveStartNo').value, 10) || 1),
+        }),
       });
       $('#platformModal').hidden = true;
       localStorage.setItem('wm_live_owner', String(session.id));

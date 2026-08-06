@@ -160,6 +160,9 @@ CREATE TABLE IF NOT EXISTS settings (
   if (!scols.includes('fee_commission')) db.exec('ALTER TABLE live_sessions ADD COLUMN fee_commission REAL');
   if (!scols.includes('fee_processing')) db.exec('ALTER TABLE live_sessions ADD COLUMN fee_processing REAL');
   if (!scols.includes('fee_fixed')) db.exec('ALTER TABLE live_sessions ADD COLUMN fee_fixed REAL');
+  // Premier numéro de vente du live (1 par défaut ; > 1 si le live avait déjà
+  // commencé sur la plateforme avant d'être lancé dans l'app)
+  if (!scols.includes('start_no')) db.exec('ALTER TABLE live_sessions ADD COLUMN start_no INTEGER NOT NULL DEFAULT 1');
 
   // Numérotation rétroactive des ventes des lives existants (#1, #2… par ordre chronologique)
   const toNumber = db
@@ -547,11 +550,13 @@ app.post('/api/products/:id/stock', (req, res) => {
     return res.status(400).json({ error: 'Stock déjà à zéro' });
   }
   let sessionId = null;
+  let sessionStartNo = 1;
   if (req.body.session_id != null) {
     const session = db.prepare('SELECT * FROM live_sessions WHERE id = ?').get(Number(req.body.session_id));
     if (!session) return res.status(404).json({ error: 'Live introuvable' });
     if (session.ended_at) return res.status(400).json({ error: 'Ce live est déjà terminé' });
     sessionId = session.id;
+    sessionStartNo = session.start_no || 1;
   }
   const after = Math.max(0, existing.stock + delta);
   const realDelta = after - existing.stock;
@@ -559,12 +564,14 @@ app.post('/api/products/:id/stock', (req, res) => {
   db.prepare('UPDATE products SET stock = ?, updated_at = ? WHERE id = ?').run(after, now(), id);
   const defaultReason =
     realDelta < 0 && SALE_CHANNELS.includes(channel) ? 'Vente' : 'Ajustement rapide';
-  // Numéro de vente séquentiel dans le live (#1, #2…), comme sur Whatnot / TikTok
+  // Numéro de vente séquentiel dans le live (#1, #2…), comme sur Whatnot /
+  // TikTok — en partant du premier numéro choisi au lancement (start_no)
   let saleNo = null;
   if (sessionId && realDelta < 0) {
-    saleNo = db
-      .prepare('SELECT COALESCE(MAX(sale_no), 0) + 1 AS n FROM movements WHERE session_id = ?')
+    const maxNo = db
+      .prepare('SELECT COALESCE(MAX(sale_no), 0) AS n FROM movements WHERE session_id = ?')
       .get(sessionId).n;
+    saleNo = Math.max(maxNo, sessionStartNo - 1) + 1;
   }
   const movementId = logMovement(id, channel, realDelta, after, req.body.reason || defaultReason, sessionId, saleNo);
   res.json({
@@ -917,9 +924,12 @@ app.post('/api/lives', (req, res) => {
   if (open) {
     return res.status(409).json({ error: 'Un live est déjà en cours, terminez-le d’abord', session: sessionSummary(open) });
   }
+  // Premier numéro de vente : > 1 si le live avait déjà commencé sur la
+  // plateforme (bug, app relancée…) — les ventes manquées s'ajoutent après
+  const startNo = Math.max(1, parseInt(req.body.start_no, 10) || 1);
   const info = db
-    .prepare('INSERT INTO live_sessions (platform, name, started_at) VALUES (?, ?, ?)')
-    .run(platform, (req.body.name || '').trim(), now());
+    .prepare('INSERT INTO live_sessions (platform, name, started_at, start_no) VALUES (?, ?, ?, ?)')
+    .run(platform, (req.body.name || '').trim(), now(), startNo);
   res.status(201).json(sessionSummary(db.prepare('SELECT * FROM live_sessions WHERE id = ?').get(info.lastInsertRowid)));
 });
 

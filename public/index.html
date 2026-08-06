@@ -367,7 +367,7 @@
     <details class="card tuto-section">
       <summary><span class="tuto-emoji">🔴</span> Le mode live (TikTok / Whatnot)</summary>
       <div class="tuto-body">
-        <p>Cliquez sur <span class="tuto-btn live">🔴 Lancer un live</span> puis choisissez la plateforme : une <strong>session datée</strong> démarre en plein écran.</p>
+        <p>Cliquez sur <span class="tuto-btn live">🔴 Lancer un live</span> puis choisissez la plateforme : une <strong>session datée</strong> démarre en plein écran. Le live a <strong>déjà commencé sur la plateforme</strong> (bug, app relancée…) ? Dépliez <em>« ⚙ Premier n° de vente »</em> et indiquez le prochain numéro à enregistrer (ex : #15) — vous ajouterez les ventes manquées après le live (Détail → ➕ Ajouter une vente).</p>
         <ul>
           <li><strong>Recherche instantanée</strong> : tapez quelques lettres de la référence ou du nom, le produit apparaît.</li>
           <li><strong>1 clic = 1 vente</strong>, enregistrée à la seconde près et <strong>numérotée #1, #2, #3…</strong> — les mêmes numéros que sur Whatnot et TikTok.</li>
@@ -509,6 +509,15 @@
           <span class="platform-icon">🟡</span>Whatnot
         </button>
       </div>
+      <details class="api-key-setup start-no-setup">
+        <summary>⚙ Premier n° de vente : <strong id="startNoPreview">#1</strong></summary>
+        <p class="muted small">Laissez 1 en temps normal. Si le live a <strong>déjà commencé sur la plateforme</strong>
+          (bug, app relancée…), mettez le numéro de la <strong>prochaine vente à enregistrer</strong> — vous ajouterez
+          les ventes manquées après le live (Détail → ➕ Ajouter une vente).</p>
+        <label class="se-no-row"><span class="photo-no-prefix">#</span>
+          <input type="number" id="liveStartNo" min="1" value="1">
+        </label>
+      </details>
       <div class="actions">
         <span class="spacer"></span>
         <button type="button" class="btn" id="btnClosePlatform">Annuler</button>
