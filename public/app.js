@@ -328,6 +328,7 @@ function variantGroupCard(group, items) {
         (c) => `<button class="sale-btn mini" onclick="sell(${v.id}, '${c.key}')" ${v.stock <= 0 ? 'disabled' : ''}
           title="Vendre 1 ${escapeHtml(variantLabel(v))} (${c.text})">${c.icon}</button>`
       ).join('')}</span>
+      <button class="btn ghost-mini" onclick="openEdit(${v.id})" title="Modifier cette variante">✏</button>
     </div>`
     )
     .join('');
@@ -399,8 +400,11 @@ function renderProducts() {
       entries.push({ single: p });
     }
   }
+  // Un « groupe » d'une seule variante s'affiche comme une carte normale
   $('#productList').innerHTML = entries
-    .map((e) => (e.single ? productCard(e.single) : variantGroupCard(e.group, e.items)))
+    .map((e) =>
+      e.single ? productCard(e.single) : e.items.length === 1 ? productCard(e.items[0]) : variantGroupCard(e.group, e.items)
+    )
     .join('');
 }
 
