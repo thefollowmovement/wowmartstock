@@ -1081,7 +1081,8 @@ window.showLiveDetail = async (id) => {
     $('#liveDetail').innerHTML = `
       <h3>${PLATFORM_LABELS[l.platform]} — ${dateFr(l.started_at)}
         ${l.ended_at ? `<button class="btn small" onclick="editLive(${l.id})" title="Changer la plateforme, la date ou les horaires — les heures des ventes suivent le décalage">✏ Modifier ce live</button>
-        <button class="btn small" onclick="reopenLive(${l.id})" title="Le live redevient « en cours » : les prochaines ventes continuent la numérotation (#suivants)">▶ Reprendre ce live</button>` : ''}</h3>
+        <button class="btn small" onclick="reopenLive(${l.id})" title="Le live redevient « en cours » : les prochaines ventes continuent la numérotation (#suivants)">▶ Reprendre ce live</button>
+        <button class="btn small dl-btn" onclick="openDeleteLive(${l.id})" title="Supprimer ce live : ventes effacées, articles remis en stock (confirmation demandée)">🗑</button>` : ''}</h3>
       ${statusBlock}
       <details class="fees-setting live-fees">
         <summary>⚙ Frais de ce live — ${l.fee_config && l.fee_config.custom ? '<strong>personnalisés</strong>' : 'barème de la plateforme'}</summary>
@@ -1726,6 +1727,52 @@ $('#btnSeCancelSale').addEventListener('click', async () => {
     await loadProducts();
     await loadLives();
     await showLiveDetail(liveId);
+  } catch (e) {
+    toast(e.message, true);
+  }
+});
+
+// ---- Supprimer un live (confirmation par texte) ----
+let deleteLiveId = null;
+
+window.openDeleteLive = async (liveId) => {
+  try {
+    const l = await api(`/api/lives/${liveId}`);
+    deleteLiveId = liveId;
+    const items = l.sales.filter((m) => !m.cancelled && !m.is_gift).length;
+    const gifts = l.sales.filter((m) => !m.cancelled && m.is_gift).length;
+    $('#dlSummary').innerHTML = `
+      <strong>${PLATFORM_LABELS[l.platform]} — ${dateFr(l.started_at)}</strong><br>
+      ${items} vente(s)${gifts ? ` + ${gifts} cadeau(x)` : ''}${l.extras ? ` + ${l.extras} ligne(s) hors écran` : ''}
+      · CA ${euro(l.revenue)}`;
+    $('#dlConfirm').value = '';
+    $('#btnConfirmDeleteLive').disabled = true;
+    $('#deleteLiveModal').hidden = false;
+    setTimeout(() => $('#dlConfirm').focus(), 100);
+  } catch (e) {
+    toast(e.message, true);
+  }
+};
+
+$('#dlConfirm').addEventListener('input', () => {
+  $('#btnConfirmDeleteLive').disabled = $('#dlConfirm').value.trim().toUpperCase() !== 'SUPPRIMER';
+});
+$('#btnCloseDeleteLive').addEventListener('click', () => {
+  deleteLiveId = null;
+  $('#deleteLiveModal').hidden = true;
+});
+
+$('#btnConfirmDeleteLive').addEventListener('click', async () => {
+  if (!deleteLiveId || $('#dlConfirm').value.trim().toUpperCase() !== 'SUPPRIMER') return;
+  try {
+    const r = await api(`/api/lives/${deleteLiveId}`, { method: 'DELETE' });
+    deleteLiveId = null;
+    $('#deleteLiveModal').hidden = true;
+    $('#liveDetail').hidden = true;
+    toast(`🗑 Live supprimé — ${r.restored} article(s) remis en stock`);
+    await loadLives();
+    loadProducts();
+    loadStats();
   } catch (e) {
     toast(e.message, true);
   }

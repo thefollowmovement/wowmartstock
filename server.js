@@ -1068,6 +1068,37 @@ app.patch('/api/movements/:id/edit', (req, res) => {
   res.json({ ok: true });
 });
 
+// Supprimer un live terminé (doublon, live de test, saisie ratée…) :
+// ses ventes et cadeaux sont effacés et les articles REVIENNENT en stock
+// (comme si le live n'avait jamais existé). Irréversible.
+app.delete('/api/lives/:id', (req, res) => {
+  const session = db.prepare('SELECT * FROM live_sessions WHERE id = ?').get(Number(req.params.id));
+  if (!session) return res.status(404).json({ error: 'Live introuvable' });
+  if (!session.ended_at) return res.status(400).json({ error: 'Terminez le live avant de le supprimer' });
+
+  const movements = db.prepare('SELECT * FROM movements WHERE session_id = ?').all(session.id);
+  withTransaction(() => {
+    for (const m of movements) {
+      // Retour en stock des ventes/cadeaux réels — les ventes annulées ont
+      // déjà été restockées, les remboursées aussi (mouvement Retour)
+      if (m.delta < 0 && !m.cancelled && m.payment_status !== 'refunded') {
+        db.prepare('UPDATE products SET stock = stock + ?, updated_at = ? WHERE id = ?')
+          .run(-m.delta, now(), m.product_id);
+      }
+    }
+    db.prepare('DELETE FROM movements WHERE session_id = ?').run(session.id);
+    db.prepare('DELETE FROM live_extras WHERE session_id = ?').run(session.id);
+    db.prepare('DELETE FROM live_sessions WHERE id = ?').run(session.id);
+  });
+  // Photos des ventes du live (hors transaction : best effort)
+  for (const m of movements) {
+    if (m.photo && m.photo.startsWith('/uploads/live-photos/')) {
+      fs.unlink(path.join(LIVE_PHOTOS_DIR, path.basename(m.photo)), () => {});
+    }
+  }
+  res.json({ ok: true, restored: movements.filter((m) => m.delta < 0 && !m.cancelled && m.payment_status !== 'refunded').length });
+});
+
 // Live en cours (pour reprendre après un rechargement de page)
 app.get('/api/lives/active', (req, res) => {
   const open = db.prepare('SELECT * FROM live_sessions WHERE ended_at IS NULL').get();
