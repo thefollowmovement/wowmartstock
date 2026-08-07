@@ -2361,6 +2361,235 @@ setInterval(maybeAutoReport, 10 * 60 * 1000).unref();
 setTimeout(maybeAutoReport, 15 * 1000).unref();
 
 // ---------------------------------------------------------------------------
+// Comptabilité : récapitulatif TVA et ventes pour la déclaration française.
+// Ventes payées uniquement (échecs et remboursements exclus), TVA calculée
+// au taux configuré, TVA déductible estimée sur le coût des produits vendus
+// achetés en France TTC (les produits 🇪🇺 intracommunautaires n'ouvrent pas
+// de droit), frais de plateforme réels quand le rapport est importé, sinon
+// estimés au barème.
+// ---------------------------------------------------------------------------
+function accountingData(fromIso, toIso) {
+  const r = (parseFloat(getSetting('vat_rate', '20')) || 0) / 100;
+  const rows = db
+    .prepare(
+      `SELECT m.created_at, m.channel, m.delta, m.sold_price, m.fees, m.net_amount,
+              m.shipping_cost, m.sale_no, m.is_gift, m.session_id,
+              p.name, p.sku, p.price, p.cost, p.vat_intra
+       FROM movements m JOIN products p ON p.id = m.product_id
+       WHERE m.delta < 0 AND m.cancelled = 0
+         AND COALESCE(m.payment_status, 'paid') NOT IN ('failed', 'refunded')
+         AND m.channel NOT IN ('adjust', 'return')
+         AND m.created_at >= ? AND m.created_at < ?
+       ORDER BY m.created_at`
+    )
+    .all(fromIso, toIso);
+  const extras = db
+    .prepare(
+      `SELECT x.ref, x.label, x.kind, x.sold_price, x.net_amount, s.platform, s.started_at
+       FROM live_extras x JOIN live_sessions s ON s.id = x.session_id
+       WHERE x.payment_status != 'failed' AND s.started_at >= ? AND s.started_at < ?`
+    )
+    .all(fromIso, toIso);
+
+  const blank = () => ({
+    sales: 0, gifts: 0, extras: 0,
+    ca_ttc: 0, ca_ht: 0, tva_collectee: 0, tva_deductible: 0,
+    cogs_total: 0, cogs_intra: 0, cogs_fr: 0,
+    fees: 0, shipping: 0,
+  });
+  const totals = blank();
+  const byChannel = new Map();
+  const byMonth = new Map();
+
+  const feeOf = (channel, eff, fees, net) => {
+    if (net != null) return Math.max(0, eff - net);
+    if (fees != null) return fees;
+    const plat = channel === 'live' ? 'tiktok' : channel;
+    if (!['tiktok', 'whatnot'].includes(plat) || eff <= 0) return 0;
+    const f = getFees(plat);
+    return (eff * (f.commission + f.processing)) / 100 + f.fixed;
+  };
+
+  const add = (bucket, fn) => {
+    fn(totals);
+    fn(bucket);
+  };
+  const bucketFor = (map, key) => {
+    if (!map.has(key)) map.set(key, blank());
+    return map.get(key);
+  };
+
+  for (const m of rows) {
+    const qty = -m.delta;
+    const channel = m.channel === 'live' ? 'tiktok' : m.channel;
+    const month = String(m.created_at).slice(0, 7);
+    const eff = m.is_gift ? 0 : qty * (m.sold_price != null ? m.sold_price : m.price);
+    const ht = eff / (1 + r);
+    const cost = qty * (m.cost || 0);
+    const deduct = m.vat_intra ? 0 : cost - cost / (1 + r);
+    const fees = m.is_gift ? 0 : feeOf(m.channel, eff, m.fees, m.net_amount != null ? qty * m.net_amount : null);
+    for (const b of [totals, bucketFor(byChannel, channel), bucketFor(byMonth, month)]) {
+      if (m.is_gift) b.gifts += qty;
+      else b.sales += qty;
+      b.ca_ttc += eff;
+      b.ca_ht += ht;
+      b.tva_collectee += eff - ht;
+      b.tva_deductible += deduct;
+      b.cogs_total += cost;
+      if (m.vat_intra) b.cogs_intra += cost;
+      else b.cogs_fr += cost;
+      b.fees += fees;
+      b.shipping += m.shipping_cost || 0;
+    }
+  }
+  for (const x of extras) {
+    const month = String(x.started_at).slice(0, 7);
+    const eff = x.sold_price || 0;
+    const ht = eff / (1 + r);
+    const fees = x.net_amount != null ? Math.max(0, eff - x.net_amount) : 0;
+    for (const b of [totals, bucketFor(byChannel, x.platform), bucketFor(byMonth, month)]) {
+      b.extras += 1;
+      b.ca_ttc += eff;
+      b.ca_ht += ht;
+      b.tva_collectee += eff - ht;
+      b.fees += fees;
+    }
+  }
+
+  const finish = (b) => ({ ...b, tva_nette: b.tva_collectee - b.tva_deductible });
+  return {
+    vat_rate: r * 100,
+    totals: finish(totals),
+    by_channel: [...byChannel.entries()].map(([channel, b]) => ({ channel, ...finish(b) })),
+    by_month: [...byMonth.entries()].sort().map(([month, b]) => ({ month, ...finish(b) })),
+    rows,
+    extras,
+  };
+}
+
+function accountingPeriod(query) {
+  const yearNow = new Date().getFullYear();
+  const year = Math.min(2100, Math.max(2000, parseInt(query.year, 10) || yearNow));
+  const month = Math.min(12, Math.max(0, parseInt(query.month, 10) || 0)); // 0 = année entière
+  const from = month ? new Date(year, month - 1, 1) : new Date(year, 0, 1);
+  const to = month ? new Date(year, month, 1) : new Date(year + 1, 0, 1);
+  return { year, month, fromIso: from.toISOString(), toIso: to.toISOString() };
+}
+
+app.get('/api/accounting', (req, res) => {
+  const p = accountingPeriod(req.query);
+  const data = accountingData(p.fromIso, p.toIso);
+  // Valeur du stock au coût d'achat, aujourd'hui (inventaire permanent)
+  const stock = db
+    .prepare(
+      `SELECT COALESCE(SUM(stock * cost), 0) AS total,
+              COALESCE(SUM(CASE WHEN vat_intra = 1 THEN stock * cost ELSE 0 END), 0) AS intra,
+              COALESCE(SUM(CASE WHEN vat_intra = 0 THEN stock * cost ELSE 0 END), 0) AS fr,
+              COALESCE(SUM(stock), 0) AS units
+       FROM products`
+    )
+    .get();
+  const years = db
+    .prepare(`SELECT DISTINCT substr(created_at, 1, 4) AS y FROM movements WHERE delta < 0 ORDER BY y DESC`)
+    .all()
+    .map((x) => Number(x.y))
+    .filter((y) => y > 2000);
+  res.json({
+    year: p.year,
+    month: p.month,
+    vat_rate: data.vat_rate,
+    totals: data.totals,
+    by_channel: data.by_channel,
+    by_month: data.by_month,
+    stock,
+    years: years.length ? years : [p.year],
+  });
+});
+
+// Journal des ventes détaillé pour le comptable (CSV Excel)
+app.get('/api/accounting/journal.csv', (req, res) => {
+  const p = accountingPeriod(req.query);
+  const data = accountingData(p.fromIso, p.toIso);
+  const r = data.vat_rate / 100;
+  const esc = (v) => {
+    const s = String(v ?? '');
+    return /[;"\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+  const num = (v) => Number(v).toFixed(2).replace('.', ',');
+  const CH = { online: 'En ligne', store: 'Boutique', tiktok: 'TikTok', whatnot: 'Whatnot', live: 'TikTok' };
+  // Frais : mêmes règles que les totaux (réels si rapport importé, sinon barème)
+  const feeOf = (channel, eff, fees, net) => {
+    if (net != null) return Math.max(0, eff - net);
+    if (fees != null) return fees;
+    const plat = channel === 'live' ? 'tiktok' : channel;
+    if (!['tiktok', 'whatnot'].includes(plat) || eff <= 0) return 0;
+    const f = getFees(plat);
+    return (eff * (f.commission + f.processing)) / 100 + f.fixed;
+  };
+  const lines = data.rows.map((m) => {
+    const qty = -m.delta;
+    const eff = m.is_gift ? 0 : qty * (m.sold_price != null ? m.sold_price : m.price);
+    const ht = eff / (1 + r);
+    const cost = qty * (m.cost || 0);
+    const deduct = m.vat_intra ? 0 : cost - cost / (1 + r);
+    const d = new Date(m.created_at);
+    return [
+      d.toLocaleDateString('fr-FR'), d.toLocaleTimeString('fr-FR'),
+      CH[m.channel] || m.channel,
+      m.session_id || '', m.sale_no ? `#${m.sale_no}` : '',
+      m.is_gift ? 'Cadeau' : 'Vente',
+      m.name, m.sku || '', m.vat_intra ? 'oui' : 'non', qty,
+      num(eff), num(ht), num(eff - ht),
+      num(cost), num(deduct),
+      num(m.is_gift ? 0 : feeOf(m.channel, eff, m.fees, m.net_amount != null ? qty * m.net_amount : null)),
+      num(m.shipping_cost || 0),
+      m.net_amount != null ? num(qty * m.net_amount) : '',
+      m.is_gift ? '' : m.sold_price != null ? 'rapport plateforme' : 'prix catalogue estimé',
+    ].map(esc).join(';');
+  });
+  const extraLines = data.extras.map((x) => {
+    const eff = x.sold_price || 0;
+    const ht = eff / (1 + r);
+    const d = new Date(x.started_at);
+    return [
+      d.toLocaleDateString('fr-FR'), '', CH[x.platform] || x.platform, '', x.ref,
+      x.kind && x.kind.startsWith('give') ? 'Give' : 'Vente boutique plateforme',
+      x.label, '', '', 1,
+      num(eff), num(ht), num(eff - ht), '', '',
+      x.net_amount != null ? num(Math.max(0, eff - x.net_amount)) : '',
+      '', x.net_amount != null ? num(x.net_amount) : '', 'rapport plateforme',
+    ].map(esc).join(';');
+  });
+  const header =
+    'Date;Heure;Canal;Live n°;Vente n°;Type;Produit;SKU;Achat intracom;Quantité;Prix TTC;Prix HT;TVA collectée;Coût d\'achat;TVA déductible est.;Frais plateforme;Frais envoi;Net perçu;Source du prix';
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader(
+    'Content-Disposition',
+    `attachment; filename="journal-ventes-${p.year}${p.month ? '-' + String(p.month).padStart(2, '0') : ''}.csv"`
+  );
+  res.send('﻿' + [header, ...lines, ...extraLines].join('\n'));
+});
+
+// Récapitulatif mensuel (CSV Excel)
+app.get('/api/accounting/summary.csv', (req, res) => {
+  const p = accountingPeriod({ year: req.query.year, month: 0 });
+  const data = accountingData(p.fromIso, p.toIso);
+  const num = (v) => Number(v).toFixed(2).replace('.', ',');
+  const lines = data.by_month.map((m) =>
+    [
+      m.month, m.sales, m.gifts, m.extras,
+      num(m.ca_ttc), num(m.ca_ht), num(m.tva_collectee), num(m.tva_deductible), num(m.tva_nette),
+      num(m.cogs_total), num(m.cogs_intra), num(m.cogs_fr), num(m.fees), num(m.shipping),
+    ].join(';')
+  );
+  const header =
+    'Mois;Ventes;Cadeaux;Hors écran;CA TTC;CA HT;TVA collectée;TVA déductible est.;TVA nette;Coût marchandises vendues;dont achats intracom;dont achats France TTC;Frais plateformes;Frais envoi';
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename="recap-mensuel-${p.year}.csv"`);
+  res.send('﻿' + [header, ...lines].join('\n'));
+});
+
+// ---------------------------------------------------------------------------
 // Sauvegarde automatique : chaque jour, une copie cohérente de la base
 // (VACUUM INTO) + les photos sont écrites dans le dossier choisi par
 // l'utilisateur (iCloud Drive, Dropbox, disque externe…). 14 jours conservés.

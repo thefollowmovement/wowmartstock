@@ -123,6 +123,7 @@ document.querySelectorAll('.tab').forEach((btn) => {
     if (btn.dataset.tab === 'lives') loadLives();
     if (btn.dataset.tab === 'stats') loadStatsPage();
     if (btn.dataset.tab === 'import') loadBackup();
+    if (btn.dataset.tab === 'compta') loadCompta();
   });
 });
 
@@ -2319,6 +2320,76 @@ $('#movChannel').addEventListener('change', () => { movPage = 1; loadMovements()
 $('#movDays').addEventListener('change', () => { movPage = 1; loadMovements(); });
 $('#movPrev').addEventListener('click', () => { movPage--; loadMovements(); });
 $('#movNext').addEventListener('click', () => { movPage++; loadMovements(); });
+
+// ---------------------------------------------------------------------------
+// Onglet Comptabilité : TVA, ventilation par mois et canal, exports comptable
+// ---------------------------------------------------------------------------
+const MONTHS_FR = ['', 'Janvier', 'Février', 'Mars', 'Avril', 'Mai', 'Juin', 'Juillet', 'Août', 'Septembre', 'Octobre', 'Novembre', 'Décembre'];
+
+async function loadCompta() {
+  try {
+    const year = $('#acYear').value || new Date().getFullYear();
+    const month = $('#acMonth').value || 0;
+    const d = await api(`/api/accounting?year=${year}&month=${month}`);
+
+    // Sélecteur d'années (conserve la sélection)
+    $('#acYear').innerHTML = d.years.map((y) => `<option value="${y}" ${y === d.year ? 'selected' : ''}>${y}</option>`).join('');
+
+    $('#acJournalLink').href = `/api/accounting/journal.csv?year=${d.year}&month=${d.month}`;
+    $('#acSummaryLink').href = `/api/accounting/summary.csv?year=${d.year}`;
+
+    const t = d.totals;
+    $('#acTiles').innerHTML = `
+      <div class="stat"><div class="value">${t.sales}</div><div class="label">Ventes payées${t.gifts ? ` (+ ${t.gifts} 🎁)` : ''}${t.extras ? ` (+ ${t.extras} hors écran)` : ''}</div></div>
+      <div class="stat"><div class="value">${euro(t.ca_ttc)}</div><div class="label">CA TTC</div></div>
+      <div class="stat"><div class="value">${euro(t.ca_ht)}</div><div class="label">CA HT</div></div>
+      <div class="stat"><div class="value">${euro(t.tva_collectee)}</div><div class="label">TVA collectée (${d.vat_rate} %)</div></div>
+      <div class="stat"><div class="value">−${euro(t.tva_deductible)}</div><div class="label">TVA déductible est. (achats FR)</div></div>
+      <div class="stat ac-net"><div class="value">${euro(t.tva_nette)}</div><div class="label">💶 TVA nette à reverser (est.)</div></div>
+      <div class="stat"><div class="value">${euro(t.cogs_total)}</div><div class="label">Coût des marchandises vendues</div></div>
+      <div class="stat"><div class="value">${euro(t.cogs_intra)}</div><div class="label">dont achats 🇪🇺 intracom (HT)</div></div>
+      <div class="stat"><div class="value">${euro(t.cogs_fr)}</div><div class="label">dont achats France (TTC)</div></div>
+      <div class="stat"><div class="value">${euro(t.fees)}</div><div class="label">Frais plateformes (charges)</div></div>
+      <div class="stat"><div class="value">${euro(t.shipping)}</div><div class="label">Frais d'envoi saisis</div></div>`;
+
+    $('#acMonthTable tbody').innerHTML = d.by_month.length
+      ? d.by_month
+          .map(
+            (m) => `<tr>
+          <td><strong>${MONTHS_FR[Number(m.month.slice(5, 7))]} ${m.month.slice(0, 4)}</strong></td>
+          <td>${m.sales}${m.gifts ? ` <small>+${m.gifts}🎁</small>` : ''}${m.extras ? ` <small>+${m.extras}</small>` : ''}</td>
+          <td>${euro(m.ca_ttc)}</td><td>${euro(m.ca_ht)}</td>
+          <td>${euro(m.tva_collectee)}</td><td>−${euro(m.tva_deductible)}</td>
+          <td><strong>${euro(m.tva_nette)}</strong></td>
+          <td>${euro(m.cogs_total)}</td><td>${euro(m.cogs_intra)}</td><td>${euro(m.fees)}</td>
+        </tr>`
+          )
+          .join('')
+      : '<tr><td colspan="10">Aucune vente sur la période</td></tr>';
+
+    $('#acChannelTable tbody').innerHTML = d.by_channel.length
+      ? d.by_channel
+          .map(
+            (c) => `<tr>
+          <td>${CHANNEL_LABELS[c.channel] || c.channel}</td>
+          <td>${c.sales}${c.extras ? ` <small>+${c.extras}</small>` : ''}</td>
+          <td>${euro(c.ca_ttc)}</td><td>${euro(c.ca_ht)}</td><td>${euro(c.tva_collectee)}</td><td>${euro(c.fees)}</td>
+        </tr>`
+          )
+          .join('')
+      : '<tr><td colspan="6">Aucune vente sur la période</td></tr>';
+
+    $('#acStock').innerHTML = `
+      <div class="stat"><div class="value">${euro(d.stock.total)}</div><div class="label">Valeur totale (${d.stock.units} unités)</div></div>
+      <div class="stat"><div class="value">${euro(d.stock.intra)}</div><div class="label">dont produits 🇪🇺 intracom (HT)</div></div>
+      <div class="stat"><div class="value">${euro(d.stock.fr)}</div><div class="label">dont produits France (TTC)</div></div>`;
+  } catch (e) {
+    toast(e.message, true);
+  }
+}
+
+$('#acYear').addEventListener('change', loadCompta);
+$('#acMonth').addEventListener('change', loadCompta);
 
 // ---------------------------------------------------------------------------
 // Sauvegarde automatique (dossier au choix, quotidienne, restauration)

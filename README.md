@@ -67,6 +67,10 @@ L'onglet **Lives** garde l'historique de toutes vos sessions : date et heure, pl
 - **À commander chez le fournisseur** : liste quotidienne des produits sous leur seuil, avec quantité conseillée calculée d'après les ventes des 30 derniers jours, exportable en **bon de commande CSV**.
 - **Conseils de l'IA** : Claude analyse vos chiffres réels et rédige un rapport actionnable — produits à mettre en avant (et sur quelle plateforme), produits à gros volume mais faible marge, réassorts prioritaires, idées de bundles. Utilise la même clé API que les ventes par photos.
 
+## 🧾 Onglet Compta
+
+Prépare la déclaration de TVA française, par mois ou par année : **TVA collectée** (ventes payées, tous canaux, gives inclus), **TVA déductible estimée** (achats France TTC des produits vendus — les produits 🇪🇺 intracom sont isolés, sans droit à déduction), **TVA nette à reverser**, coût des marchandises vendues (dont intracom), frais de plateformes, détail par mois et par canal, **valeur du stock au coût** (dont 🇪🇺/France). Deux exports CSV pour le comptable : **journal des ventes** ligne à ligne et **récap mensuel**, plus une note de méthode intégrée.
+
 ## 🕐 Meilleurs créneaux de live
 
 L'onglet Stats compare tous vos lives terminés : **CA et marge moyens par jour de la semaine et par heure de début** (filtrable par plateforme), et le **rythme des ventes par tranche de 15 minutes** pour repérer le moment où un live s'essouffle.

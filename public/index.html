@@ -14,6 +14,7 @@
       <button class="tab active" data-tab="products">Produits</button>
       <button class="tab" data-tab="lives">Lives</button>
       <button class="tab" data-tab="stats">Stats</button>
+      <button class="tab" data-tab="compta">Compta</button>
       <button class="tab" data-tab="import">Importer</button>
       <button class="tab" data-tab="movements">Historique</button>
       <button class="tab" data-tab="help">Aide</button>
@@ -169,6 +170,72 @@
         <span id="aiReportInfo" class="muted small"></span>
       </div>
       <div id="aiReport" class="ai-report" hidden></div>
+    </div>
+  </main>
+
+  <!-- ===================== COMPTABILITÉ ===================== -->
+  <main id="tab-compta" class="tab-panel" hidden>
+    <div class="card">
+      <div class="stats-page-head">
+        <h2>🧾 Comptabilité</h2>
+        <div class="stats-filters">
+          <select id="acYear"></select>
+          <select id="acMonth">
+            <option value="0">Année entière</option>
+            <option value="1">Janvier</option><option value="2">Février</option><option value="3">Mars</option>
+            <option value="4">Avril</option><option value="5">Mai</option><option value="6">Juin</option>
+            <option value="7">Juillet</option><option value="8">Août</option><option value="9">Septembre</option>
+            <option value="10">Octobre</option><option value="11">Novembre</option><option value="12">Décembre</option>
+          </select>
+        </div>
+      </div>
+      <p class="muted">Ventes <strong>payées</strong> uniquement (échecs et remboursements exclus), tous canaux, gives et ventes boutique des rapports inclus.
+        Exportez le <strong>journal des ventes</strong> pour votre comptable : chaque vente y est détaillée ligne par ligne.</p>
+      <div class="backup-row">
+        <a class="btn primary" id="acJournalLink" href="#">⬇ Journal des ventes (CSV)</a>
+        <a class="btn" id="acSummaryLink" href="#">⬇ Récap mensuel de l'année (CSV)</a>
+      </div>
+      <div id="acTiles" class="recap-grid wide"></div>
+    </div>
+
+    <div class="card">
+      <h2>📅 Détail par mois</h2>
+      <div class="table-wrap">
+        <table id="acMonthTable">
+          <thead><tr><th>Mois</th><th>Ventes</th><th>CA TTC</th><th>CA HT</th><th>TVA collectée</th><th>TVA déductible est.</th><th>TVA nette</th><th>Coût marchandises</th><th>dont 🇪🇺 intra</th><th>Frais plateformes</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>📊 Détail par canal</h2>
+      <div class="table-wrap">
+        <table id="acChannelTable">
+          <thead><tr><th>Canal</th><th>Ventes</th><th>CA TTC</th><th>CA HT</th><th>TVA collectée</th><th>Frais plateformes</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>📦 Valeur du stock (aujourd'hui, au coût d'achat)</h2>
+      <div id="acStock" class="recap-grid wide"></div>
+      <p class="muted small">Photo de l'inventaire permanent à l'instant T — utile pour le bilan. Le comptable peut la rapprocher d'un inventaire physique (mode 📋 Inventaire).</p>
+    </div>
+
+    <div class="card">
+      <details>
+        <summary><strong>ℹ️ Méthode de calcul (à transmettre au comptable)</strong></summary>
+        <ul class="tuto-steps ac-method">
+          <li><strong>CA</strong> : ventes payées à la date de vente, prix réel du rapport plateforme quand il est importé, sinon prix catalogue. Paiements en échec et remboursements exclus. Gives et ventes boutique des rapports Whatnot/TikTok incluses.</li>
+          <li><strong>TVA collectée</strong> : CA TTC × taux ÷ (1 + taux), au taux configuré dans l'app (régime TVA sur les débits, ventes B2C).</li>
+          <li><strong>TVA déductible estimée</strong> : TVA contenue dans le coût d'achat des produits <em>vendus</em> sur la période, uniquement pour les achats France TTC (case 🇪🇺 intracom décochée). ⚠ Estimation de gestion : le droit à déduction réel naît des factures d'achat — à rapprocher des factures fournisseurs.</li>
+          <li><strong>Achats intracommunautaires</strong> : le coût des produits 🇪🇺 vendus et la valeur du stock 🇪🇺 sont isolés — l'autoliquidation se déclare sur la base des factures d'acquisition (à rapprocher).</li>
+          <li><strong>Frais de plateforme</strong> : réels quand le rapport est importé (prix − net perçu), sinon estimés au barème configuré. Charges déductibles (factures Whatnot/TikTok à l'appui).</li>
+          <li><strong>Frais d'envoi</strong> : montants saisis par vente dans le détail des lives.</li>
+        </ul>
+      </details>
     </div>
   </main>
 
@@ -428,6 +495,19 @@
           <li><strong>📦 Que commander aujourd'hui ?</strong> Liste quotidienne des produits sous leur seuil, avec une quantité conseillée calculée d'après vos ventes des 30 derniers jours — exportable en <strong>bon de commande CSV</strong> pour votre fournisseur.</li>
           <li><strong>🕐 Quand faire vos lives ?</strong> CA et marge moyens par jour de la semaine et par heure de début, et le rythme des ventes par tranche de 15 min pour voir quand un live s'essouffle.</li>
           <li><strong>🤖 Que mettre en avant ?</strong> Le bouton <span class="tuto-btn">✨ Générer le rapport</span> demande à Claude d'analyser vos chiffres réels : produits à pousser (et sur quelle plateforme), produits à gros volume mais faible marge, réassorts prioritaires, idées de bundles. Cochez <em>« ☕ Générer automatiquement chaque matin »</em> pour l'avoir prêt au réveil.</li>
+        </ul>
+      </div>
+    </details>
+
+    <details class="card tuto-section">
+      <summary><span class="tuto-emoji">🧾</span> Comptabilité</summary>
+      <div class="tuto-body">
+        <p>L'onglet <em>Compta</em> prépare votre déclaration de TVA française, par mois ou par année :</p>
+        <ul>
+          <li><strong>TVA collectée</strong> sur toutes vos ventes payées (tous canaux, gives et ventes boutique des rapports incluses), <strong>TVA déductible estimée</strong> sur les achats France TTC des produits vendus, et <strong>TVA nette à reverser</strong> — les produits 🇪🇺 intracommunautaires (case sur la fiche produit) sont isolés, sans droit à déduction.</li>
+          <li><strong>Détail par mois et par canal</strong>, coût des marchandises vendues (dont intracom), frais de plateformes (charges) et frais d'envoi.</li>
+          <li><strong>Valeur du stock au coût d'achat</strong> (dont 🇪🇺 / France) — pour le bilan.</li>
+          <li>Deux exports pour le comptable : le <span class="tuto-btn">⬇ Journal des ventes</span> (chaque vente ligne à ligne : TTC, HT, TVA, coût, TVA déductible, frais, net perçu…) et le <span class="tuto-btn">⬇ Récap mensuel</span>. La <em>note de méthode</em> en bas de l'onglet explique tous les calculs — transmettez-la avec les exports.</li>
         </ul>
       </div>
     </details>

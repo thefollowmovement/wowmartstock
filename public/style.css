@@ -814,6 +814,16 @@ tr.row-unpaid td { background: #fef2f2; }
 .ai-report ul { margin: 6px 0 6px 22px; display: flex; flex-direction: column; gap: 4px; }
 .ai-report p { margin: 6px 0; }
 
+/* ---------- Comptabilité ---------- */
+.stat.ac-net {
+  border: 2px solid var(--primary);
+  background: var(--primary-soft);
+}
+.stat.ac-net .value { color: var(--primary-dark); }
+.ac-method li { padding-left: 0; }
+.ac-method li::before { display: none; }
+.ac-method { list-style: disc; margin-left: 20px; margin-top: 10px; }
+
 /* ---------- Fusion de lives ---------- */
 #mergeLiveModal label { display: block; font-weight: 600; margin-top: 8px; }
 #mergeLiveModal select {
