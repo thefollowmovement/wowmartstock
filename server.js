@@ -1068,6 +1068,53 @@ app.patch('/api/movements/:id/edit', (req, res) => {
   res.json({ ok: true });
 });
 
+// Fusionner deux lives terminés de la même plateforme (ex : un bug en plein
+// live a fait créer un deuxième live) : les ventes, cadeaux et lignes hors
+// écran de l'autre live rejoignent celui-ci, qui prend la période complète
+// (début le plus tôt → fin la plus tarde). Si des numéros de vente se
+// chevauchent, ceux de l'autre live sont décalés à la suite.
+app.post('/api/lives/:id/merge', (req, res) => {
+  const target = db.prepare('SELECT * FROM live_sessions WHERE id = ?').get(Number(req.params.id));
+  const source = db.prepare('SELECT * FROM live_sessions WHERE id = ?').get(Number(req.body.other_id));
+  if (!target || !source) return res.status(404).json({ error: 'Live introuvable' });
+  if (target.id === source.id) return res.status(400).json({ error: 'Choisissez un autre live' });
+  if (!target.ended_at || !source.ended_at) return res.status(400).json({ error: 'Les deux lives doivent être terminés' });
+  if (target.platform !== source.platform) {
+    return res.status(400).json({ error: 'Les deux lives doivent être sur la même plateforme' });
+  }
+
+  const nosOf = (sid) =>
+    db.prepare('SELECT sale_no FROM movements WHERE session_id = ? AND sale_no IS NOT NULL AND is_gift = 0 AND delta < 0 AND cancelled = 0')
+      .all(sid)
+      .map((r) => r.sale_no);
+  const targetNos = new Set(nosOf(target.id));
+  const conflict = nosOf(source.id).some((n) => targetNos.has(n));
+  let offset = 0;
+  if (conflict) {
+    const maxTarget = db
+      .prepare('SELECT COALESCE(MAX(sale_no), 0) AS m FROM movements WHERE session_id = ?')
+      .get(target.id).m;
+    offset = maxTarget;
+  }
+
+  withTransaction(() => {
+    if (offset > 0) {
+      db.prepare('UPDATE movements SET sale_no = sale_no + ? WHERE session_id = ? AND sale_no IS NOT NULL').run(offset, source.id);
+    }
+    db.prepare('UPDATE movements SET session_id = ? WHERE session_id = ?').run(target.id, source.id);
+    db.prepare('UPDATE live_extras SET session_id = ? WHERE session_id = ?').run(target.id, source.id);
+    const started = new Date(target.started_at) < new Date(source.started_at) ? target.started_at : source.started_at;
+    const ended = new Date(target.ended_at) > new Date(source.ended_at) ? target.ended_at : source.ended_at;
+    db.prepare('UPDATE live_sessions SET started_at = ?, ended_at = ?, start_no = ?, validated_at = NULL WHERE id = ?')
+      .run(started, ended, Math.min(target.start_no || 1, source.start_no || 1), target.id);
+    db.prepare('DELETE FROM live_sessions WHERE id = ?').run(source.id);
+  });
+  res.json({
+    ...sessionSummary(db.prepare('SELECT * FROM live_sessions WHERE id = ?').get(target.id)),
+    renumbered: offset > 0,
+  });
+});
+
 // Supprimer un live terminé (doublon, live de test, saisie ratée…) :
 // ses ventes et cadeaux sont effacés et les articles REVIENNENT en stock
 // (comme si le live n'avait jamais existé). Irréversible.

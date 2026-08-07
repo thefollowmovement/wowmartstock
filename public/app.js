@@ -1086,6 +1086,7 @@ window.showLiveDetail = async (id) => {
       <h3>${PLATFORM_LABELS[l.platform]} — ${dateFr(l.started_at)}
         ${l.ended_at ? `<button class="btn small" onclick="editLive(${l.id})" title="Changer la plateforme, la date ou les horaires — les heures des ventes suivent le décalage">✏ Modifier ce live</button>
         <button class="btn small" onclick="reopenLive(${l.id})" title="Le live redevient « en cours » : les prochaines ventes continuent la numérotation (#suivants)">▶ Reprendre ce live</button>
+        <button class="btn small" onclick="openMergeLive(${l.id})" title="Fusionner un autre live dans celui-ci (ex : deuxième live créé après un bug)">🔗 Fusionner</button>
         <button class="btn small dl-btn" onclick="openDeleteLive(${l.id})" title="Supprimer ce live : ventes effacées, articles remis en stock (confirmation demandée)">🗑</button>` : ''}</h3>
       ${statusBlock}
       <details class="fees-setting live-fees">
@@ -1731,6 +1732,57 @@ $('#btnSeCancelSale').addEventListener('click', async () => {
     await loadProducts();
     await loadLives();
     await showLiveDetail(liveId);
+  } catch (e) {
+    toast(e.message, true);
+  }
+});
+
+// ---- Fusionner deux lives ----
+let mergeTargetId = null;
+
+window.openMergeLive = async (liveId) => {
+  try {
+    const current = await api(`/api/lives/${liveId}`);
+    const lives = await api('/api/lives');
+    const candidates = lives.filter((l) => l.id !== liveId && l.ended_at && l.platform === current.platform);
+    if (!candidates.length) {
+      return toast(`Aucun autre live ${current.platform === 'tiktok' ? 'TikTok' : 'Whatnot'} terminé à fusionner`, true);
+    }
+    mergeTargetId = liveId;
+    $('#mergeSelect').innerHTML = candidates
+      .map(
+        (l) => `<option value="${l.id}">${dateFr(l.started_at)} — ${l.items} vente(s) · ${euro(l.revenue)}</option>`
+      )
+      .join('');
+    $('#mergeLiveModal').hidden = false;
+  } catch (e) {
+    toast(e.message, true);
+  }
+};
+
+$('#btnCloseMerge').addEventListener('click', () => {
+  mergeTargetId = null;
+  $('#mergeLiveModal').hidden = true;
+});
+
+$('#btnConfirmMerge').addEventListener('click', async () => {
+  const otherId = Number($('#mergeSelect').value);
+  if (!mergeTargetId || !otherId) return;
+  const label = $('#mergeSelect').selectedOptions[0].textContent.trim();
+  if (!confirm(`Fusionner « ${label} » dans le live affiché ? Les deux deviendront un seul live.`)) return;
+  try {
+    const r = await api(`/api/lives/${mergeTargetId}/merge`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ other_id: otherId }),
+    });
+    const id = mergeTargetId;
+    mergeTargetId = null;
+    $('#mergeLiveModal').hidden = true;
+    toast(`🔗 Lives fusionnés — ${r.items} vente(s) au total${r.renumbered ? ' (numéros du live absorbé décalés)' : ''}`);
+    await loadLives();
+    await showLiveDetail(id);
+    loadStats();
   } catch (e) {
     toast(e.message, true);
   }

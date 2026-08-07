@@ -398,7 +398,7 @@
           <li><strong>Validez</strong> le live : la ligne passe au vert et l'alerte du tableau de bord disparaît.</li>
         </ol>
         <p>Le détail affiche aussi <strong>CA TTC, CA HT et TVA collectée</strong> (taux réglable dans l'onglet Lives), et la <strong>marge nette</strong> : gains nets − coût d'achat (cadeaux inclus). La colonne <strong>📮 Envoi</strong> permet de saisir vos frais d'expédition/emballage par vente — ils sont déduits de la marge. Et le petit bouton <span class="tuto-btn">↩</span> à côté d'une vente enregistre un <strong>retour/remboursement</strong>.</p>
-        <p><strong>Tout se corrige</strong> : <span class="tuto-btn">✏</span> sur chaque vente pour changer son <strong>numéro</strong> (les cadeaux suivent) ou son <strong>produit</strong> (le stock s'ajuste), <span class="tuto-btn">➕ Ajouter une vente</span> pour une vente oubliée, <span class="tuto-btn">▶ Reprendre ce live</span> si le live a été terminé par erreur (les numéros continuent), et <em>« ⚙ Frais de ce live »</em> pour un barème de commission propre à ce live (promotion de la plateforme…). Le bouton <span class="tuto-btn">🗑</span> supprime définitivement un live (doublon, test…) après confirmation en tapant SUPPRIMER — ses articles reviennent en stock.</p>
+        <p><strong>Tout se corrige</strong> : <span class="tuto-btn">✏</span> sur chaque vente pour changer son <strong>numéro</strong> (les cadeaux suivent) ou son <strong>produit</strong> (le stock s'ajuste), <span class="tuto-btn">➕ Ajouter une vente</span> pour une vente oubliée, <span class="tuto-btn">▶ Reprendre ce live</span> si le live a été terminé par erreur (les numéros continuent), et <em>« ⚙ Frais de ce live »</em> pour un barème de commission propre à ce live (promotion de la plateforme…). Le bouton <span class="tuto-btn">🔗 Fusionner</span> absorbe un autre live de la même plateforme dans celui affiché (utile quand un bug a coupé un live en deux) : ventes réunies, période complète, numéros décalés seulement s'ils se chevauchent. Et <span class="tuto-btn">🗑</span> supprime définitivement un live (doublon, test…) après confirmation en tapant SUPPRIMER — ses articles reviennent en stock.</p>
         <p class="tuto-note">💶 Avant l'import du rapport, la marge est <strong>estimée</strong> avec les frais des plateformes (réglables via <em>⚙ Frais des plateformes</em> : Whatnot 6,67 % + 2,42 % + 0,25 € par défaut). Après l'import, ce sont les <strong>chiffres réels</strong> qui comptent.</p>
       </div>
     </details>
@@ -570,6 +570,24 @@
       <div class="actions">
         <span class="spacer"></span>
         <button class="btn primary" id="btnCloseRecap">Fermer</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================== FUSIONNER DEUX LIVES ===================== -->
+  <div id="mergeLiveModal" class="modal-overlay" hidden>
+    <div class="modal narrow">
+      <h2>🔗 Fusionner un live dans celui-ci</h2>
+      <p class="muted">Toutes les ventes, cadeaux et lignes hors écran du live choisi rejoindront le live affiché,
+        qui couvrira toute la période (du début le plus tôt à la fin la plus tarde). Si des numéros de vente
+        se chevauchent, ceux du live absorbé seront décalés à la suite.</p>
+      <label>Live à absorber
+        <select id="mergeSelect"></select>
+      </label>
+      <div class="actions">
+        <span class="spacer"></span>
+        <button type="button" class="btn" id="btnCloseMerge">Annuler</button>
+        <button type="button" class="btn primary" id="btnConfirmMerge">🔗 Fusionner</button>
       </div>
     </div>
   </div>
