@@ -487,7 +487,7 @@ function salesFromServer(sales) {
     name: m.product_name,
     sku: m.product_sku,
     price: m.is_gift ? 0 : m.sold_price != null ? m.sold_price : m.product_price,
-    cost: m.product_cost,
+    cost: m.cost_used != null ? m.cost_used : m.product_cost,
     is_gift: !!m.is_gift,
     time: m.created_at,
     cancelled: !!m.cancelled,
@@ -941,7 +941,9 @@ const saleNet = (m) => {
   const eff = m.sold_price != null ? m.sold_price : m.product_price;
   return eff - (m.fees != null ? m.fees : estPlatformFees(eff));
 };
-const saleMargin = (m) => saleNet(m) - m.product_cost;
+// Coût réel consommé (lots FIFO) si connu, sinon coût de la fiche
+const saleCost = (m) => (m.cost_used != null ? m.cost_used : m.product_cost);
+const saleMargin = (m) => saleNet(m) - saleCost(m);
 const saleNetIsEstimated = (m) => m.net_amount == null && m.fees == null;
 
 const PAYMENT_LABELS = {
@@ -2080,6 +2082,23 @@ window.openEdit = (id) => {
   }
   $('#btnDelete').hidden = false;
   openModal();
+  // Lots en stock (coûts d'achat réels, FIFO)
+  $('#lotsInfo').hidden = true;
+  api(`/api/products/${id}/lots`)
+    .then((lots) => {
+      if (!lots.length) return;
+      $('#lotsInfo').innerHTML =
+        '<strong>📦 Lots en stock (vendus du plus ancien au plus récent) :</strong><br>' +
+        lots
+          .map(
+            (l) =>
+              `${l.qty_left} × ${euro(l.unit_cost)} ${l.vat_intra ? '🇪🇺 intra' : 'FR TTC'}
+               <span class="muted small">(${new Date(l.acquired_at).toLocaleDateString('fr-FR')}${l.note ? ' · ' + escapeHtml(l.note) : ''})</span>`
+          )
+          .join('<br>');
+      $('#lotsInfo').hidden = false;
+    })
+    .catch(() => {});
 };
 
 // Photo : clic + glisser-déposer

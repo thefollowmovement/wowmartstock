@@ -67,6 +67,10 @@ L'onglet **Lives** garde l'historique de toutes vos sessions : date et heure, pl
 - **À commander chez le fournisseur** : liste quotidienne des produits sous leur seuil, avec quantité conseillée calculée d'après les ventes des 30 derniers jours, exportable en **bon de commande CSV**.
 - **Conseils de l'IA** : Claude analyse vos chiffres réels et rédige un rapport actionnable — produits à mettre en avant (et sur quelle plateforme), produits à gros volume mais faible marge, réassorts prioritaires, idées de bundles. Utilise la même clé API que les ventes par photos.
 
+## 📦 Lots d'achat (FIFO)
+
+Le prix d'achat d'un même produit peut varier d'un réassort à l'autre (et son régime de TVA aussi : Chine, 🇪🇺 intracom, France TTC). Chaque entrée en stock crée un **lot** qui garde son coût unitaire et son régime de TVA ; les ventes consomment les lots **du plus ancien au plus récent (FIFO)**. Marge, TVA déductible et compta utilisent le **coût réellement consommé** par chaque vente. Le coût et la case 🇪🇺 de la fiche produit s'appliquent aux **prochaines** entrées en stock ; la fiche affiche les lots restants. Annulations, retours et suppressions de live restaurent **les lots d'origine**.
+
 ## 🧾 Onglet Compta
 
 Prépare la déclaration de TVA française, par mois ou par année : **TVA collectée** (ventes payées, tous canaux, gives inclus), **TVA déductible estimée** (achats France TTC des produits vendus — les produits 🇪🇺 intracom sont isolés, sans droit à déduction), **TVA nette à reverser**, coût des marchandises vendues (dont intracom), frais de plateformes, détail par mois et par canal, **valeur du stock au coût** (dont 🇪🇺/France). Deux exports CSV pour le comptable : **journal des ventes** ligne à ligne et **récap mensuel**, plus une note de méthode intégrée.

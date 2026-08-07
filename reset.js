@@ -36,7 +36,7 @@ rl.question('\nTapez OUI (en majuscules) pour confirmer : ', (answer) => {
   }
 
   const db = new DatabaseSync(DB_PATH);
-  const tables = ['movements', 'live_extras', 'live_sessions', 'products'];
+  const tables = ['movement_lots', 'stock_lots', 'movements', 'live_extras', 'live_sessions', 'products'];
   for (const t of tables) db.exec(`DELETE FROM ${t}`);
   db.exec(`DELETE FROM sqlite_sequence WHERE name IN (${tables.map((t) => `'${t}'`).join(',')})`);
   if (wipeAll) {
