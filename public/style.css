@@ -1064,6 +1064,8 @@ tr.row-unpaid td { background: #fef2f2; }
 }
 .tag-brand { background: var(--ink); color: #fff; }
 .tag-cat { background: var(--primary-soft); color: var(--primary-dark); border: 1px solid #c7d2fe; }
+.tag-eu { background: #eff6ff; color: #1d4ed8; border: 1px solid #bfdbfe; }
+.vat-check { margin-top: 4px; font-weight: 600; }
 .card-footer { display: flex; align-items: flex-end; gap: 10px; }
 .card-footer .btn { flex: none; }
 .price-block {

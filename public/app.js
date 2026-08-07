@@ -28,6 +28,7 @@ const MAPPING_FIELDS = [
   { key: 'barcode', label: 'Code-barres (EAN)' },
   { key: 'variant_group', label: 'Groupe de variantes' },
   { key: 'brand', label: 'Marque' },
+  { key: 'vat_intra', label: 'TVA intracom (oui/non)' },
   { key: 'name', label: 'Nom du produit' },
   { key: 'category', label: 'Catégorie' },
   { key: 'price', label: 'Prix de vente' },
@@ -246,7 +247,8 @@ const priceHt = (ttc) => ttc / (1 + vatRate / 100);
 function productTags(p) {
   return `
     ${p.brand ? `<span class="tag tag-brand" title="Marque">${escapeHtml(p.brand)}</span>` : ''}
-    ${p.category ? `<span class="tag tag-cat" title="Catégorie">${escapeHtml(p.category)}</span>` : ''}`;
+    ${p.category ? `<span class="tag tag-cat" title="Catégorie">${escapeHtml(p.category)}</span>` : ''}
+    ${p.vat_intra ? '<span class="tag tag-eu" title="Achat intracommunautaire (HT) — pas de TVA récupérable sur le coût">🇪🇺 HT</span>' : ''}`;
 }
 
 function priceBlock(p) {
@@ -1108,6 +1110,8 @@ window.showLiveDetail = async (id) => {
         <div class="stat"><div class="value">${euro(l.revenue)}</div><div class="label">CA TTC${l.reported > 0 ? ' (réel)' : ' (catalogue)'}</div></div>
         <div class="stat"><div class="value">${euro(ht)}</div><div class="label">CA HT</div></div>
         <div class="stat"><div class="value">${euro(l.revenue - ht)}</div><div class="label">TVA collectée (${vatRate} %)</div></div>
+        <div class="stat"><div class="value">−${euro(l.vat_deductible || 0)}</div><div class="label" title="TVA payée à l'achat des produits partis (achats France TTC) — les achats intracommunautaires 🇪🇺 n'ouvrent pas de droit à déduction">TVA récupérable (achats FR)</div></div>
+        <div class="stat"><div class="value">${euro(l.revenue - ht - (l.vat_deductible || 0))}</div><div class="label" title="TVA collectée − TVA récupérable : estimation de ce que ce live ajoute à votre déclaration">TVA nette estimée</div></div>
         <div class="stat"><div class="value">${euro(l.margin)}</div><div class="label">Marge nette estimée${l.shipping > 0 ? ` (envoi −${euro(l.shipping)})` : ''}</div></div>
         <div class="stat ${l.unpaid > 0 ? 'alert' : ''}"><div class="value">${l.unpaid}</div><div class="label">⚠ Non réglée(s)</div></div>
         <div class="stat"><div class="value">${l.reported}/${l.items}</div><div class="label">Ventes associées au rapport</div></div>
@@ -2062,6 +2066,7 @@ window.openEdit = (id) => {
   form.barcode.value = p.barcode || '';
   form.variant_group.value = p.variant_group || '';
   form.brand.value = p.brand || '';
+  form.vat_intra.checked = !!p.vat_intra;
   form.category.value = p.category;
   form.price.value = p.price;
   form.cost.value = p.cost;

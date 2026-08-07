@@ -196,6 +196,10 @@ CREATE TABLE IF NOT EXISTS settings (
   if (!cols.includes('variant_group')) db.exec(`ALTER TABLE products ADD COLUMN variant_group TEXT NOT NULL DEFAULT ''`);
   // Marque, distincte de la catégorie (ex : marque YESIDO, catégorie Chargeurs)
   if (!cols.includes('brand')) db.exec(`ALTER TABLE products ADD COLUMN brand TEXT NOT NULL DEFAULT ''`);
+  // Achat intracommunautaire : produit acheté HT (autoliquidation), donc
+  // aucune TVA récupérable sur son coût — contrairement à un achat en France
+  // TTC dont la TVA payée est déductible
+  if (!cols.includes('vat_intra')) db.exec(`ALTER TABLE products ADD COLUMN vat_intra INTEGER NOT NULL DEFAULT 0`);
   if (cols.includes('stock_online')) {
     withTransaction(() => {
       if (!cols.includes('stock')) {
@@ -458,6 +462,7 @@ function readProductBody(body) {
     barcode: (body.barcode || '').trim(),
     variant_group: (body.variant_group || '').trim(),
     brand: (body.brand || '').trim(),
+    vat_intra: ['1', 'true', 'on', 'oui'].includes(String(body.vat_intra || '').toLowerCase()) ? 1 : 0,
     name: (body.name || '').trim(),
     category: (body.category || '').trim(),
     price: Number(body.price) || 0,
@@ -478,10 +483,10 @@ app.post('/api/products', uploadPhoto.single('photo'), (req, res) => {
   const ts = now();
   const info = db
     .prepare(
-      `INSERT INTO products (sku, barcode, variant_group, brand, name, category, price, cost, photo, stock, min_stock, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO products (sku, barcode, variant_group, brand, vat_intra, name, category, price, cost, photo, stock, min_stock, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
-    .run(p.sku, p.barcode, p.variant_group, p.brand, p.name, p.category, p.price, p.cost, photo, p.stock, p.min_stock, ts, ts);
+    .run(p.sku, p.barcode, p.variant_group, p.brand, p.vat_intra, p.name, p.category, p.price, p.cost, photo, p.stock, p.min_stock, ts, ts);
   const id = info.lastInsertRowid;
   if (p.stock > 0) logMovement(id, 'adjust', p.stock, p.stock, 'Création du produit');
   res.status(201).json(db.prepare('SELECT * FROM products WHERE id = ?').get(id));
@@ -512,9 +517,9 @@ app.put('/api/products/:id', uploadPhoto.single('photo'), (req, res) => {
   }
 
   db.prepare(
-    `UPDATE products SET sku=?, barcode=?, variant_group=?, brand=?, name=?, category=?, price=?, cost=?, photo=?, stock=?, min_stock=?, updated_at=?
+    `UPDATE products SET sku=?, barcode=?, variant_group=?, brand=?, vat_intra=?, name=?, category=?, price=?, cost=?, photo=?, stock=?, min_stock=?, updated_at=?
      WHERE id=?`
-  ).run(p.sku, p.barcode, p.variant_group, p.brand, p.name, p.category, p.price, p.cost, photo, p.stock, p.min_stock, now(), id);
+  ).run(p.sku, p.barcode, p.variant_group, p.brand, p.vat_intra, p.name, p.category, p.price, p.cost, photo, p.stock, p.min_stock, now(), id);
   res.json(db.prepare('SELECT * FROM products WHERE id = ?').get(id));
 });
 
@@ -1163,11 +1168,25 @@ app.get('/api/lives', (req, res) => {
 app.get('/api/lives/:id', (req, res) => {
   const session = db.prepare('SELECT * FROM live_sessions WHERE id = ?').get(Number(req.params.id));
   if (!session) return res.status(404).json({ error: 'Live introuvable' });
+  // TVA déductible : TVA payée à l'achat des produits partis (ventes +
+  // cadeaux), pour les achats en France TTC uniquement — un produit acheté
+  // en intracommunautaire (HT) n'ouvre aucun droit à déduction.
+  const vatRate = parseFloat(getSetting('vat_rate', '20')) || 0;
+  const deductible = db
+    .prepare(
+      `SELECT COALESCE(SUM(CASE WHEN p.vat_intra = 1 THEN 0
+                ELSE -m.delta * (p.cost - p.cost / (1 + ? / 100.0)) END), 0) AS v
+       FROM movements m JOIN products p ON p.id = m.product_id
+       WHERE m.session_id = ? AND m.delta < 0 AND m.cancelled = 0
+         AND COALESCE(m.payment_status, 'paid') != 'refunded'`
+    )
+    .get(vatRate, session.id).v;
   res.json({
     ...sessionSummary(session),
     sales: sessionSales.all(session.id),
     extra_lines: sessionExtras.all(session.id),
     fee_config: feesForSession(session),
+    vat_deductible: deductible,
   });
 });
 
@@ -1710,6 +1729,7 @@ const FIELD_PATTERNS = {
   sku: [/^(sku|ref|r[ée]f[ée]rence|code)/i],
   variant_group: [/^(groupe|variante|parent|mod[èe]le|model)/i],
   brand: [/^(marque|brand|fabricant)/i],
+  vat_intra: [/intra/i],
   name: [/^(nom|name|produit(?!\s*€)|product|titre|title|d[ée]signation|article|libell[ée])/i],
   category: [/^(cat[ée]gorie|category|famille|collection)/i, /^type/i],
   price: [
@@ -1789,9 +1809,13 @@ app.post('/api/import/commit', (req, res) => {
   const findByBarcode = db.prepare(`SELECT * FROM products WHERE barcode = ? AND barcode != ''`);
   const findByName = db.prepare('SELECT * FROM products WHERE name = ? COLLATE NOCASE');
   const insert = db.prepare(
-    `INSERT INTO products (sku, barcode, variant_group, brand, name, category, price, cost, photo, stock, min_stock, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?)`
+    `INSERT INTO products (sku, barcode, variant_group, brand, vat_intra, name, category, price, cost, photo, stock, min_stock, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?)`
   );
+  const boolIntra = (v) => {
+    const s = String(v).trim().toLowerCase();
+    return s && !['non', 'no', '0', 'false', 'faux'].includes(s) ? 1 : 0;
+  };
 
   let created = 0;
   let updated = 0;
@@ -1827,6 +1851,11 @@ app.post('/api/import/commit', (req, res) => {
         if (sku && sku !== existing.sku) { sets.push('sku = ?'); vals.push(sku); }
         if (barcode && barcode !== existing.barcode) { sets.push('barcode = ?'); vals.push(barcode); }
         if (mapping.variant_group) { sets.push('variant_group = ?'); vals.push(String(get('variant_group')).trim()); }
+        if (mapping.vat_intra) {
+          const v = String(get('vat_intra')).trim().toLowerCase();
+          sets.push('vat_intra = ?');
+          vals.push(v && !['non', 'no', '0', 'false', 'faux'].includes(v) ? 1 : 0);
+        }
         if (mapping.brand) {
           const brandVal = String(get('brand')).trim();
           sets.push('brand = ?');
@@ -1858,7 +1887,7 @@ app.post('/api/import/commit', (req, res) => {
         updated++;
       } else {
         const info = insert.run(
-          sku, barcode, String(get('variant_group')).trim(), String(get('brand')).trim(), name || sku, String(get('category')).trim(),
+          sku, barcode, String(get('variant_group')).trim(), String(get('brand')).trim(), boolIntra(get('vat_intra')), name || sku, String(get('category')).trim(),
           toNum(get('price')), toNum(get('cost')),
           stockVal, toInt(get('min_stock')), ts, ts
         );
@@ -2579,13 +2608,13 @@ setTimeout(maybeAutoBackup, 20 * 1000).unref();
 // ---------------------------------------------------------------------------
 app.get('/api/export.csv', (req, res) => {
   const rows = db.prepare('SELECT * FROM products ORDER BY name COLLATE NOCASE').all();
-  const header = 'SKU;Code barre;Nom;Marque;Groupe;Catégorie;Prix;Coût;Stock;Seuil alerte';
+  const header = 'SKU;Code barre;Nom;Marque;Groupe;Catégorie;Prix;Coût;TVA intracom;Stock;Seuil alerte';
   const esc = (v) => {
     const s = String(v ?? '');
     return /[;"\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
   };
   const lines = rows.map((p) =>
-    [p.sku, p.barcode, p.name, p.brand, p.variant_group, p.category, p.price, p.cost, p.stock, p.min_stock].map(esc).join(';')
+    [p.sku, p.barcode, p.name, p.brand, p.variant_group, p.category, p.price, p.cost, p.vat_intra ? 'oui' : 'non', p.stock, p.min_stock].map(esc).join(';')
   );
   res.setHeader('Content-Type', 'text/csv; charset=utf-8');
   res.setHeader('Content-Disposition', 'attachment; filename="stock-wowmart.csv"');

@@ -55,7 +55,9 @@ Nécessite une **clé API Anthropic** (console.anthropic.com), enregistrée dans
 
 ### 💶 TVA
 
-Le taux de TVA est configurable (20 % par défaut, onglet Lives). Chaque live affiche : **CA TTC**, **CA HT** et **TVA collectée**.
+Le taux de TVA est configurable (20 % par défaut, onglet Lives). Chaque live affiche : **CA TTC**, **CA HT**, **TVA collectée**, **TVA récupérable** et **TVA nette estimée**.
+
+Chaque produit porte une case **« 🇪🇺 Achat intracommunautaire »** : coché = acheté HT en Europe (autoliquidation, aucune TVA déductible) ; décoché = acheté en France TTC (saisissez le coût TTC — la TVA payée à l'achat est déduite dans le bilan TVA du live). Exemple : produit vendu 20 € TTC → 3,33 € de TVA collectée ; s'il a été acheté 12 € TTC en France, 2 € sont récupérables → TVA nette 1,33 € ; acheté 10 € HT en Pologne → TVA nette 3,33 €. Importable via une colonne `Intracom` (oui/non), présent dans l'export CSV.
 
 L'onglet **Lives** garde l'historique de toutes vos sessions : date et heure, plateforme, durée, articles vendus (+ cadeaux + hors écran), CA TTC, marge et statut de vérification.
 
