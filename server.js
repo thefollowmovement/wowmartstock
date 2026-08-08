@@ -1538,6 +1538,16 @@ app.post('/api/lives/:id/report/commit', (req, res) => {
   if (!mapping.sale_no || !mapping.sold_price) {
     return res.status(400).json({ error: 'Associez les colonnes Numéro / référence de vente et Prix de vente' });
   }
+  // Pourcentage de frais saisi à la main (le taux varie selon les lives) :
+  // déduit du prix de vente TTC de chaque ligne quand le rapport ne fournit
+  // ni gains nets ni frais. Enregistré aussi comme barème du live.
+  let manualPct = null;
+  if (req.body.manual_fee_pct !== undefined && req.body.manual_fee_pct !== null && req.body.manual_fee_pct !== '') {
+    manualPct = parseFloat(String(req.body.manual_fee_pct).replace(',', '.'));
+    if (!Number.isFinite(manualPct) || manualPct < 0 || manualPct > 100) {
+      return res.status(400).json({ error: 'Pourcentage de frais invalide (entre 0 et 100)' });
+    }
+  }
 
   // Seules les ventes « Vue à l'écran » (pas les cadeaux) sont associées aux
   // ventes enregistrées dans l'app
@@ -1563,7 +1573,12 @@ app.post('/api/lives/:id/report/commit', (req, res) => {
       const { type, num } = classifyRef(rawRef);
       const price = toNum(row[mapping.sold_price]);
       const net = mapping.net_amount ? toNum(row[mapping.net_amount]) : null;
-      const fees = mapping.fees ? toNum(row[mapping.fees]) : null;
+      let fees = mapping.fees ? toNum(row[mapping.fees]) : null;
+      // Frais manuels : prioritaires quand la ligne n'a pas de gains nets —
+      // net = prix TTC − pourcentage saisi
+      if (manualPct != null && net == null) {
+        fees = (price * manualPct) / 100;
+      }
       // le statut peut être dans sa propre colonne, sinon on le détecte dans
       // le texte de la colonne gains (ex : « en attente de paiement »)
       const statusSource = mapping.payment_status
@@ -1587,11 +1602,17 @@ app.post('/api/lives/:id/report/commit', (req, res) => {
         matched++;
       } else {
         const label = mapping.name ? String(row[mapping.name]).trim() : '';
-        insExtra.run(session.id, type, String(rawRef).trim(), label, price, net, status, now());
+        const extraNet = net != null ? net : manualPct != null ? price - (price * manualPct) / 100 : null;
+        insExtra.run(session.id, type, String(rawRef).trim(), label, price, extraNet, status, now());
         extras++;
       }
     }
     db.prepare('UPDATE live_sessions SET report_imported_at = ?, validated_at = NULL WHERE id = ?').run(now(), session.id);
+    // Le pourcentage manuel devient le barème de CE live (affichages cohérents)
+    if (manualPct != null) {
+      db.prepare('UPDATE live_sessions SET fee_commission = ?, fee_processing = 0, fee_fixed = 0 WHERE id = ?')
+        .run(manualPct, session.id);
+    }
   });
   pendingImports.delete(importId);
   const fresh = db.prepare('SELECT * FROM live_sessions WHERE id = ?').get(session.id);

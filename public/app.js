@@ -1266,6 +1266,14 @@ window.previewReport = async (liveId, file) => {
     document.getElementById('reportConfig').innerHTML = `
       <p><strong>📄 ${escapeHtml(file.name)}</strong> — ${data.rowCount} ligne(s)</p>
       <div class="mapping-grid">${selects}</div>
+      <div class="manual-fee-row">
+        <label>💸 Frais / commission manuels
+          <span class="fee-input-wrap"><input type="number" id="reportFeePct" min="0" max="100" step="any" placeholder="ex : 9,5"> %</span>
+        </label>
+        <p class="muted small">Si le rapport ne contient pas les gains nets : ce pourcentage (variable selon les lives) sera
+          <strong>déduit du prix de vente TTC de chaque ligne</strong> pour calculer vos gains nets, et deviendra le barème de ce live.
+          Laissez vide pour ne pas l'appliquer. Les lignes avec gains nets importés ne sont pas touchées.</p>
+      </div>
       <div class="table-wrap"><table><thead><tr>${previewHead}</tr></thead><tbody>${previewBody}</tbody></table></div>
       <div class="actions">
         <button class="btn primary" onclick="commitReport()">Associer les ventes</button>
@@ -1287,7 +1295,11 @@ window.commitReport = async () => {
     const result = await api(`/api/lives/${currentReport.liveId}/report/commit`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ importId: currentReport.importId, mapping }),
+      body: JSON.stringify({
+        importId: currentReport.importId,
+        mapping,
+        manual_fee_pct: (document.getElementById('reportFeePct') || {}).value || null,
+      }),
     });
     const liveId = currentReport.liveId;
     currentReport = null;
