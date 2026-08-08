@@ -28,6 +28,7 @@ const MAPPING_FIELDS = [
   { key: 'barcode', label: 'Code-barres (EAN)' },
   { key: 'variant_group', label: 'Groupe de variantes' },
   { key: 'brand', label: 'Marque' },
+  { key: 'vat_intra', label: 'TVA intracom (oui/non)' },
   { key: 'name', label: 'Nom du produit' },
   { key: 'category', label: 'Catégorie' },
   { key: 'price', label: 'Prix de vente' },
@@ -44,6 +45,7 @@ let vatRate = 20; // taux de TVA (%), modifiable dans l'onglet Lives
 let liveSession = null; // session en cours { id, platform, started_at, ... }
 let liveSalesLog = []; // [{ movement_id, product_id, name, sku, price, time, cancelled }]
 let liveTimerInterval = null;
+let liveSyncInterval = null; // synchronisation multi-appareils du live
 
 // ---------------------------------------------------------------------------
 // Utilitaires
@@ -121,6 +123,7 @@ document.querySelectorAll('.tab').forEach((btn) => {
     if (btn.dataset.tab === 'lives') loadLives();
     if (btn.dataset.tab === 'stats') loadStatsPage();
     if (btn.dataset.tab === 'import') loadBackup();
+    if (btn.dataset.tab === 'compta') loadCompta();
   });
 });
 
@@ -245,7 +248,8 @@ const priceHt = (ttc) => ttc / (1 + vatRate / 100);
 function productTags(p) {
   return `
     ${p.brand ? `<span class="tag tag-brand" title="Marque">${escapeHtml(p.brand)}</span>` : ''}
-    ${p.category ? `<span class="tag tag-cat" title="Catégorie">${escapeHtml(p.category)}</span>` : ''}`;
+    ${p.category ? `<span class="tag tag-cat" title="Catégorie">${escapeHtml(p.category)}</span>` : ''}
+    ${p.vat_intra ? '<span class="tag tag-eu" title="Achat intracommunautaire (HT) — pas de TVA récupérable sur le coût">🇪🇺 HT</span>' : ''}`;
 }
 
 function priceBlock(p) {
@@ -327,6 +331,7 @@ function variantGroupCard(group, items) {
         (c) => `<button class="sale-btn mini" onclick="sell(${v.id}, '${c.key}')" ${v.stock <= 0 ? 'disabled' : ''}
           title="Vendre 1 ${escapeHtml(variantLabel(v))} (${c.text})">${c.icon}</button>`
       ).join('')}</span>
+      <button class="btn ghost-mini" onclick="openEdit(${v.id})" title="Modifier cette variante">✏</button>
     </div>`
     )
     .join('');
@@ -398,8 +403,11 @@ function renderProducts() {
       entries.push({ single: p });
     }
   }
+  // Un « groupe » d'une seule variante s'affiche comme une carte normale
   $('#productList').innerHTML = entries
-    .map((e) => (e.single ? productCard(e.single) : variantGroupCard(e.group, e.items)))
+    .map((e) =>
+      e.single ? productCard(e.single) : e.items.length === 1 ? productCard(e.items[0]) : variantGroupCard(e.group, e.items)
+    )
     .join('');
 }
 
@@ -434,7 +442,13 @@ $('#sortBy').addEventListener('change', renderProducts);
 // MODE LIVE
 // ---------------------------------------------------------------------------
 $('#btnStartLive').addEventListener('click', () => {
+  $('#liveStartNo').value = 1;
+  $('#startNoPreview').textContent = '#1';
+  document.querySelector('.start-no-setup').open = false;
   $('#platformModal').hidden = false;
+});
+$('#liveStartNo').addEventListener('input', () => {
+  $('#startNoPreview').textContent = `#${Math.max(1, parseInt($('#liveStartNo').value, 10) || 1)}`;
 });
 $('#btnClosePlatform').addEventListener('click', () => {
   $('#platformModal').hidden = true;
@@ -449,9 +463,13 @@ document.querySelectorAll('.platform-btn').forEach((btn) => {
       const session = await api('/api/lives', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ platform: btn.dataset.platform }),
+        body: JSON.stringify({
+          platform: btn.dataset.platform,
+          start_no: Math.max(1, parseInt($('#liveStartNo').value, 10) || 1),
+        }),
       });
       $('#platformModal').hidden = true;
+      localStorage.setItem('wm_live_owner', String(session.id));
       openLiveMode(session, []);
     } catch (e) {
       toast(e.message, true);
@@ -459,21 +477,50 @@ document.querySelectorAll('.platform-btn').forEach((btn) => {
   });
 });
 
-function openLiveMode(session, sales) {
-  liveSession = session;
-  liveSalesLog = sales.map((m) => ({
+// Journal des ventes reconstruit depuis le serveur (source de vérité —
+// permet à plusieurs appareils de vendre dans le même live)
+function salesFromServer(sales) {
+  return sales.map((m) => ({
     movement_id: m.id,
     sale_no: m.sale_no,
     product_id: m.product_id,
     name: m.product_name,
     sku: m.product_sku,
-    price: m.is_gift ? 0 : m.product_price,
+    price: m.is_gift ? 0 : m.sold_price != null ? m.sold_price : m.product_price,
+    cost: m.cost_used != null ? m.cost_used : m.product_cost,
     is_gift: !!m.is_gift,
     time: m.created_at,
     cancelled: !!m.cancelled,
   }));
+}
+
+// Synchronisation : toutes les 8 s, le journal est rafraîchi depuis le
+// serveur — les ventes faites sur un autre appareil apparaissent, et si le
+// live est terminé ailleurs, l'écran se ferme proprement
+async function syncLiveFromServer() {
+  if (!liveSession) return;
+  try {
+    const active = await api('/api/lives/active');
+    if (!active || active.id !== liveSession.id) {
+      toast('Le live a été terminé sur un autre appareil');
+      closeLiveMode();
+      return;
+    }
+    liveSalesLog = salesFromServer(active.sales || []);
+    renderLiveSales();
+    updateLiveCounters();
+    loadProducts(); // stock à jour dans la recherche (ventes des autres appareils)
+  } catch (e) {
+    /* réessaiera au prochain tick */
+  }
+}
+
+function openLiveMode(session, sales) {
+  liveSession = session;
+  liveSalesLog = salesFromServer(sales);
   $('#livePlatformBadge').innerHTML = PLATFORM_LABELS[session.platform] || escapeHtml(session.platform);
   $('#liveOverlay').hidden = false;
+  $('#liveIndicator').hidden = true;
   $('#liveSearch').value = '';
   document.body.classList.add('no-scroll');
   renderLiveResults();
@@ -482,6 +529,8 @@ function openLiveMode(session, sales) {
   clearInterval(liveTimerInterval);
   liveTimerInterval = setInterval(updateLiveTimer, 1000);
   updateLiveTimer();
+  clearInterval(liveSyncInterval);
+  liveSyncInterval = setInterval(syncLiveFromServer, 8000);
   setTimeout(() => $('#liveSearch').focus(), 100);
 }
 
@@ -500,13 +549,17 @@ function liveTotals() {
     items: valid.filter((s) => !s.is_gift).length,
     gifts: valid.filter((s) => s.is_gift).length,
     revenue: valid.reduce((sum, s) => sum + (Number(s.price) || 0), 0),
+    // dépense totale : coût d'achat de tout ce qui est parti (cadeaux inclus)
+    cost: valid.reduce((sum, s) => sum + (Number(s.cost) || 0), 0),
   };
 }
 
 function updateLiveCounters() {
   const t = liveTotals();
-  $('#liveCounters').textContent =
-    `${t.items} vente(s)${t.gifts ? ` · ${t.gifts} 🎁` : ''} · ${euro(t.revenue)}`;
+  $('#liveCounters').innerHTML =
+    `${t.items} vente(s)${t.gifts ? ` · ${t.gifts} 🎁` : ''}` +
+    ` · <span title="Chiffre d'affaires du live">CA ${euro(t.revenue)}</span>` +
+    ` · <span class="live-cost" title="Dépense totale : coût d'achat des produits partis (cadeaux inclus)">💸 ${euro(t.cost)}</span>`;
 }
 
 // Recherche rapide par référence ou nom (insensible à la casse)
@@ -560,6 +613,7 @@ window.liveSell = async (id) => {
       name: p.name,
       sku: p.sku,
       price: p.price,
+      cost: p.cost,
       is_gift: false,
       time: new Date().toISOString(),
       cancelled: false,
@@ -721,6 +775,7 @@ window.giveGift = async (productId) => {
         name: p.name,
         sku: p.sku,
         price: 0,
+        cost: p.cost,
         is_gift: true,
         time: new Date().toISOString(),
         cancelled: false,
@@ -770,22 +825,63 @@ function closeLiveMode() {
   liveSession = null;
   liveSalesLog = [];
   clearInterval(liveTimerInterval);
+  clearInterval(liveSyncInterval);
+  localStorage.removeItem('wm_live_owner');
   $('#liveOverlay').hidden = true;
+  $('#liveIndicator').hidden = true;
   document.body.classList.remove('no-scroll');
   loadProducts();
 }
+
+// Réduire le live : l'écran se ferme mais le live CONTINUE (sur cet appareil
+// via « Rejoindre », ou sur un autre) — pour gérer les produits pendant
+// qu'une autre personne enregistre les ventes
+$('#btnMinimizeLive').addEventListener('click', () => {
+  liveSession = null;
+  liveSalesLog = [];
+  clearInterval(liveTimerInterval);
+  clearInterval(liveSyncInterval);
+  localStorage.removeItem('wm_live_owner');
+  $('#liveOverlay').hidden = true;
+  $('#liveIndicator').hidden = false;
+  document.body.classList.remove('no-scroll');
+  loadProducts();
+  toast('Live réduit — il continue ! « 🔴 Rejoindre » pour y revenir');
+});
+
+// Rejoindre le live en cours (depuis la pastille de la barre du haut)
+$('#liveIndicator').addEventListener('click', async () => {
+  try {
+    const active = await api('/api/lives/active');
+    if (!active) {
+      $('#liveIndicator').hidden = true;
+      toast('Le live est terminé');
+      return;
+    }
+    localStorage.setItem('wm_live_owner', String(active.id));
+    openLiveMode(active, active.sales || []);
+  } catch (e) {
+    toast(e.message, true);
+  }
+});
 
 $('#btnCloseRecap').addEventListener('click', () => {
   $('#recapModal').hidden = true;
 });
 
-// Reprise d'un live en cours après rechargement de la page
+// Un live est en cours quelque part : l'écran live ne s'ouvre TOUT SEUL que
+// sur l'appareil qui l'a lancé (reprise après rechargement). Les autres
+// appareils voient une pastille « Rejoindre » et gardent l'app utilisable
+// (fiches produits, imports… pendant que quelqu'un d'autre vend).
 async function resumeActiveLive() {
   try {
     const active = await api('/api/lives/active');
-    if (active) {
+    if (!active) return;
+    if (localStorage.getItem('wm_live_owner') === String(active.id)) {
       openLiveMode(active, active.sales || []);
       toast('Live en cours repris');
+    } else {
+      $('#liveIndicator').hidden = false;
     }
   } catch (e) {
     /* pas bloquant */
@@ -845,7 +941,9 @@ const saleNet = (m) => {
   const eff = m.sold_price != null ? m.sold_price : m.product_price;
   return eff - (m.fees != null ? m.fees : estPlatformFees(eff));
 };
-const saleMargin = (m) => saleNet(m) - m.product_cost;
+// Coût réel consommé (lots FIFO) si connu, sinon coût de la fiche
+const saleCost = (m) => (m.cost_used != null ? m.cost_used : m.product_cost);
+const saleMargin = (m) => saleNet(m) - saleCost(m);
 const saleNetIsEstimated = (m) => m.net_amount == null && m.fees == null;
 
 const PAYMENT_LABELS = {
@@ -861,10 +959,13 @@ const EXTRA_KIND_LABELS = {
   order: '📦 Commande boutique',
 };
 
+let liveDetailSaleNos = []; // numéros existants du live affiché (pour « ajouter une vente »)
+
 window.showLiveDetail = async (id) => {
   try {
     const l = await api(`/api/lives/${id}`);
     if (l.fee_config) detailFees = l.fee_config;
+    liveDetailSaleNos = l.sales.filter((m) => !m.is_gift && !m.cancelled && m.sale_no).map((m) => m.sale_no);
     const valid = l.sales.filter((m) => !m.cancelled && m.payment_status !== 'refunded');
 
     // Récap des produits vendus (agrégé) — les cadeaux sur une ligne à part
@@ -900,7 +1001,10 @@ window.showLiveDetail = async (id) => {
             return `<tr class="${m.cancelled ? 'row-cancelled' : ''} ${failed || refunded ? 'row-unpaid' : ''}">
           <td>${!m.is_gift && !m.cancelled && m.sale_no
             ? `<button class="live-gift-btn" onclick="openGiftPicker(${m.sale_no}, ${l.id})" title="Ajouter un cadeau à la vente #${m.sale_no}">🎁</button>`
-            : ''}<strong>${m.is_gift ? '🎁 ' : ''}${m.sale_no ? '#' + m.sale_no : ''}</strong></td>
+            : ''}<strong>${m.is_gift ? '🎁 ' : ''}${m.sale_no ? '#' + m.sale_no : ''}</strong>
+            ${!m.cancelled && !refunded
+              ? `<button class="btn ghost-mini" onclick="openSaleEdit(${m.id}, ${l.id}, ${m.sale_no || 1}, ${m.product_id}, ${m.is_gift ? 1 : 0})" title="Corriger cette vente : numéro ou produit">✏</button>`
+              : ''}</td>
           <td>${timeFr(m.created_at)}</td>
           <td>${m.photo ? `<a href="${escapeHtml(m.photo)}" target="_blank" rel="noopener"><img class="sale-photo-thumb" src="${escapeHtml(m.photo)}" alt=""></a> ` : ''}${escapeHtml(m.product_name)}${m.product_sku ? ` <span class="product-sku">(${escapeHtml(m.product_sku)})</span>` : ''}</td>
           <td>${euro(m.product_price)}</td>
@@ -984,14 +1088,33 @@ window.showLiveDetail = async (id) => {
 
     const ht = httc(l.revenue);
     $('#liveDetail').innerHTML = `
-      <h3>${PLATFORM_LABELS[l.platform]} — ${dateFr(l.started_at)}</h3>
+      <h3>${PLATFORM_LABELS[l.platform]} — ${dateFr(l.started_at)}
+        ${l.ended_at ? `<button class="btn small" onclick="editLive(${l.id})" title="Changer la plateforme, la date ou les horaires — les heures des ventes suivent le décalage">✏ Modifier ce live</button>
+        <button class="btn small" onclick="reopenLive(${l.id})" title="Le live redevient « en cours » : les prochaines ventes continuent la numérotation (#suivants)">▶ Reprendre ce live</button>
+        <button class="btn small" onclick="openMergeLive(${l.id})" title="Fusionner un autre live dans celui-ci (ex : deuxième live créé après un bug)">🔗 Fusionner</button>
+        <button class="btn small dl-btn" onclick="openDeleteLive(${l.id})" title="Supprimer ce live : ventes effacées, articles remis en stock (confirmation demandée)">🗑</button>` : ''}</h3>
       ${statusBlock}
+      <details class="fees-setting live-fees">
+        <summary>⚙ Frais de ce live — ${l.fee_config && l.fee_config.custom ? '<strong>personnalisés</strong>' : 'barème de la plateforme'}</summary>
+        <p class="muted small">Utilisés pour estimer les gains nets de CE live (promotion de la plateforme ce soir-là, barème différent…).
+          Les gains réels importés du rapport restent prioritaires.</p>
+        <div class="fees-grid">
+          <strong>${PLATFORM_LABELS[l.platform]}</strong>
+          <label>Commission %<input id="lfComm" type="number" min="0" max="100" step="any" value="${detailFees.commission}"></label>
+          <label>Traitement %<input id="lfProc" type="number" min="0" max="100" step="any" value="${detailFees.processing}"></label>
+          <label>Fixe €<input id="lfFixed" type="number" min="0" max="100" step="any" value="${detailFees.fixed}"></label>
+        </div>
+        <button class="btn primary" onclick="saveLiveFees(${l.id})">Enregistrer pour ce live</button>
+        ${l.fee_config && l.fee_config.custom ? `<button class="btn" onclick="resetLiveFees(${l.id})">Revenir au barème de la plateforme</button>` : ''}
+      </details>
       <div class="recap-grid wide">
         <div class="stat"><div class="value">${l.items}</div><div class="label">Articles vendus</div></div>
         <div class="stat"><div class="value">${l.gifts}</div><div class="label">🎁 Cadeaux offerts</div></div>
         <div class="stat"><div class="value">${euro(l.revenue)}</div><div class="label">CA TTC${l.reported > 0 ? ' (réel)' : ' (catalogue)'}</div></div>
         <div class="stat"><div class="value">${euro(ht)}</div><div class="label">CA HT</div></div>
         <div class="stat"><div class="value">${euro(l.revenue - ht)}</div><div class="label">TVA collectée (${vatRate} %)</div></div>
+        <div class="stat"><div class="value">−${euro(l.vat_deductible || 0)}</div><div class="label" title="TVA payée à l'achat des produits partis (achats France TTC) — les achats intracommunautaires 🇪🇺 n'ouvrent pas de droit à déduction">TVA récupérable (achats FR)</div></div>
+        <div class="stat"><div class="value">${euro(l.revenue - ht - (l.vat_deductible || 0))}</div><div class="label" title="TVA collectée − TVA récupérable : estimation de ce que ce live ajoute à votre déclaration">TVA nette estimée</div></div>
         <div class="stat"><div class="value">${euro(l.margin)}</div><div class="label">Marge nette estimée${l.shipping > 0 ? ` (envoi −${euro(l.shipping)})` : ''}</div></div>
         <div class="stat ${l.unpaid > 0 ? 'alert' : ''}"><div class="value">${l.unpaid}</div><div class="label">⚠ Non réglée(s)</div></div>
         <div class="stat"><div class="value">${l.reported}/${l.items}</div><div class="label">Ventes associées au rapport</div></div>
@@ -1024,7 +1147,9 @@ window.showLiveDetail = async (id) => {
         </table>
       </div>` : ''}
 
-      <h4>Ventes « Vue à l'écran » <a class="export-link" href="/api/lives/${l.id}/export.csv">⬇ Exporter en CSV</a></h4>
+      <h4>Ventes « Vue à l'écran »
+        <button class="btn small" onclick="openSaleAdd(${l.id})" title="Ajouter une vente oubliée à ce live">➕ Ajouter une vente</button>
+        <a class="export-link" href="/api/lives/${l.id}/export.csv">⬇ Exporter en CSV</a></h4>
       <div class="table-wrap">
         <table>
           <thead><tr><th>N°</th><th>Heure</th><th>Produit</th><th>Prix catalogue</th><th>Prix vendu</th><th>Gains nets</th><th title="Frais d'envoi et d'emballage payés par vous, déduits de la marge">📮 Envoi</th><th>Marge</th><th>Paiement</th><th>Statut</th></tr></thead>
@@ -1141,6 +1266,14 @@ window.previewReport = async (liveId, file) => {
     document.getElementById('reportConfig').innerHTML = `
       <p><strong>📄 ${escapeHtml(file.name)}</strong> — ${data.rowCount} ligne(s)</p>
       <div class="mapping-grid">${selects}</div>
+      <div class="manual-fee-row">
+        <label>💸 Frais / commission manuels
+          <span class="fee-input-wrap"><input type="number" id="reportFeePct" min="0" max="100" step="any" placeholder="ex : 9,5"> %</span>
+        </label>
+        <p class="muted small">Si le rapport ne contient pas les gains nets : ce pourcentage (variable selon les lives) sera
+          <strong>déduit du prix de vente TTC de chaque ligne</strong> pour calculer vos gains nets, et deviendra le barème de ce live.
+          Laissez vide pour ne pas l'appliquer. Les lignes avec gains nets importés ne sont pas touchées.</p>
+      </div>
       <div class="table-wrap"><table><thead><tr>${previewHead}</tr></thead><tbody>${previewBody}</tbody></table></div>
       <div class="actions">
         <button class="btn primary" onclick="commitReport()">Associer les ventes</button>
@@ -1162,7 +1295,11 @@ window.commitReport = async () => {
     const result = await api(`/api/lives/${currentReport.liveId}/report/commit`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ importId: currentReport.importId, mapping }),
+      body: JSON.stringify({
+        importId: currentReport.importId,
+        mapping,
+        manual_fee_pct: (document.getElementById('reportFeePct') || {}).value || null,
+      }),
     });
     const liveId = currentReport.liveId;
     currentReport = null;
@@ -1485,6 +1622,302 @@ function renderPhotoReview() {
   $('#photoReview').hidden = false;
 }
 
+// ---- Frais propres à un live ----
+window.saveLiveFees = async (liveId) => {
+  try {
+    await api(`/api/lives/${liveId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        fees: { commission: $('#lfComm').value, processing: $('#lfProc').value, fixed: $('#lfFixed').value },
+      }),
+    });
+    toast('⚙ Frais de ce live enregistrés');
+    await loadLives();
+    await showLiveDetail(liveId);
+  } catch (e) {
+    toast(e.message, true);
+  }
+};
+
+window.resetLiveFees = async (liveId) => {
+  try {
+    await api(`/api/lives/${liveId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ fees: null }),
+    });
+    toast('Frais du live remis au barème de la plateforme');
+    await loadLives();
+    await showLiveDetail(liveId);
+  } catch (e) {
+    toast(e.message, true);
+  }
+};
+
+// ---- Reprendre un live terminé (fin par erreur, plantage…) ----
+window.reopenLive = async (liveId) => {
+  if (!confirm('Reprendre ce live ? Il redevient « en cours » et les prochaines ventes continueront la numérotation (#suivants).')) return;
+  try {
+    const live = await api(`/api/lives/${liveId}/reopen`, { method: 'POST' });
+    localStorage.setItem('wm_live_owner', String(live.id));
+    openLiveMode(live, live.sales || []);
+    toast('▶ Live repris — les ventes continuent');
+    loadLives();
+  } catch (e) {
+    toast(e.message, true);
+  }
+};
+
+// ---- Corriger une vente (numéro / produit) ou en ajouter une ----
+let seContext = null; // { mode: 'edit'|'add', movementId, liveId }
+
+function fillSaleProductSelect(selectedId) {
+  $('#seProduct').innerHTML = products
+    .map(
+      (p) =>
+        `<option value="${p.id}" ${p.id === selectedId ? 'selected' : ''}>${escapeHtml(p.name)}${p.sku ? ` (${escapeHtml(p.sku)})` : ''} · stock ${p.stock}</option>`
+    )
+    .join('');
+}
+
+window.openSaleEdit = (movementId, liveId, saleNo, productId, isGift) => {
+  seContext = { mode: 'edit', movementId, liveId };
+  $('#saleEditTitle').textContent = isGift ? '✏ Corriger le cadeau' : '✏ Corriger la vente';
+  $('#seHint').textContent = isGift
+    ? 'Changer le numéro rattache ce cadeau à une autre vente.'
+    : 'Changer le produit ajuste le stock (l’ancien revient, le nouveau part). Les cadeaux rattachés suivent le nouveau numéro.';
+  $('#seNo').value = saleNo;
+  fillSaleProductSelect(productId);
+  $('#btnSeCancelSale').hidden = false;
+  $('#saleEditModal').hidden = false;
+};
+
+window.openSaleAdd = (liveId) => {
+  seContext = { mode: 'add', liveId };
+  $('#saleEditTitle').textContent = '➕ Ajouter une vente à ce live';
+  $('#seHint').textContent = 'La vente est créée avec ce numéro, datée dans la fenêtre du live, et le stock est décompté.';
+  const nos = liveDetailSaleNos || [];
+  $('#seNo').value = (nos.length ? Math.max(...nos) : 0) + 1;
+  fillSaleProductSelect(null);
+  $('#btnSeCancelSale').hidden = true;
+  $('#saleEditModal').hidden = false;
+};
+
+$('#btnCloseSaleEdit').addEventListener('click', () => { $('#saleEditModal').hidden = true; });
+
+$('#btnSeSave').addEventListener('click', async () => {
+  if (!seContext) return;
+  const saleNo = parseInt($('#seNo').value, 10);
+  const productId = parseInt($('#seProduct').value, 10);
+  if (!Number.isFinite(saleNo) || saleNo <= 0) return toast('Numéro invalide', true);
+  try {
+    if (seContext.mode === 'edit') {
+      await api(`/api/movements/${seContext.movementId}/edit`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sale_no: saleNo, product_id: productId }),
+      });
+      toast('✏ Vente corrigée');
+    } else {
+      const r = await api(`/api/lives/${seContext.liveId}/photo-sales`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sales: [{ product_id: productId, sale_no: saleNo }] }),
+      });
+      if (!r.created) throw new Error(r.skipped[0] || 'Vente non créée');
+      toast('➕ Vente ajoutée');
+    }
+    $('#saleEditModal').hidden = true;
+    const liveId = seContext.liveId;
+    seContext = null;
+    await loadProducts();
+    await loadLives();
+    await showLiveDetail(liveId);
+  } catch (e) {
+    toast(e.message, true);
+  }
+});
+
+$('#btnSeCancelSale').addEventListener('click', async () => {
+  if (!seContext || seContext.mode !== 'edit') return;
+  if (!confirm('Annuler cette vente ? L’article revient en stock (à utiliser pour une erreur de saisie — pour un remboursement client, utilisez ↩ Retour).')) return;
+  try {
+    await api(`/api/movements/${seContext.movementId}/cancel`, { method: 'POST' });
+    toast('✖ Vente annulée, article remis en stock');
+    $('#saleEditModal').hidden = true;
+    const liveId = seContext.liveId;
+    seContext = null;
+    await loadProducts();
+    await loadLives();
+    await showLiveDetail(liveId);
+  } catch (e) {
+    toast(e.message, true);
+  }
+});
+
+// ---- Fusionner deux lives ----
+let mergeTargetId = null;
+
+window.openMergeLive = async (liveId) => {
+  try {
+    const current = await api(`/api/lives/${liveId}`);
+    const lives = await api('/api/lives');
+    const candidates = lives.filter((l) => l.id !== liveId && l.ended_at && l.platform === current.platform);
+    if (!candidates.length) {
+      return toast(`Aucun autre live ${current.platform === 'tiktok' ? 'TikTok' : 'Whatnot'} terminé à fusionner`, true);
+    }
+    mergeTargetId = liveId;
+    $('#mergeSelect').innerHTML = candidates
+      .map(
+        (l) => `<option value="${l.id}">${dateFr(l.started_at)} — ${l.items} vente(s) · ${euro(l.revenue)}</option>`
+      )
+      .join('');
+    $('#mergeLiveModal').hidden = false;
+  } catch (e) {
+    toast(e.message, true);
+  }
+};
+
+$('#btnCloseMerge').addEventListener('click', () => {
+  mergeTargetId = null;
+  $('#mergeLiveModal').hidden = true;
+});
+
+$('#btnConfirmMerge').addEventListener('click', async () => {
+  const otherId = Number($('#mergeSelect').value);
+  if (!mergeTargetId || !otherId) return;
+  const label = $('#mergeSelect').selectedOptions[0].textContent.trim();
+  if (!confirm(`Fusionner « ${label} » dans le live affiché ? Les deux deviendront un seul live.`)) return;
+  try {
+    const r = await api(`/api/lives/${mergeTargetId}/merge`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ other_id: otherId }),
+    });
+    const id = mergeTargetId;
+    mergeTargetId = null;
+    $('#mergeLiveModal').hidden = true;
+    toast(`🔗 Lives fusionnés — ${r.items} vente(s) au total${r.renumbered ? ' (numéros du live absorbé décalés)' : ''}`);
+    await loadLives();
+    await showLiveDetail(id);
+    loadStats();
+  } catch (e) {
+    toast(e.message, true);
+  }
+});
+
+// ---- Supprimer un live (confirmation par texte) ----
+let deleteLiveId = null;
+
+window.openDeleteLive = async (liveId) => {
+  try {
+    const l = await api(`/api/lives/${liveId}`);
+    deleteLiveId = liveId;
+    const items = l.sales.filter((m) => !m.cancelled && !m.is_gift).length;
+    const gifts = l.sales.filter((m) => !m.cancelled && m.is_gift).length;
+    $('#dlSummary').innerHTML = `
+      <strong>${PLATFORM_LABELS[l.platform]} — ${dateFr(l.started_at)}</strong><br>
+      ${items} vente(s)${gifts ? ` + ${gifts} cadeau(x)` : ''}${l.extras ? ` + ${l.extras} ligne(s) hors écran` : ''}
+      · CA ${euro(l.revenue)}`;
+    $('#dlConfirm').value = '';
+    $('#btnConfirmDeleteLive').disabled = true;
+    $('#deleteLiveModal').hidden = false;
+    setTimeout(() => $('#dlConfirm').focus(), 100);
+  } catch (e) {
+    toast(e.message, true);
+  }
+};
+
+$('#dlConfirm').addEventListener('input', () => {
+  $('#btnConfirmDeleteLive').disabled = $('#dlConfirm').value.trim().toUpperCase() !== 'SUPPRIMER';
+});
+$('#btnCloseDeleteLive').addEventListener('click', () => {
+  deleteLiveId = null;
+  $('#deleteLiveModal').hidden = true;
+});
+
+$('#btnConfirmDeleteLive').addEventListener('click', async () => {
+  if (!deleteLiveId || $('#dlConfirm').value.trim().toUpperCase() !== 'SUPPRIMER') return;
+  try {
+    const r = await api(`/api/lives/${deleteLiveId}`, { method: 'DELETE' });
+    deleteLiveId = null;
+    $('#deleteLiveModal').hidden = true;
+    $('#liveDetail').hidden = true;
+    toast(`🗑 Live supprimé — ${r.restored} article(s) remis en stock`);
+    await loadLives();
+    loadProducts();
+    loadStats();
+  } catch (e) {
+    toast(e.message, true);
+  }
+});
+
+// ---- Créer un live passé / modifier un live existant ----
+let editingLiveId = null; // null = création
+
+const timeFrShort = (iso) => {
+  const d = new Date(iso);
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+};
+
+function openLiveEditor(live = null) {
+  editingLiveId = live ? live.id : null;
+  $('#liveEditTitle').textContent = live ? '✏ Modifier ce live' : '➕ Ajouter un live passé';
+  $('#liveEditHint').hidden = !!live;
+  $('#leplatform').value = live ? live.platform : 'tiktok';
+  $('#leDate').value = (live ? new Date(live.started_at) : new Date()).toLocaleDateString('sv-SE');
+  $('#leStart').value = live ? timeFrShort(live.started_at) : '20:00';
+  $('#leEnd').value = live && live.ended_at ? timeFrShort(live.ended_at) : '22:00';
+  $('#liveEditModal').hidden = false;
+}
+
+$('#btnAddPastLive').addEventListener('click', () => openLiveEditor());
+$('#btnCloseLiveEdit').addEventListener('click', () => { $('#liveEditModal').hidden = true; });
+
+window.editLive = async (id) => {
+  try {
+    openLiveEditor(await api(`/api/lives/${id}`));
+  } catch (e) {
+    toast(e.message, true);
+  }
+};
+
+$('#btnLiveEditSave').addEventListener('click', async () => {
+  const date = $('#leDate').value;
+  const start = $('#leStart').value;
+  const end = $('#leEnd').value;
+  if (!date || !start || !end) return toast('Renseignez la date et les horaires', true);
+  const started = new Date(`${date}T${start}`);
+  let ended = new Date(`${date}T${end}`);
+  if (ended <= started) ended = new Date(ended.getTime() + 24 * 3600 * 1000); // fin après minuit
+  const body = {
+    platform: $('#leplatform').value,
+    started_at: started.toISOString(),
+    ended_at: ended.toISOString(),
+  };
+  try {
+    const live = editingLiveId
+      ? await api(`/api/lives/${editingLiveId}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        })
+      : await api('/api/lives', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+    $('#liveEditModal').hidden = true;
+    toast(editingLiveId ? '✏ Live modifié' : `✅ Live du ${dateFr(live.started_at)} créé`);
+    await loadLives();
+    await showLiveDetail(live.id);
+    loadStats();
+  } catch (e) {
+    toast(e.message, true);
+  }
+});
+
 // ---- Modale « Ventes par photos » : choix / création du live, puis analyse ----
 let psLives = []; // lives proposés dans le sélecteur
 
@@ -1648,6 +2081,7 @@ window.openEdit = (id) => {
   form.barcode.value = p.barcode || '';
   form.variant_group.value = p.variant_group || '';
   form.brand.value = p.brand || '';
+  form.vat_intra.checked = !!p.vat_intra;
   form.category.value = p.category;
   form.price.value = p.price;
   form.cost.value = p.cost;
@@ -1660,6 +2094,23 @@ window.openEdit = (id) => {
   }
   $('#btnDelete').hidden = false;
   openModal();
+  // Lots en stock (coûts d'achat réels, FIFO)
+  $('#lotsInfo').hidden = true;
+  api(`/api/products/${id}/lots`)
+    .then((lots) => {
+      if (!lots.length) return;
+      $('#lotsInfo').innerHTML =
+        '<strong>📦 Lots en stock (vendus du plus ancien au plus récent) :</strong><br>' +
+        lots
+          .map(
+            (l) =>
+              `${l.qty_left} × ${euro(l.unit_cost)} ${l.vat_intra ? '🇪🇺 intra' : 'FR TTC'}
+               <span class="muted small">(${new Date(l.acquired_at).toLocaleDateString('fr-FR')}${l.note ? ' · ' + escapeHtml(l.note) : ''})</span>`
+          )
+          .join('<br>');
+      $('#lotsInfo').hidden = false;
+    })
+    .catch(() => {});
 };
 
 // Photo : clic + glisser-déposer
@@ -1693,6 +2144,20 @@ function setPhoto(file) {
   };
   reader.readAsDataURL(file);
 }
+
+// Coller une image (Ctrl/Cmd+V) pendant que la fiche produit est ouverte :
+// copiez une image n'importe où (Google Images, capture d'écran…) et collez
+document.addEventListener('paste', (e) => {
+  if (modal.hidden) return;
+  const item = [...((e.clipboardData && e.clipboardData.items) || [])].find((i) => i.type.startsWith('image/'));
+  if (!item) return;
+  e.preventDefault();
+  const file = item.getAsFile();
+  if (file) {
+    setPhoto(file);
+    toast('📷 Image collée');
+  }
+});
 
 form.addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -1888,15 +2353,96 @@ $('#movPrev').addEventListener('click', () => { movPage--; loadMovements(); });
 $('#movNext').addEventListener('click', () => { movPage++; loadMovements(); });
 
 // ---------------------------------------------------------------------------
+// Onglet Comptabilité : TVA, ventilation par mois et canal, exports comptable
+// ---------------------------------------------------------------------------
+const MONTHS_FR = ['', 'Janvier', 'Février', 'Mars', 'Avril', 'Mai', 'Juin', 'Juillet', 'Août', 'Septembre', 'Octobre', 'Novembre', 'Décembre'];
+
+async function loadCompta() {
+  try {
+    const year = $('#acYear').value || new Date().getFullYear();
+    const month = $('#acMonth').value || 0;
+    const d = await api(`/api/accounting?year=${year}&month=${month}`);
+
+    // Sélecteur d'années (conserve la sélection)
+    $('#acYear').innerHTML = d.years.map((y) => `<option value="${y}" ${y === d.year ? 'selected' : ''}>${y}</option>`).join('');
+
+    $('#acJournalLink').href = `/api/accounting/journal.csv?year=${d.year}&month=${d.month}`;
+    $('#acSummaryLink').href = `/api/accounting/summary.csv?year=${d.year}`;
+
+    const t = d.totals;
+    $('#acTiles').innerHTML = `
+      <div class="stat"><div class="value">${t.sales}</div><div class="label">Ventes payées${t.gifts ? ` (+ ${t.gifts} 🎁)` : ''}${t.extras ? ` (+ ${t.extras} hors écran)` : ''}</div></div>
+      <div class="stat"><div class="value">${euro(t.ca_ttc)}</div><div class="label">CA TTC</div></div>
+      <div class="stat"><div class="value">${euro(t.ca_ht)}</div><div class="label">CA HT</div></div>
+      <div class="stat"><div class="value">${euro(t.tva_collectee)}</div><div class="label">TVA collectée (${d.vat_rate} %)</div></div>
+      <div class="stat"><div class="value">−${euro(t.tva_deductible)}</div><div class="label">TVA déductible est. (achats FR)</div></div>
+      <div class="stat ac-net"><div class="value">${euro(t.tva_nette)}</div><div class="label">💶 TVA nette à reverser (est.)</div></div>
+      <div class="stat"><div class="value">${euro(t.cogs_total)}</div><div class="label">Coût des marchandises vendues</div></div>
+      <div class="stat"><div class="value">${euro(t.cogs_intra)}</div><div class="label">dont achats 🇪🇺 intracom (HT)</div></div>
+      <div class="stat"><div class="value">${euro(t.cogs_fr)}</div><div class="label">dont achats France (TTC)</div></div>
+      <div class="stat"><div class="value">${euro(t.fees)}</div><div class="label">Frais plateformes (charges)</div></div>
+      <div class="stat"><div class="value">${euro(t.shipping)}</div><div class="label">Frais d'envoi saisis</div></div>`;
+
+    $('#acMonthTable tbody').innerHTML = d.by_month.length
+      ? d.by_month
+          .map(
+            (m) => `<tr>
+          <td><strong>${MONTHS_FR[Number(m.month.slice(5, 7))]} ${m.month.slice(0, 4)}</strong></td>
+          <td>${m.sales}${m.gifts ? ` <small>+${m.gifts}🎁</small>` : ''}${m.extras ? ` <small>+${m.extras}</small>` : ''}</td>
+          <td>${euro(m.ca_ttc)}</td><td>${euro(m.ca_ht)}</td>
+          <td>${euro(m.tva_collectee)}</td><td>−${euro(m.tva_deductible)}</td>
+          <td><strong>${euro(m.tva_nette)}</strong></td>
+          <td>${euro(m.cogs_total)}</td><td>${euro(m.cogs_intra)}</td><td>${euro(m.fees)}</td>
+        </tr>`
+          )
+          .join('')
+      : '<tr><td colspan="10">Aucune vente sur la période</td></tr>';
+
+    $('#acChannelTable tbody').innerHTML = d.by_channel.length
+      ? d.by_channel
+          .map(
+            (c) => `<tr>
+          <td>${CHANNEL_LABELS[c.channel] || c.channel}</td>
+          <td>${c.sales}${c.extras ? ` <small>+${c.extras}</small>` : ''}</td>
+          <td>${euro(c.ca_ttc)}</td><td>${euro(c.ca_ht)}</td><td>${euro(c.tva_collectee)}</td><td>${euro(c.fees)}</td>
+        </tr>`
+          )
+          .join('')
+      : '<tr><td colspan="6">Aucune vente sur la période</td></tr>';
+
+    $('#acStock').innerHTML = `
+      <div class="stat"><div class="value">${euro(d.stock.total)}</div><div class="label">Valeur totale (${d.stock.units} unités)</div></div>
+      <div class="stat"><div class="value">${euro(d.stock.intra)}</div><div class="label">dont produits 🇪🇺 intracom (HT)</div></div>
+      <div class="stat"><div class="value">${euro(d.stock.fr)}</div><div class="label">dont produits France (TTC)</div></div>`;
+  } catch (e) {
+    toast(e.message, true);
+  }
+}
+
+$('#acYear').addEventListener('change', loadCompta);
+$('#acMonth').addEventListener('change', loadCompta);
+
+// ---------------------------------------------------------------------------
 // Sauvegarde automatique (dossier au choix, quotidienne, restauration)
 // ---------------------------------------------------------------------------
 function renderBackup(data) {
   $('#backupDir').value = data.dir || '';
+  const enableBtn = $('#btnBackupEnable');
+  if (!data.dir) {
+    enableBtn.hidden = false;
+    enableBtn.textContent = data.on_server
+      ? '⚡ Activer la sauvegarde quotidienne sur le serveur'
+      : '⚡ Activer la sauvegarde quotidienne';
+    enableBtn.title = `Dossier utilisé : ${data.suggested_dir}`;
+    enableBtn.dataset.dir = data.suggested_dir;
+  } else {
+    enableBtn.hidden = true;
+  }
   $('#backupStatus').innerHTML = data.dir
     ? data.last_backup
-      ? `✅ Dernière sauvegarde : <strong>${dateFr(data.last_backup)}</strong>`
-      : '⏳ Première sauvegarde dans quelques secondes…'
-    : '⚠ Aucun dossier configuré : <strong>vos données ne sont pas sauvegardées</strong>.';
+      ? `✅ Sauvegarde quotidienne active (<code>${escapeHtml(data.dir)}</code>) — dernière : <strong>${dateFr(data.last_backup)}</strong>`
+      : `⏳ Sauvegarde quotidienne active (<code>${escapeHtml(data.dir)}</code>) — première copie dans quelques secondes…`
+    : '⚠ Sauvegarde quotidienne <strong>désactivée</strong> — activez-la en un clic ci-dessous.';
   $('#backupList').innerHTML = data.backups && data.backups.length
     ? `<div class="table-wrap"><table>
         <thead><tr><th>Sauvegarde</th><th>Base</th><th></th></tr></thead>
@@ -1905,12 +2451,47 @@ function renderBackup(data) {
             (b) => `<tr>
           <td>📁 ${escapeHtml(b.date)}</td>
           <td>${(b.size / 1024).toFixed(0)} Ko</td>
-          <td><button class="btn small" onclick="restoreBackup('${escapeHtml(b.name)}')" title="Remplace la base et les photos actuelles par cette sauvegarde">↩ Restaurer</button></td>
+          <td>
+            <a class="btn small" href="/api/backup/download/${escapeHtml(b.name)}" title="Télécharger cette sauvegarde (.tar.gz) sur votre ordinateur">⬇</a>
+            <button class="btn small" onclick="restoreBackup('${escapeHtml(b.name)}')" title="Remplace la base et les photos actuelles par cette sauvegarde">↩ Restaurer</button>
+          </td>
         </tr>`
           )
           .join('')}</tbody></table></div>`
     : '';
 }
+
+$('#btnBackupEnable').addEventListener('click', async (e) => {
+  try {
+    const data = await api('/api/backup', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ dir: e.target.dataset.dir }),
+    });
+    renderBackup(data);
+    toast('💾 Sauvegarde quotidienne activée');
+  } catch (err) {
+    toast(err.message, true);
+  }
+});
+
+$('#backupUpload').addEventListener('change', async function () {
+  const file = this.files[0];
+  this.value = '';
+  if (!file) return;
+  if (!confirm(`Restaurer « ${file.name} » ?\n\nVos données ACTUELLES (base + photos) seront remplacées par le contenu de cette archive. L'application redémarrera ensuite.`)) return;
+  const fd = new FormData();
+  fd.set('archive', file);
+  try {
+    toast('⬆ Envoi de l’archive…');
+    const r = await api('/api/backup/upload', { method: 'POST', body: fd });
+    document.body.innerHTML = `<div class="restore-done"><h1>✅ ${escapeHtml(r.message)}</h1>
+      <p>Rechargez cette page dans quelques secondes.</p></div>`;
+    setTimeout(() => location.reload(), 5000);
+  } catch (e) {
+    toast(e.message, true);
+  }
+});
 
 async function loadBackup() {
   try {
@@ -1987,15 +2568,17 @@ $('#btnBackupNow').addEventListener('click', async () => {
 });
 
 window.restoreBackup = async (name) => {
-  if (!confirm(`Restaurer la sauvegarde du ${name.replace('sauvegarde-', '')} ?\n\nVos données ACTUELLES (base + photos) seront remplacées par cette sauvegarde. L'application s'arrêtera ensuite : relancez-la avec npm start.`)) return;
+  if (!confirm(`Restaurer la sauvegarde du ${name.replace('sauvegarde-', '')} ?\n\nVos données ACTUELLES (base + photos) seront remplacées par cette sauvegarde. L'application redémarrera ensuite.`)) return;
   try {
     const r = await api('/api/backup/restore', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name }),
     });
+    const auto = /redémarre/.test(r.message); // serveur : systemd relance tout seul
     document.body.innerHTML = `<div class="restore-done"><h1>✅ ${escapeHtml(r.message)}</h1>
-      <p>Retournez dans le Terminal et relancez <code>npm start</code>, puis rechargez cette page.</p></div>`;
+      <p>${auto ? 'Cette page va se recharger automatiquement.' : 'Relancez <code>npm start</code> dans le Terminal, puis rechargez cette page.'}</p></div>`;
+    if (auto) setTimeout(() => location.reload(), 5000);
   } catch (e) {
     toast(e.message, true);
   }

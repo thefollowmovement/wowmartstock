@@ -125,6 +125,10 @@ h1, h2, h3, h4, .brand, .modal h2 {
 
 /* ---------- Boutons ---------- */
 .btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
   border: 1px solid var(--border);
   background: var(--card);
   padding: 9px 16px;
@@ -135,6 +139,8 @@ h1, h2, h3, h4, .brand, .modal h2 {
   cursor: pointer;
   text-decoration: none;
   color: var(--text);
+  white-space: nowrap;
+  vertical-align: middle;
   transition: filter .15s, transform .1s, box-shadow .15s;
 }
 .btn:hover { filter: brightness(.96); }
@@ -808,6 +814,103 @@ tr.row-unpaid td { background: #fef2f2; }
 .ai-report ul { margin: 6px 0 6px 22px; display: flex; flex-direction: column; gap: 4px; }
 .ai-report p { margin: 6px 0; }
 
+/* ---------- Frais manuels à l'import du rapport ---------- */
+.manual-fee-row {
+  margin: 12px 0;
+  padding: 12px 14px;
+  background: var(--primary-soft);
+  border: 1px solid #c7d2fe;
+  border-radius: var(--radius);
+}
+.manual-fee-row label { font-weight: 700; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.fee-input-wrap { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; }
+.manual-fee-row input {
+  width: 110px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: .95rem;
+}
+.manual-fee-row .muted.small { margin: 8px 0 0; }
+
+/* ---------- Comptabilité ---------- */
+.stat.ac-net {
+  border: 2px solid var(--primary);
+  background: var(--primary-soft);
+}
+.stat.ac-net .value { color: var(--primary-dark); }
+.ac-method li { padding-left: 0; }
+.ac-method li::before { display: none; }
+.ac-method { list-style: disc; margin-left: 20px; margin-top: 10px; }
+
+/* ---------- Fusion de lives ---------- */
+#mergeLiveModal label { display: block; font-weight: 600; margin-top: 8px; }
+#mergeLiveModal select {
+  width: 100%;
+  margin-top: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: .95rem;
+  background: var(--card);
+}
+
+/* ---------- Suppression d'un live ---------- */
+.dl-btn:hover { background: #fee2e2; border-color: var(--danger); }
+.dl-summary {
+  padding: 12px 14px;
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  border-radius: var(--radius);
+  margin-bottom: 12px;
+  line-height: 1.6;
+}
+#deleteLiveModal label { display: block; font-weight: 600; margin-top: 8px; }
+#deleteLiveModal input {
+  width: 100%;
+  margin-top: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: 1rem;
+  letter-spacing: .06em;
+}
+.btn[disabled] { opacity: .45; cursor: not-allowed; }
+
+/* ---------- Correction de vente et frais de live ---------- */
+.se-no-row { display: flex; align-items: center; gap: 6px; }
+.se-no-row input { width: 110px; }
+#saleEditModal label { display: block; margin-bottom: 12px; font-weight: 600; }
+#saleEditModal input, #saleEditModal select {
+  width: 100%;
+  padding: 9px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: .95rem;
+  margin-top: 4px;
+}
+.live-fees { margin: 12px 0; }
+
+/* ---------- Live : pastille « rejoindre » et coût ---------- */
+.live-indicator-btn {
+  background: #fee2e2;
+  border: 1px solid var(--danger);
+  color: var(--danger);
+  font-weight: 700;
+  animation: live-pulse 2s infinite;
+}
+@keyframes live-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(229, 72, 77, .35); }
+  50% { box-shadow: 0 0 0 6px rgba(229, 72, 77, 0); }
+}
+.live-cost { color: #fbbf24; }
+.live-header .btn.ghost {
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, .35);
+  color: rgba(255, 255, 255, .9);
+}
+.live-header .btn.ghost:hover { background: rgba(255, 255, 255, .12); }
+
 /* ---------- Connexion et sécurité ---------- */
 .login-overlay {
   position: fixed;
@@ -990,6 +1093,17 @@ tr.row-unpaid td { background: #fef2f2; }
 }
 .tag-brand { background: var(--ink); color: #fff; }
 .tag-cat { background: var(--primary-soft); color: var(--primary-dark); border: 1px solid #c7d2fe; }
+.tag-eu { background: #eff6ff; color: #1d4ed8; border: 1px solid #bfdbfe; }
+.vat-check { margin-top: 4px; font-weight: 600; }
+.lots-info {
+  margin-top: 8px;
+  padding: 10px 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: .85rem;
+  line-height: 1.7;
+}
 .card-footer { display: flex; align-items: flex-end; gap: 10px; }
 .card-footer .btn { flex: none; }
 .price-block {
@@ -1285,6 +1399,50 @@ form label .muted.small { display: block; margin-top: 4px; font-weight: 400; }
 }
 .tuto-badges { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .tuto-btn .ico-tiktok { vertical-align: -3px; }
+
+/* ==========================================================================
+   Espacement et alignement — passe UI/UX globale
+   Tout groupe de boutons respire : titres avec actions, cellules de tableau,
+   blocs repliables, panneaux de vérification.
+   ========================================================================== */
+
+/* Titres de cartes contenant des boutons ou liens d'action */
+.card h2, .card h3, .card h4, #liveDetail h3, #liveDetail h4 {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.card h2 .export-link, .card h4 .export-link { margin-left: auto; }
+
+/* Boutons voisins dans une cellule de tableau (⬇ + ↩ Restaurer, etc.) */
+td .btn + .btn, td .btn + a.btn, td a.btn + .btn { margin-left: 6px; }
+td .btn { vertical-align: middle; }
+
+/* Boutons à l'intérieur des blocs repliables (frais, clé API, sauvegarde) */
+.fees-setting .btn, .api-key-setup > .btn { margin: 8px 8px 4px 0; }
+details.api-key-setup { margin: 12px 0; }
+
+/* En-tête de l'onglet Lives : boutons + note sur leur propre ligne */
+.lives-head .btn + .btn { margin-left: 8px; }
+.lives-head > div > .muted.small { display: block; margin-top: 8px; }
+
+/* Panneau de vérification : bouton valider détaché de la liste */
+.verify-panel .success-btn { margin-top: 12px; }
+.verify-list li { margin-bottom: 6px; }
+.verify-list li .btn { margin-left: 6px; }
+
+/* Zones d'import (rapport, photos) : boutons espacés du texte */
+.report-import .btn { margin-top: 4px; }
+.report-import .btn + input + div { margin-top: 12px; }
+
+/* Barres d'actions génériques : jamais de boutons collés */
+.actions { flex-wrap: wrap; }
+.backup-row .btn { flex: none; }
+
+/* Petites zones où des boutons se suivent hors flex */
+.photos-actions { row-gap: 10px; }
+.wp-head { row-gap: 10px; }
 
 @media (max-width: 760px) {
   .live-body { flex-direction: column; overflow-y: auto; }

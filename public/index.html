@@ -14,10 +14,12 @@
       <button class="tab active" data-tab="products">Produits</button>
       <button class="tab" data-tab="lives">Lives</button>
       <button class="tab" data-tab="stats">Stats</button>
+      <button class="tab" data-tab="compta">Compta</button>
       <button class="tab" data-tab="import">Importer</button>
       <button class="tab" data-tab="movements">Historique</button>
       <button class="tab" data-tab="help">Aide</button>
     </nav>
+    <button class="btn live-indicator-btn" id="liveIndicator" hidden title="Un live est en cours sur un autre appareil — cliquez pour le rejoindre (les ventes des deux appareils se cumulent)">🔴 Live en cours — Rejoindre</button>
     <button class="btn live-launch" id="btnStartLive">🔴 Lancer un live</button>
     <a class="btn ghost" href="/api/export.csv">⬇ CSV</a>
   </header>
@@ -59,6 +61,7 @@
           <p class="muted">Chaque live est enregistré avec sa date, sa plateforme et toutes les ventes horodatées.<br>
           Après chaque live, <strong>importez le rapport CSV de la plateforme</strong> pour vérifier les paiements, puis validez le live.</p>
           <button class="btn primary" id="btnPhotoSales">📸 Ventes par photos</button>
+          <button class="btn" id="btnAddPastLive" title="Enregistrer un live déjà fait, avec sa vraie date et ses horaires">➕ Live passé</button>
           <span class="muted small">Importez les photos de vos produits vendus (étiquette #N) — même pour un live oublié : créez-le après coup avec sa vraie date.</span>
         </div>
         <div class="settings-side">
@@ -170,6 +173,72 @@
     </div>
   </main>
 
+  <!-- ===================== COMPTABILITÉ ===================== -->
+  <main id="tab-compta" class="tab-panel" hidden>
+    <div class="card">
+      <div class="stats-page-head">
+        <h2>🧾 Comptabilité</h2>
+        <div class="stats-filters">
+          <select id="acYear"></select>
+          <select id="acMonth">
+            <option value="0">Année entière</option>
+            <option value="1">Janvier</option><option value="2">Février</option><option value="3">Mars</option>
+            <option value="4">Avril</option><option value="5">Mai</option><option value="6">Juin</option>
+            <option value="7">Juillet</option><option value="8">Août</option><option value="9">Septembre</option>
+            <option value="10">Octobre</option><option value="11">Novembre</option><option value="12">Décembre</option>
+          </select>
+        </div>
+      </div>
+      <p class="muted">Ventes <strong>payées</strong> uniquement (échecs et remboursements exclus), tous canaux, gives et ventes boutique des rapports inclus.
+        Exportez le <strong>journal des ventes</strong> pour votre comptable : chaque vente y est détaillée ligne par ligne.</p>
+      <div class="backup-row">
+        <a class="btn primary" id="acJournalLink" href="#">⬇ Journal des ventes (CSV)</a>
+        <a class="btn" id="acSummaryLink" href="#">⬇ Récap mensuel de l'année (CSV)</a>
+      </div>
+      <div id="acTiles" class="recap-grid wide"></div>
+    </div>
+
+    <div class="card">
+      <h2>📅 Détail par mois</h2>
+      <div class="table-wrap">
+        <table id="acMonthTable">
+          <thead><tr><th>Mois</th><th>Ventes</th><th>CA TTC</th><th>CA HT</th><th>TVA collectée</th><th>TVA déductible est.</th><th>TVA nette</th><th>Coût marchandises</th><th>dont 🇪🇺 intra</th><th>Frais plateformes</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>📊 Détail par canal</h2>
+      <div class="table-wrap">
+        <table id="acChannelTable">
+          <thead><tr><th>Canal</th><th>Ventes</th><th>CA TTC</th><th>CA HT</th><th>TVA collectée</th><th>Frais plateformes</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>📦 Valeur du stock (aujourd'hui, au coût d'achat)</h2>
+      <div id="acStock" class="recap-grid wide"></div>
+      <p class="muted small">Photo de l'inventaire permanent à l'instant T — utile pour le bilan. Le comptable peut la rapprocher d'un inventaire physique (mode 📋 Inventaire).</p>
+    </div>
+
+    <div class="card">
+      <details>
+        <summary><strong>ℹ️ Méthode de calcul (à transmettre au comptable)</strong></summary>
+        <ul class="tuto-steps ac-method">
+          <li><strong>CA</strong> : ventes payées à la date de vente, prix réel du rapport plateforme quand il est importé, sinon prix catalogue. Paiements en échec et remboursements exclus. Gives et ventes boutique des rapports Whatnot/TikTok incluses.</li>
+          <li><strong>TVA collectée</strong> : CA TTC × taux ÷ (1 + taux), au taux configuré dans l'app (régime TVA sur les débits, ventes B2C).</li>
+          <li><strong>TVA déductible estimée</strong> : TVA contenue dans le coût d'achat des produits <em>vendus</em> sur la période, uniquement pour les achats France TTC (case 🇪🇺 intracom décochée). ⚠ Estimation de gestion : le droit à déduction réel naît des factures d'achat — à rapprocher des factures fournisseurs.</li>
+          <li><strong>Achats intracommunautaires</strong> : le coût des produits 🇪🇺 vendus et la valeur du stock 🇪🇺 sont isolés — l'autoliquidation se déclare sur la base des factures d'acquisition (à rapprocher).</li>
+          <li><strong>Frais de plateforme</strong> : réels quand le rapport est importé (prix − net perçu), sinon estimés au barème configuré. Charges déductibles (factures Whatnot/TikTok à l'appui).</li>
+          <li><strong>Frais d'envoi</strong> : montants saisis par vente dans le détail des lives.</li>
+        </ul>
+      </details>
+    </div>
+  </main>
+
   <!-- ===================== IMPORT ===================== -->
   <main id="tab-import" class="tab-panel" hidden>
     <div class="card">
@@ -227,18 +296,30 @@
 
     <div class="card">
       <h2>💾 Sauvegarde automatique</h2>
-      <p class="muted">Une copie de votre base (produits, ventes, lives) et de vos photos est faite <strong>chaque jour automatiquement</strong>
-        dans le dossier de votre choix — mettez-y un dossier synchronisé (iCloud Drive, Dropbox…) ou un disque externe.
-        Les 14 dernières sauvegardes sont conservées.</p>
-      <div class="backup-row">
-        <input id="backupDir" type="text" placeholder="Ex : /Users/vous/Library/Mobile Documents/com~apple~CloudDocs" autocomplete="off">
-        <button class="btn primary" id="btnSaveBackupDir">Enregistrer</button>
-        <button class="btn" id="btnBackupNow">Sauvegarder maintenant</button>
-      </div>
-      <p class="muted small">💡 Sur Mac, glissez un dossier du Finder dans le Terminal pour obtenir son chemin, ou utilisez
-        <code>/Users/votrenom/Library/Mobile Documents/com~apple~CloudDocs</code> pour iCloud Drive.</p>
+      <p class="muted">Une copie de votre base (produits, ventes, lives) et de vos photos est faite <strong>chaque jour automatiquement</strong>.
+        Les 14 dernières sauvegardes sont conservées sur la machine, et vous pouvez
+        <strong>télécharger une archive sur votre ordinateur</strong> à tout moment — c'est votre vraie protection si le serveur meurt.</p>
       <div id="backupStatus" class="muted"></div>
+      <div class="backup-row">
+        <button class="btn primary" id="btnBackupEnable" hidden></button>
+        <button class="btn" id="btnBackupNow">💾 Sauvegarder maintenant</button>
+        <a class="btn" id="btnBackupExport" href="/api/backup/export" title="Télécharge une archive .tar.gz de l'état actuel (base + photos) sur votre ordinateur">⬇ Télécharger une copie complète</a>
+      </div>
+      <details class="api-key-setup">
+        <summary>⚙ Dossier de sauvegarde personnalisé</summary>
+        <div class="backup-row">
+          <input id="backupDir" type="text" placeholder="Chemin absolu du dossier" autocomplete="off">
+          <button class="btn primary" id="btnSaveBackupDir">Enregistrer</button>
+        </div>
+        <p class="muted small">Laissez vide et enregistrez pour désactiver. Sur Mac : un dossier iCloud Drive/Dropbox ; sur serveur : <code>/var/backups/wowmart</code>.</p>
+      </details>
       <div id="backupList"></div>
+      <details class="api-key-setup">
+        <summary>↩ Restaurer depuis un fichier téléchargé</summary>
+        <p class="muted small">Choisissez une archive <code>.tar.gz</code> téléchargée depuis WowMart (de cette machine ou d'une autre —
+          pratique pour rapatrier vos données du Mac vers le serveur). Vos données actuelles seront remplacées.</p>
+        <input type="file" id="backupUpload" accept=".gz,.tgz,application/gzip">
+      </details>
     </div>
   </main>
 
@@ -309,7 +390,7 @@
       <div class="tuto-body">
         <p>Deux façons de remplir votre catalogue :</p>
         <ul>
-          <li><strong>À la main</strong> — onglet <em>Produits</em> → bouton <span class="tuto-btn">+ Nouveau produit</span>. Glissez la photo directement dans la fiche, renseignez le nom, le SKU, le code-barres (EAN, si disponible — il servira à la préparation des colis), le prix de vente et le stock.</li>
+          <li><strong>À la main</strong> — onglet <em>Produits</em> → bouton <span class="tuto-btn">+ Nouveau produit</span>. Pour la photo : glissez-la dans la fiche, cliquez pour la choisir, ou <strong>collez-la (⌘V)</strong> après l'avoir copiée n'importe où (Google Images, capture d'écran…). Renseignez le nom, la marque, le SKU, le code-barres (EAN, si disponible), le prix de vente et le stock.</li>
           <li><strong>Par fichier</strong> — onglet <em>Importer</em> : glissez votre fichier Excel ou CSV, tout est détecté automatiquement (voir la section Importer ci-dessous).</li>
         </ul>
         <p>Deux champs souvent oubliés mais très importants :</p>
@@ -330,6 +411,7 @@
           <li>Cliquez sur la carte pour <strong>modifier la fiche</strong> (photo, prix, coût, seuil…).</li>
         </ul>
         <p>En haut : recherche par nom, SKU, marque ou catégorie, <strong>filtres par marque et par catégorie</strong>, et un <strong>tri</strong> (meilleures ventes 30 j, prix, stock bas/haut). La case <em>« Stock bas uniquement »</em> ne montre que les produits à recommander. Chaque carte affiche la marque et la catégorie en badges, et le <strong>prix de vente conseillé en HT</strong> (TTC en dessous) en bas à droite.</p>
+        <p><strong>📦 Lots d'achat (FIFO)</strong> : chaque réassort crée un <em>lot</em> qui garde son coût et son régime de TVA (🇪🇺 ou France). Exemple : 5 restants achetés en Chine à 16,86 €, puis 50 achetés en France à 18,89 € — pour ajouter le réassort, ouvrez la fiche, mettez le <strong>nouveau coût</strong>, cochez/décochez 🇪🇺 selon l'achat, et augmentez le stock : les ventes écouleront d'abord les 5 anciens à 16,86 €, puis les nouveaux à 18,89 €, avec la marge et la TVA justes pour chacun. La fiche affiche les lots restants.</p>
         <p><strong>Variantes</strong> : renseignez un <em>« Groupe de variantes »</em> (ex : T-shirt logo) sur plusieurs produits — ils s'affichent regroupés en une carte, chaque taille/couleur gardant son stock, son SKU et ses boutons de vente.</p>
         <p><strong>📋 Inventaire</strong> : le bouton en haut de l'onglet Produits ouvre le mode comptage — saisissez les quantités réelles ou scannez les codes-barres (+1 par scan), validez, et le stock est recalé avec un rapport des écarts.</p>
         <p><strong>🖼 Photos web</strong> : ce bouton cherche des images sur le web pour vos produits sans photo (marque + référence + nom), vous propose plusieurs candidates et n'assigne que celles que vous validez d'un clic. Configurez l'<strong>API Google officielle</strong> dans la modale (gratuite, 100 recherches/jour, guide inclus) pour des résultats fiables.</p>
@@ -353,7 +435,7 @@
     <details class="card tuto-section">
       <summary><span class="tuto-emoji">🔴</span> Le mode live (TikTok / Whatnot)</summary>
       <div class="tuto-body">
-        <p>Cliquez sur <span class="tuto-btn live">🔴 Lancer un live</span> puis choisissez la plateforme : une <strong>session datée</strong> démarre en plein écran.</p>
+        <p>Cliquez sur <span class="tuto-btn live">🔴 Lancer un live</span> puis choisissez la plateforme : une <strong>session datée</strong> démarre en plein écran. Le live a <strong>déjà commencé sur la plateforme</strong> (bug, app relancée…) ? Dépliez <em>« ⚙ Premier n° de vente »</em> et indiquez le prochain numéro à enregistrer (ex : #15) — vous ajouterez les ventes manquées après le live (Détail → ➕ Ajouter une vente).</p>
         <ul>
           <li><strong>Recherche instantanée</strong> : tapez quelques lettres de la référence ou du nom, le produit apparaît.</li>
           <li><strong>1 clic = 1 vente</strong>, enregistrée à la seconde près et <strong>numérotée #1, #2, #3…</strong> — les mêmes numéros que sur Whatnot et TikTok.</li>
@@ -362,6 +444,7 @@
           <li>Si la page se recharge en plein live, la session <strong>reprend automatiquement</strong>.</li>
         </ul>
         <p><strong>🎁 Les cadeaux</strong> : le bouton 🎁 devant chaque vente permet d'ajouter un ou plusieurs produits offerts (ex : vente #8 = iPad + 🎁 câble + 🎁 stylet). Le cadeau est rattaché au numéro de la vente, déduit du stock à prix 0, et son coût d'achat est déduit de la marge.</p>
+        <p><strong>👥 À plusieurs</strong> : en haut du live, le bandeau affiche en temps réel les ventes, le CA et <strong>💸 la dépense totale</strong> (coût d'achat de tout ce qui part, cadeaux inclus). Pendant qu'une personne vend, une autre peut se connecter sur un autre appareil : elle voit une pastille <span class="tuto-btn">🔴 Live en cours — Rejoindre</span> et garde l'app utilisable (fiches produits, imports…). Elle peut aussi <strong>rejoindre le live</strong> — les ventes des deux appareils se cumulent avec les bons numéros et se synchronisent toutes les 8 secondes. Le bouton <span class="tuto-btn">⤵ Réduire</span> ferme l'écran live sans terminer le live.</p>
         <p class="tuto-note">ℹ️ Le mode live correspond aux ventes <strong>« Vue à l'écran »</strong>. Les gives Whatnot et les produits référencés dans la boutique de la plateforme ont leur propre numérotation — ils seront récupérés à l'import du rapport (section suivante).</p>
       </div>
     </details>
@@ -378,11 +461,12 @@
         <ol class="tuto-steps">
           <li><strong>Exportez le rapport CSV</strong> des ventes depuis Whatnot ou TikTok après le live.</li>
           <li>Onglet <em>Lives</em> → <span class="tuto-btn">Détail</span> du live → <strong>importez le fichier</strong>. Les lignes « Vue à l'écran » sont associées à vos ventes grâce à leur numéro ; les <strong>gives</strong> (abonné / acheteur) et les <strong>ventes boutique</strong> sont ajoutés à part au bilan.</li>
-          <li>L'app récupère le <strong>prix réel (TTC)</strong>, les <strong>gains nets</strong> (après commission et frais de la plateforme) et le <strong>statut du paiement</strong> de chaque vente : <span class="pay-badge paid">payé</span> <span class="pay-badge pending">⏳ en attente</span> <span class="pay-badge failed">⚠ échec</span></li>
+          <li>L'app récupère le <strong>prix réel (TTC)</strong>, les <strong>gains nets</strong> (après commission et frais de la plateforme) et le <strong>statut du paiement</strong> de chaque vente. Si le rapport n'a pas de colonne gains nets, saisissez les <strong>💸 frais manuels en %</strong> (variables selon les lives) : ils sont déduits du prix TTC de chaque ligne : <span class="pay-badge paid">payé</span> <span class="pay-badge pending">⏳ en attente</span> <span class="pay-badge failed">⚠ échec</span></li>
           <li><strong>Vérifiez</strong> : les paiements en échec sont listés et exclus du CA — le bouton <span class="tuto-btn">↩ Restock</span> annule la vente et remet l'article en stock.</li>
           <li><strong>Validez</strong> le live : la ligne passe au vert et l'alerte du tableau de bord disparaît.</li>
         </ol>
-        <p>Le détail affiche aussi <strong>CA TTC, CA HT et TVA collectée</strong> (taux réglable dans l'onglet Lives), et la <strong>marge nette</strong> : gains nets − coût d'achat (cadeaux inclus). La colonne <strong>📮 Envoi</strong> permet de saisir vos frais d'expédition/emballage par vente — ils sont déduits de la marge. Et le petit bouton <span class="tuto-btn">↩</span> à côté d'une vente enregistre un <strong>retour/remboursement</strong>.</p>
+        <p>Le détail affiche aussi <strong>CA TTC, CA HT, TVA collectée, TVA récupérable et TVA nette</strong>. La TVA récupérable vient des produits achetés <strong>en France TTC</strong> ; cochez <em>« 🇪🇺 Achat intracommunautaire »</em> sur la fiche des produits achetés HT en Europe (Pologne, Allemagne…) — pour eux, aucune TVA n'est déductible et la TVA s'applique sur tout le prix de vente. La <strong>marge nette</strong> : gains nets − coût d'achat (cadeaux inclus). La colonne <strong>📮 Envoi</strong> permet de saisir vos frais d'expédition/emballage par vente — ils sont déduits de la marge. Et le petit bouton <span class="tuto-btn">↩</span> à côté d'une vente enregistre un <strong>retour/remboursement</strong>.</p>
+        <p><strong>Tout se corrige</strong> : <span class="tuto-btn">✏</span> sur chaque vente pour changer son <strong>numéro</strong> (les cadeaux suivent) ou son <strong>produit</strong> (le stock s'ajuste), <span class="tuto-btn">➕ Ajouter une vente</span> pour une vente oubliée, <span class="tuto-btn">▶ Reprendre ce live</span> si le live a été terminé par erreur (les numéros continuent), et <em>« ⚙ Frais de ce live »</em> pour un barème de commission propre à ce live (promotion de la plateforme…). Le bouton <span class="tuto-btn">🔗 Fusionner</span> absorbe un autre live de la même plateforme dans celui affiché (utile quand un bug a coupé un live en deux) : ventes réunies, période complète, numéros décalés seulement s'ils se chevauchent. Et <span class="tuto-btn">🗑</span> supprime définitivement un live (doublon, test…) après confirmation en tapant SUPPRIMER — ses articles reviennent en stock.</p>
         <p class="tuto-note">💶 Avant l'import du rapport, la marge est <strong>estimée</strong> avec les frais des plateformes (réglables via <em>⚙ Frais des plateformes</em> : Whatnot 6,67 % + 2,42 % + 0,25 € par défaut). Après l'import, ce sont les <strong>chiffres réels</strong> qui comptent.</p>
       </div>
     </details>
@@ -393,7 +477,7 @@
         <p>Vous photographiez chaque produit vendu avec son étiquette <strong>#numéro</strong> pendant le live ? L'app peut créer les ventes à partir des photos :</p>
         <ol class="tuto-steps">
           <li>Onglet <em>Lives</em> → bouton <span class="tuto-btn">📸 Ventes par photos</span>.</li>
-          <li>Choisissez le live concerné — et si vous avez <strong>oublié de le lancer dans l'app</strong>, créez-le après coup avec sa vraie date et ses horaires (<span class="tuto-btn">➕ Créer un live passé</span>).</li>
+          <li>Choisissez le live concerné — et si vous avez <strong>oublié de le lancer dans l'app</strong>, créez-le après coup avec sa vraie date et ses horaires (<span class="tuto-btn">➕ Live passé</span> dans l'onglet Lives, ou depuis cette fenêtre). Un live existant se modifie via <span class="tuto-btn">✏ Modifier ce live</span> dans son détail (plateforme, date, horaires — les heures des ventes suivent le décalage).</li>
           <li>Importez toutes les photos d'un coup (elles sont compressées automatiquement avant envoi).</li>
           <li><strong>Claude (IA vision)</strong> lit le numéro sur l'étiquette et reconnaît le produit dans votre catalogue.</li>
           <li>Vous <strong>vérifiez la liste</strong> (numéro et produit modifiables), puis validez : les ventes sont créées, le stock décompté, et chaque vente garde sa photo.</li>
@@ -417,6 +501,19 @@
     </details>
 
     <details class="card tuto-section">
+      <summary><span class="tuto-emoji">🧾</span> Comptabilité</summary>
+      <div class="tuto-body">
+        <p>L'onglet <em>Compta</em> prépare votre déclaration de TVA française, par mois ou par année :</p>
+        <ul>
+          <li><strong>TVA collectée</strong> sur toutes vos ventes payées (tous canaux, gives et ventes boutique des rapports incluses), <strong>TVA déductible estimée</strong> sur les achats France TTC des produits vendus, et <strong>TVA nette à reverser</strong> — les produits 🇪🇺 intracommunautaires (case sur la fiche produit) sont isolés, sans droit à déduction.</li>
+          <li><strong>Détail par mois et par canal</strong>, coût des marchandises vendues (dont intracom), frais de plateformes (charges) et frais d'envoi.</li>
+          <li><strong>Valeur du stock au coût d'achat</strong> (dont 🇪🇺 / France) — pour le bilan.</li>
+          <li>Deux exports pour le comptable : le <span class="tuto-btn">⬇ Journal des ventes</span> (chaque vente ligne à ligne : TTC, HT, TVA, coût, TVA déductible, frais, net perçu…) et le <span class="tuto-btn">⬇ Récap mensuel</span>. La <em>note de méthode</em> en bas de l'onglet explique tous les calculs — transmettez-la avec les exports.</li>
+        </ul>
+      </div>
+    </details>
+
+    <details class="card tuto-section">
       <summary><span class="tuto-emoji">💾</span> Vos données et sauvegardes</summary>
       <div class="tuto-body">
         <p>Tout est stocké <strong>sur votre ordinateur</strong>, rien ne part dans le cloud (sauf les photos envoyées à l'IA quand vous utilisez les ventes par photos) :</p>
@@ -425,7 +522,7 @@
           <li><code>uploads/</code> — les photos des produits et des ventes.</li>
         </ul>
         <p><strong>🔒 Sécurité</strong> : votre clé API est <strong>chiffrée</strong> dans la base et n'est jamais renvoyée au navigateur. Dans l'onglet <em>Importer</em>, vous pouvez définir un <strong>mot de passe</strong> qui verrouille toute l'app (données et photos) — indispensable si elle est accessible depuis Internet ou un autre appareil.</p>
-        <p><strong>💾 Sauvegarde automatique</strong> : dans l'onglet <em>Importer</em>, indiquez un dossier de sauvegarde (idéalement synchronisé : iCloud Drive, Dropbox… ou un disque externe). Une copie complète (base + photos) y est faite <strong>chaque jour automatiquement</strong>, les 14 dernières sont conservées, et le bouton <span class="tuto-btn">↩ Restaurer</span> permet de revenir à n'importe laquelle en un clic.</p>
+        <p><strong>💾 Sauvegarde automatique</strong> : dans l'onglet <em>Importer</em>, activez-la <strong>en un clic</strong> (le bon dossier est proposé selon la machine). Une copie complète (base + photos) est faite <strong>chaque jour</strong>, les 14 dernières sont conservées. <span class="tuto-btn">⬇ Télécharger une copie complète</span> met une archive sur votre ordinateur — le réflexe à avoir régulièrement quand l'app est sur un serveur — et <span class="tuto-btn">↩ Restaurer</span> revient à n'importe quelle sauvegarde, y compris depuis une archive téléchargée (pour migrer d'une machine à l'autre).</p>
       </div>
     </details>
   </main>
@@ -439,7 +536,7 @@
           <div class="photo-side">
             <div id="photoDrop" class="photo-drop">
               <img id="photoPreview" alt="" hidden>
-              <span id="photoHint">📷<br>Cliquez ou glissez<br>une photo ici</span>
+              <span id="photoHint">📷<br>Cliquez, glissez<br>ou collez (⌘V)<br>une photo ici</span>
             </div>
             <input type="file" id="photoInput" accept="image/*" hidden>
           </div>
@@ -463,6 +560,13 @@
               <label>Prix de vente conseillé TTC (€)<input name="price" type="number" step="any" min="0" value="0"></label>
               <label>Coût d'achat (€)<input name="cost" type="number" step="any" min="0" value="0"></label>
             </div>
+            <label class="check vat-check">
+              <input type="checkbox" name="vat_intra">
+              🇪🇺 Achat intracommunautaire (facturé HT, autoliquidation)
+            </label>
+            <p class="muted small">Coché : produit acheté <strong>hors TVA</strong> (Pologne, Allemagne…) — aucune TVA à récupérer. Décoché : acheté <strong>en France TTC</strong> (saisissez le coût TTC) — la TVA payée est déductible.
+              <strong>Le coût et cette case s'appliquent aux prochaines entrées en stock</strong> : chaque réassort crée un <em>lot</em> qui garde son propre coût et son régime de TVA, et les ventes consomment les lots du plus ancien au plus récent (FIFO).</p>
+            <div id="lotsInfo" class="lots-info" hidden></div>
             <div class="row2">
               <label>Stock<input name="stock" type="number" min="0" value="0"></label>
               <label>Seuil d'alerte stock bas<input name="min_stock" type="number" min="0" value="0"></label>
@@ -493,6 +597,15 @@
           <span class="platform-icon">🟡</span>Whatnot
         </button>
       </div>
+      <details class="api-key-setup start-no-setup">
+        <summary>⚙ Premier n° de vente : <strong id="startNoPreview">#1</strong></summary>
+        <p class="muted small">Laissez 1 en temps normal. Si le live a <strong>déjà commencé sur la plateforme</strong>
+          (bug, app relancée…), mettez le numéro de la <strong>prochaine vente à enregistrer</strong> — vous ajouterez
+          les ventes manquées après le live (Détail → ➕ Ajouter une vente).</p>
+        <label class="se-no-row"><span class="photo-no-prefix">#</span>
+          <input type="number" id="liveStartNo" min="1" value="1">
+        </label>
+      </details>
       <div class="actions">
         <span class="spacer"></span>
         <button type="button" class="btn" id="btnClosePlatform">Annuler</button>
@@ -508,6 +621,7 @@
       <span id="liveTimer" class="live-timer">00:00</span>
       <span id="liveCounters" class="live-counters"></span>
       <span class="spacer"></span>
+      <button class="btn ghost" id="btnMinimizeLive" title="Fermer cet écran SANS terminer le live — pour gérer les produits pendant qu'une autre personne enregistre les ventes">⤵ Réduire</button>
       <button class="btn danger" id="btnEndLive">⏹ Terminer le live</button>
     </header>
     <div class="live-body">
@@ -544,6 +658,88 @@
       <div class="actions">
         <span class="spacer"></span>
         <button class="btn primary" id="btnCloseRecap">Fermer</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================== FUSIONNER DEUX LIVES ===================== -->
+  <div id="mergeLiveModal" class="modal-overlay" hidden>
+    <div class="modal narrow">
+      <h2>🔗 Fusionner un live dans celui-ci</h2>
+      <p class="muted">Toutes les ventes, cadeaux et lignes hors écran du live choisi rejoindront le live affiché,
+        qui couvrira toute la période (du début le plus tôt à la fin la plus tarde). Si des numéros de vente
+        se chevauchent, ceux du live absorbé seront décalés à la suite.</p>
+      <label>Live à absorber
+        <select id="mergeSelect"></select>
+      </label>
+      <div class="actions">
+        <span class="spacer"></span>
+        <button type="button" class="btn" id="btnCloseMerge">Annuler</button>
+        <button type="button" class="btn primary" id="btnConfirmMerge">🔗 Fusionner</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================== SUPPRIMER UN LIVE ===================== -->
+  <div id="deleteLiveModal" class="modal-overlay" hidden>
+    <div class="modal narrow">
+      <h2>🗑 Supprimer ce live</h2>
+      <div id="dlSummary" class="dl-summary"></div>
+      <p class="muted"><strong>Cette action est définitive.</strong> Les ventes et cadeaux de ce live seront effacés,
+        les articles <strong>reviendront en stock</strong>, et le live disparaîtra de l'historique et des statistiques.</p>
+      <label>Pour confirmer, tapez <strong>SUPPRIMER</strong> :
+        <input type="text" id="dlConfirm" autocomplete="off" placeholder="SUPPRIMER">
+      </label>
+      <div class="actions">
+        <span class="spacer"></span>
+        <button type="button" class="btn" id="btnCloseDeleteLive">Annuler</button>
+        <button type="button" class="btn danger" id="btnConfirmDeleteLive" disabled>🗑 Supprimer définitivement</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================== CORRIGER / AJOUTER UNE VENTE ===================== -->
+  <div id="saleEditModal" class="modal-overlay" hidden>
+    <div class="modal narrow">
+      <h2 id="saleEditTitle">✏ Corriger la vente</h2>
+      <label>Numéro de vente
+        <div class="se-no-row"><span class="photo-no-prefix">#</span><input type="number" id="seNo" min="1"></div>
+      </label>
+      <label>Produit
+        <select id="seProduct"></select>
+      </label>
+      <p class="muted small" id="seHint"></p>
+      <div class="actions">
+        <button type="button" class="btn danger" id="btnSeCancelSale" title="Annule la vente : l'article revient en stock">✖ Annuler la vente</button>
+        <span class="spacer"></span>
+        <button type="button" class="btn" id="btnCloseSaleEdit">Fermer</button>
+        <button type="button" class="btn primary" id="btnSeSave">Enregistrer</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================== CRÉER / MODIFIER UN LIVE PASSÉ ===================== -->
+  <div id="liveEditModal" class="modal-overlay" hidden>
+    <div class="modal narrow">
+      <h2 id="liveEditTitle">➕ Ajouter un live passé</h2>
+      <p class="muted" id="liveEditHint">Enregistrez un live déjà fait avec sa vraie date : vous pourrez ensuite y ajouter
+        les ventes (photos, rapport de la plateforme) et les cadeaux.</p>
+      <div class="ps-create-grid">
+        <label>Plateforme
+          <select id="leplatform">
+            <option value="tiktok">TikTok</option>
+            <option value="whatnot">🟡 Whatnot</option>
+          </select>
+        </label>
+        <label>Date<input type="date" id="leDate"></label>
+        <label>Début<input type="time" id="leStart" value="20:00"></label>
+        <label>Fin<input type="time" id="leEnd" value="22:00"></label>
+      </div>
+      <p class="muted small">Un live qui finit après minuit est géré : si l'heure de fin est avant celle de début, elle compte pour le lendemain.</p>
+      <div class="actions">
+        <span class="spacer"></span>
+        <button type="button" class="btn" id="btnCloseLiveEdit">Annuler</button>
+        <button type="button" class="btn primary" id="btnLiveEditSave">Enregistrer</button>
       </div>
     </div>
   </div>

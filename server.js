@@ -2,12 +2,15 @@ const express = require('express');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
+const os = require('os');
+const { execFile } = require('child_process');
 const crypto = require('crypto');
 const { DatabaseSync } = require('node:sqlite');
 const XLSX = require('xlsx');
 const Anthropic = require('@anthropic-ai/sdk');
 
 const PORT = process.env.PORT || 3000;
+console.log('WowMart Stock — démarrage…');
 const DATA_DIR = path.join(__dirname, 'data');
 const UPLOADS_DIR = path.join(__dirname, 'uploads');
 fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -133,6 +136,28 @@ CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
+
+-- Lots d'achat : chaque entrée en stock garde son coût unitaire et son régime
+-- de TVA (🇪🇺 intracom ou France TTC). Les ventes consomment les lots en FIFO
+-- (premier arrivé, premier vendu) : marge et TVA justes même quand le prix
+-- d'achat change d'un réassort à l'autre.
+CREATE TABLE IF NOT EXISTS stock_lots (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+  qty_left REAL NOT NULL,
+  unit_cost REAL NOT NULL,
+  vat_intra INTEGER NOT NULL DEFAULT 0,
+  acquired_at TEXT NOT NULL,
+  note TEXT NOT NULL DEFAULT ''
+);
+
+-- Quels lots chaque vente a consommés (permet de restaurer exactement les
+-- bons lots en cas d'annulation, de retour ou de changement de produit)
+CREATE TABLE IF NOT EXISTS movement_lots (
+  movement_id INTEGER NOT NULL,
+  lot_id INTEGER NOT NULL,
+  qty REAL NOT NULL
+);
 `);
 
 // Migration : ajout des colonnes session_id / cancelled / sale_no / sold_price / fees
@@ -149,10 +174,21 @@ CREATE TABLE IF NOT EXISTS settings (
   if (!mcols.includes('photo')) db.exec('ALTER TABLE movements ADD COLUMN photo TEXT');
   // Frais d'expédition / emballage payés par le vendeur, par vente (déduits de la marge)
   if (!mcols.includes('shipping_cost')) db.exec('ALTER TABLE movements ADD COLUMN shipping_cost REAL');
+  // Coût réellement consommé (FIFO sur les lots) et sa part achetée en France
+  // TTC (base de la TVA déductible)
+  if (!mcols.includes('cost_used')) db.exec('ALTER TABLE movements ADD COLUMN cost_used REAL');
+  if (!mcols.includes('cost_fr')) db.exec('ALTER TABLE movements ADD COLUMN cost_fr REAL');
 
   const scols = db.prepare('PRAGMA table_info(live_sessions)').all().map((c) => c.name);
   if (!scols.includes('report_imported_at')) db.exec('ALTER TABLE live_sessions ADD COLUMN report_imported_at TEXT');
   if (!scols.includes('validated_at')) db.exec('ALTER TABLE live_sessions ADD COLUMN validated_at TEXT');
+  // Frais propres à un live (sinon barème de la plateforme)
+  if (!scols.includes('fee_commission')) db.exec('ALTER TABLE live_sessions ADD COLUMN fee_commission REAL');
+  if (!scols.includes('fee_processing')) db.exec('ALTER TABLE live_sessions ADD COLUMN fee_processing REAL');
+  if (!scols.includes('fee_fixed')) db.exec('ALTER TABLE live_sessions ADD COLUMN fee_fixed REAL');
+  // Premier numéro de vente du live (1 par défaut ; > 1 si le live avait déjà
+  // commencé sur la plateforme avant d'être lancé dans l'app)
+  if (!scols.includes('start_no')) db.exec('ALTER TABLE live_sessions ADD COLUMN start_no INTEGER NOT NULL DEFAULT 1');
 
   // Numérotation rétroactive des ventes des lives existants (#1, #2… par ordre chronologique)
   const toNumber = db
@@ -186,6 +222,27 @@ CREATE TABLE IF NOT EXISTS settings (
   if (!cols.includes('variant_group')) db.exec(`ALTER TABLE products ADD COLUMN variant_group TEXT NOT NULL DEFAULT ''`);
   // Marque, distincte de la catégorie (ex : marque YESIDO, catégorie Chargeurs)
   if (!cols.includes('brand')) db.exec(`ALTER TABLE products ADD COLUMN brand TEXT NOT NULL DEFAULT ''`);
+  // Achat intracommunautaire : produit acheté HT (autoliquidation), donc
+  // aucune TVA récupérable sur son coût — contrairement à un achat en France
+  // TTC dont la TVA payée est déductible
+  if (!cols.includes('vat_intra')) db.exec(`ALTER TABLE products ADD COLUMN vat_intra INTEGER NOT NULL DEFAULT 0`);
+
+  // Migration lots : le stock existant devient un lot initial au coût actuel
+  const withoutLots = db
+    .prepare(
+      `SELECT p.id, p.stock, p.cost, p.vat_intra FROM products p
+       WHERE p.stock > 0 AND NOT EXISTS (SELECT 1 FROM stock_lots l WHERE l.product_id = p.id)`
+    )
+    .all();
+  if (withoutLots.length) {
+    withTransaction(() => {
+      for (const p of withoutLots) {
+        db.prepare('INSERT INTO stock_lots (product_id, qty_left, unit_cost, vat_intra, acquired_at, note) VALUES (?, ?, ?, ?, ?, ?)')
+          .run(p.id, p.stock, p.cost, p.vat_intra, new Date().toISOString(), 'Stock initial');
+      }
+    });
+    console.log(`Lots initiaux créés pour ${withoutLots.length} produit(s) ✓`);
+  }
   if (cols.includes('stock_online')) {
     withTransaction(() => {
       if (!cols.includes('stock')) {
@@ -215,6 +272,65 @@ const CHANNEL_NAMES = {
 };
 
 const now = () => new Date().toISOString();
+
+// ---------------------------------------------------------------------------
+// Lots FIFO
+// ---------------------------------------------------------------------------
+function addLot(productId, qty, unitCost, vatIntra, note) {
+  if (!(qty > 0)) return;
+  db.prepare('INSERT INTO stock_lots (product_id, qty_left, unit_cost, vat_intra, acquired_at, note) VALUES (?, ?, ?, ?, ?, ?)')
+    .run(productId, qty, unitCost || 0, vatIntra ? 1 : 0, now(), note || '');
+}
+
+// Consomme `qty` unités en FIFO et enregistre sur le mouvement le coût
+// réellement consommé (cost_used) et sa part achetée en France TTC (cost_fr)
+function consumeLots(productId, qty, movementId) {
+  let remaining = qty;
+  let cost = 0;
+  let costFr = 0;
+  const lots = db
+    .prepare('SELECT * FROM stock_lots WHERE product_id = ? AND qty_left > 0 ORDER BY acquired_at, id')
+    .all(productId);
+  for (const lot of lots) {
+    if (remaining <= 0) break;
+    const take = Math.min(remaining, lot.qty_left);
+    db.prepare('UPDATE stock_lots SET qty_left = qty_left - ? WHERE id = ?').run(take, lot.id);
+    if (movementId) {
+      db.prepare('INSERT INTO movement_lots (movement_id, lot_id, qty) VALUES (?, ?, ?)').run(movementId, lot.id, take);
+    }
+    cost += take * lot.unit_cost;
+    if (!lot.vat_intra) costFr += take * lot.unit_cost;
+    remaining -= take;
+  }
+  if (remaining > 0) {
+    // stock sans lot (données anciennes) : coût par défaut de la fiche
+    const p = db.prepare('SELECT cost, vat_intra FROM products WHERE id = ?').get(productId);
+    if (p) {
+      cost += remaining * p.cost;
+      if (!p.vat_intra) costFr += remaining * p.cost;
+    }
+  }
+  if (movementId) {
+    db.prepare('UPDATE movements SET cost_used = ?, cost_fr = ? WHERE id = ?').run(cost, costFr, movementId);
+  }
+  return { cost, costFr };
+}
+
+// Restaure les lots exacts consommés par un mouvement (annulation, retour,
+// changement de produit, suppression de live)
+function restoreLots(movementId, qty, productId) {
+  const rows = db.prepare('SELECT * FROM movement_lots WHERE movement_id = ?').all(movementId);
+  if (rows.length) {
+    for (const r of rows) {
+      db.prepare('UPDATE stock_lots SET qty_left = qty_left + ? WHERE id = ?').run(r.qty, r.lot_id);
+    }
+    db.prepare('DELETE FROM movement_lots WHERE movement_id = ?').run(movementId);
+  } else {
+    // mouvement d'avant les lots : on recrée un lot au coût de la fiche
+    const p = db.prepare('SELECT cost, vat_intra FROM products WHERE id = ?').get(productId);
+    if (p) addLot(productId, qty, p.cost, p.vat_intra, 'Restauration');
+  }
+}
 
 function logMovement(productId, channel, delta, stockAfter, reason, sessionId = null, saleNo = null) {
   return db
@@ -270,6 +386,9 @@ const uploadLivePhotos = multer({
 
 const app = express();
 app.disable('x-powered-by');
+// Derrière un reverse proxy local (Caddy/nginx) : fiabilise req.secure et
+// req.ip (cookies Secure, limitation des essais de connexion par IP)
+app.set('trust proxy', 'loopback');
 app.use(express.json());
 app.use((req, res, next) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
@@ -445,6 +564,7 @@ function readProductBody(body) {
     barcode: (body.barcode || '').trim(),
     variant_group: (body.variant_group || '').trim(),
     brand: (body.brand || '').trim(),
+    vat_intra: ['1', 'true', 'on', 'oui'].includes(String(body.vat_intra || '').toLowerCase()) ? 1 : 0,
     name: (body.name || '').trim(),
     category: (body.category || '').trim(),
     price: Number(body.price) || 0,
@@ -465,12 +585,15 @@ app.post('/api/products', uploadPhoto.single('photo'), (req, res) => {
   const ts = now();
   const info = db
     .prepare(
-      `INSERT INTO products (sku, barcode, variant_group, brand, name, category, price, cost, photo, stock, min_stock, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO products (sku, barcode, variant_group, brand, vat_intra, name, category, price, cost, photo, stock, min_stock, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
-    .run(p.sku, p.barcode, p.variant_group, p.brand, p.name, p.category, p.price, p.cost, photo, p.stock, p.min_stock, ts, ts);
+    .run(p.sku, p.barcode, p.variant_group, p.brand, p.vat_intra, p.name, p.category, p.price, p.cost, photo, p.stock, p.min_stock, ts, ts);
   const id = info.lastInsertRowid;
-  if (p.stock > 0) logMovement(id, 'adjust', p.stock, p.stock, 'Création du produit');
+  if (p.stock > 0) {
+    logMovement(id, 'adjust', p.stock, p.stock, 'Création du produit');
+    addLot(id, p.stock, p.cost, p.vat_intra, 'Création du produit');
+  }
   res.status(201).json(db.prepare('SELECT * FROM products WHERE id = ?').get(id));
 });
 
@@ -495,14 +618,27 @@ app.put('/api/products/:id', uploadPhoto.single('photo'), (req, res) => {
   }
 
   if (p.stock !== existing.stock) {
-    logMovement(id, 'adjust', p.stock - existing.stock, p.stock, 'Modification manuelle');
+    const diff = p.stock - existing.stock;
+    const movId = logMovement(id, 'adjust', diff, p.stock, 'Modification manuelle');
+    // le stock ajouté depuis la fiche entre comme un lot au coût et au régime
+    // de TVA saisis DANS la fiche (ex : réassort France à un nouveau prix)
+    if (diff > 0) addLot(id, diff, p.cost, p.vat_intra, 'Réassort (fiche produit)');
+    else consumeLots(id, -diff, movId);
   }
 
   db.prepare(
-    `UPDATE products SET sku=?, barcode=?, variant_group=?, brand=?, name=?, category=?, price=?, cost=?, photo=?, stock=?, min_stock=?, updated_at=?
+    `UPDATE products SET sku=?, barcode=?, variant_group=?, brand=?, vat_intra=?, name=?, category=?, price=?, cost=?, photo=?, stock=?, min_stock=?, updated_at=?
      WHERE id=?`
-  ).run(p.sku, p.barcode, p.variant_group, p.brand, p.name, p.category, p.price, p.cost, photo, p.stock, p.min_stock, now(), id);
+  ).run(p.sku, p.barcode, p.variant_group, p.brand, p.vat_intra, p.name, p.category, p.price, p.cost, photo, p.stock, p.min_stock, now(), id);
   res.json(db.prepare('SELECT * FROM products WHERE id = ?').get(id));
+});
+
+// Lots en stock d'un produit (affichés dans la fiche)
+app.get('/api/products/:id/lots', (req, res) => {
+  const rows = db
+    .prepare('SELECT qty_left, unit_cost, vat_intra, acquired_at, note FROM stock_lots WHERE product_id = ? AND qty_left > 0 ORDER BY acquired_at, id')
+    .all(Number(req.params.id));
+  res.json(rows);
 });
 
 app.delete('/api/products/:id', (req, res) => {
@@ -537,11 +673,13 @@ app.post('/api/products/:id/stock', (req, res) => {
     return res.status(400).json({ error: 'Stock déjà à zéro' });
   }
   let sessionId = null;
+  let sessionStartNo = 1;
   if (req.body.session_id != null) {
     const session = db.prepare('SELECT * FROM live_sessions WHERE id = ?').get(Number(req.body.session_id));
     if (!session) return res.status(404).json({ error: 'Live introuvable' });
     if (session.ended_at) return res.status(400).json({ error: 'Ce live est déjà terminé' });
     sessionId = session.id;
+    sessionStartNo = session.start_no || 1;
   }
   const after = Math.max(0, existing.stock + delta);
   const realDelta = after - existing.stock;
@@ -549,14 +687,18 @@ app.post('/api/products/:id/stock', (req, res) => {
   db.prepare('UPDATE products SET stock = ?, updated_at = ? WHERE id = ?').run(after, now(), id);
   const defaultReason =
     realDelta < 0 && SALE_CHANNELS.includes(channel) ? 'Vente' : 'Ajustement rapide';
-  // Numéro de vente séquentiel dans le live (#1, #2…), comme sur Whatnot / TikTok
+  // Numéro de vente séquentiel dans le live (#1, #2…), comme sur Whatnot /
+  // TikTok — en partant du premier numéro choisi au lancement (start_no)
   let saleNo = null;
   if (sessionId && realDelta < 0) {
-    saleNo = db
-      .prepare('SELECT COALESCE(MAX(sale_no), 0) + 1 AS n FROM movements WHERE session_id = ?')
+    const maxNo = db
+      .prepare('SELECT COALESCE(MAX(sale_no), 0) AS n FROM movements WHERE session_id = ?')
       .get(sessionId).n;
+    saleNo = Math.max(maxNo, sessionStartNo - 1) + 1;
   }
   const movementId = logMovement(id, channel, realDelta, after, req.body.reason || defaultReason, sessionId, saleNo);
+  if (realDelta > 0) addLot(id, realDelta, existing.cost, existing.vat_intra, 'Réassort rapide');
+  else consumeLots(id, -realDelta, movementId);
   res.json({
     product: db.prepare('SELECT * FROM products WHERE id = ?').get(id),
     movement_id: movementId,
@@ -579,6 +721,8 @@ app.post('/api/movements/:id/cancel', (req, res) => {
     db.prepare('UPDATE products SET stock = ?, updated_at = ? WHERE id = ?').run(after, now(), m.product_id);
     const reverseId = logMovement(m.product_id, 'adjust', -m.delta, after, 'Annulation', m.session_id);
     db.prepare('UPDATE movements SET cancelled = 1 WHERE id = ?').run(reverseId);
+    if (m.delta < 0) restoreLots(m.id, -m.delta, m.product_id);
+    else consumeLots(m.product_id, m.delta, reverseId);
   });
   res.json({ product: db.prepare('SELECT * FROM products WHERE id = ?').get(m.product_id) });
 });
@@ -605,6 +749,7 @@ app.post('/api/movements/:id/return', (req, res) => {
       m.product_id, 'return', -m.delta, after,
       `Retour${m.sale_no ? ` vente #${m.sale_no}` : ''} (${CHANNEL_NAMES[m.channel] || m.channel})`
     );
+    restoreLots(m.id, -m.delta, m.product_id);
   });
   res.json({ product: db.prepare('SELECT * FROM products WHERE id = ?').get(m.product_id) });
 });
@@ -657,6 +802,21 @@ function getFees(platform) {
     /* base conservée */
   }
   return base;
+}
+
+// Frais effectifs d'un live : ceux enregistrés sur le live s'il en a
+// (ex : promotion Whatnot ce soir-là), sinon le barème de la plateforme
+function feesForSession(session) {
+  if (session.fee_commission != null || session.fee_processing != null || session.fee_fixed != null) {
+    const base = getFees(session.platform);
+    return {
+      commission: session.fee_commission != null ? session.fee_commission : base.commission,
+      processing: session.fee_processing != null ? session.fee_processing : base.processing,
+      fixed: session.fee_fixed != null ? session.fee_fixed : base.fixed,
+      custom: true,
+    };
+  }
+  return { ...getFees(session.platform), custom: false };
 }
 
 // Clé API Anthropic pour l'analyse des photos de ventes (vision).
@@ -801,6 +961,7 @@ app.get('/api/stats', (req, res) => {
 const sessionSales = db.prepare(
   `SELECT m.id, m.created_at, m.delta, m.channel, m.reason, m.cancelled,
           m.sale_no, m.sold_price, m.fees, m.is_gift, m.payment_status, m.net_amount, m.photo,
+          m.shipping_cost, m.cost_used,
           p.id AS product_id, p.name AS product_name, p.sku AS product_sku,
           p.price AS product_price, p.cost AS product_cost, p.photo AS product_photo
    FROM movements m JOIN products p ON p.id = m.product_id
@@ -816,7 +977,7 @@ const sessionExtras = db.prepare('SELECT * FROM live_extras WHERE session_id = ?
 // importé ; sinon estimation avec le barème de frais de la plateforme
 // (commission % + traitement % + fixe €).
 function sessionSummary(session) {
-  const fees = getFees(session.platform);
+  const fees = feesForSession(session);
   const feePct = (fees.commission + fees.processing) / 100;
   const feeFixed = fees.fixed;
   const agg = db
@@ -826,10 +987,11 @@ function sessionSummary(session) {
               COALESCE(SUM(CASE WHEN COALESCE(m.payment_status,'paid') NOT IN ('failed','refunded')
                 THEN -m.delta * COALESCE(m.sold_price, p.price) ELSE 0 END),0) AS revenue,
               COALESCE(SUM(CASE WHEN COALESCE(m.payment_status,'paid') NOT IN ('failed','refunded')
-                THEN -m.delta * (COALESCE(m.net_amount,
+                THEN -m.delta * COALESCE(m.net_amount,
                   COALESCE(m.sold_price, p.price) - COALESCE(m.fees,
                     CASE WHEN COALESCE(m.sold_price, p.price) > 0
-                      THEN COALESCE(m.sold_price, p.price) * ? + ? ELSE 0 END)) - p.cost)
+                      THEN COALESCE(m.sold_price, p.price) * ? + ? ELSE 0 END))
+                  - COALESCE(m.cost_used, -m.delta * p.cost)
                   - COALESCE(m.shipping_cost, 0)
                 ELSE 0 END),0) AS margin,
               COALESCE(SUM(CASE WHEN COALESCE(m.payment_status,'paid') NOT IN ('failed','refunded')
@@ -892,10 +1054,230 @@ app.post('/api/lives', (req, res) => {
   if (open) {
     return res.status(409).json({ error: 'Un live est déjà en cours, terminez-le d’abord', session: sessionSummary(open) });
   }
+  // Premier numéro de vente : > 1 si le live avait déjà commencé sur la
+  // plateforme (bug, app relancée…) — les ventes manquées s'ajoutent après
+  const startNo = Math.max(1, parseInt(req.body.start_no, 10) || 1);
   const info = db
-    .prepare('INSERT INTO live_sessions (platform, name, started_at) VALUES (?, ?, ?)')
-    .run(platform, (req.body.name || '').trim(), now());
+    .prepare('INSERT INTO live_sessions (platform, name, started_at, start_no) VALUES (?, ?, ?, ?)')
+    .run(platform, (req.body.name || '').trim(), now(), startNo);
   res.status(201).json(sessionSummary(db.prepare('SELECT * FROM live_sessions WHERE id = ?').get(info.lastInsertRowid)));
+});
+
+// Modifier un live terminé : plateforme, date et horaires.
+// Si la date de début change, les ventes du live sont décalées du même écart
+// pour garder leur position dans le déroulé ; si la plateforme change, le
+// canal des ventes suit (stats par plateforme).
+app.patch('/api/lives/:id', (req, res) => {
+  const session = db.prepare('SELECT * FROM live_sessions WHERE id = ?').get(Number(req.params.id));
+  if (!session) return res.status(404).json({ error: 'Live introuvable' });
+
+  // Frais propres à ce live (modifiables même live terminé) :
+  // { fees: { commission, processing, fixed } } ou { fees: null } → barème plateforme
+  if ('fees' in req.body) {
+    if (req.body.fees === null) {
+      db.prepare('UPDATE live_sessions SET fee_commission = NULL, fee_processing = NULL, fee_fixed = NULL WHERE id = ?')
+        .run(session.id);
+    } else {
+      const f = req.body.fees || {};
+      const commission = parseFloat(f.commission);
+      const processing = parseFloat(f.processing);
+      const fixed = parseFloat(f.fixed);
+      if (
+        ![commission, processing, fixed].every(Number.isFinite) ||
+        commission < 0 || commission > 100 || processing < 0 || processing > 100 || fixed < 0 || fixed > 100
+      ) {
+        return res.status(400).json({ error: 'Frais invalides' });
+      }
+      db.prepare('UPDATE live_sessions SET fee_commission = ?, fee_processing = ?, fee_fixed = ? WHERE id = ?')
+        .run(commission, processing, fixed, session.id);
+    }
+    if (!req.body.platform && !req.body.started_at && !req.body.ended_at) {
+      return res.json(sessionSummary(db.prepare('SELECT * FROM live_sessions WHERE id = ?').get(session.id)));
+    }
+  }
+
+  if (!session.ended_at) return res.status(400).json({ error: 'Terminez le live avant de modifier ses informations' });
+
+  const platform = req.body.platform || session.platform;
+  if (!LIVE_PLATFORMS.includes(platform)) return res.status(400).json({ error: 'Plateforme invalide' });
+  const started = new Date(req.body.started_at || session.started_at);
+  const ended = new Date(req.body.ended_at || session.ended_at);
+  if (Number.isNaN(started.getTime()) || Number.isNaN(ended.getTime())) {
+    return res.status(400).json({ error: 'Dates invalides' });
+  }
+  if (ended <= started) return res.status(400).json({ error: 'La fin du live doit être après son début' });
+  if (started > new Date()) return res.status(400).json({ error: 'La date de début doit être dans le passé' });
+
+  withTransaction(() => {
+    const delta = started.getTime() - new Date(session.started_at).getTime();
+    if (delta !== 0) {
+      const rows = db.prepare('SELECT id, created_at FROM movements WHERE session_id = ?').all(session.id);
+      const upd = db.prepare('UPDATE movements SET created_at = ? WHERE id = ?');
+      for (const r of rows) {
+        upd.run(new Date(new Date(r.created_at).getTime() + delta).toISOString(), r.id);
+      }
+    }
+    if (platform !== session.platform) {
+      db.prepare(`UPDATE movements SET channel = ? WHERE session_id = ? AND channel IN ('tiktok', 'whatnot', 'live')`)
+        .run(platform, session.id);
+    }
+    db.prepare('UPDATE live_sessions SET platform = ?, started_at = ?, ended_at = ? WHERE id = ?')
+      .run(platform, started.toISOString(), ended.toISOString(), session.id);
+  });
+  res.json(sessionSummary(db.prepare('SELECT * FROM live_sessions WHERE id = ?').get(session.id)));
+});
+
+// Reprendre un live terminé (fin par erreur, plantage…) : il redevient « en
+// cours » et les prochaines ventes continuent la numérotation (#suivants)
+app.post('/api/lives/:id/reopen', (req, res) => {
+  const session = db.prepare('SELECT * FROM live_sessions WHERE id = ?').get(Number(req.params.id));
+  if (!session) return res.status(404).json({ error: 'Live introuvable' });
+  if (!session.ended_at) return res.status(400).json({ error: 'Ce live est déjà en cours' });
+  const open = db.prepare('SELECT id FROM live_sessions WHERE ended_at IS NULL').get();
+  if (open) return res.status(409).json({ error: 'Un autre live est déjà en cours, terminez-le d’abord' });
+  db.prepare('UPDATE live_sessions SET ended_at = NULL, validated_at = NULL WHERE id = ?').run(session.id);
+  const reopened = db.prepare('SELECT * FROM live_sessions WHERE id = ?').get(session.id);
+  res.json({ ...sessionSummary(reopened), sales: sessionSales.all(session.id) });
+});
+
+// Corriger une vente de live : numéro (#) et/ou produit.
+// { sale_no?, product_id? } — le stock suit un changement de produit
+// (l'ancien revient, le nouveau part), et les cadeaux rattachés suivent le
+// changement de numéro.
+app.patch('/api/movements/:id/edit', (req, res) => {
+  const m = db.prepare('SELECT * FROM movements WHERE id = ?').get(Number(req.params.id));
+  if (!m) return res.status(404).json({ error: 'Mouvement introuvable' });
+  if (m.delta >= 0 || !m.session_id) return res.status(400).json({ error: 'Seule une vente de live est modifiable ici' });
+  if (m.cancelled) return res.status(400).json({ error: 'Cette vente est annulée' });
+
+  let newSaleNo = m.sale_no;
+  if (req.body.sale_no !== undefined) {
+    newSaleNo = parseInt(req.body.sale_no, 10);
+    if (!Number.isFinite(newSaleNo) || newSaleNo <= 0) {
+      return res.status(400).json({ error: 'Numéro de vente invalide' });
+    }
+    if (!m.is_gift && newSaleNo !== m.sale_no) {
+      const dup = db
+        .prepare('SELECT id FROM movements WHERE session_id = ? AND sale_no = ? AND is_gift = 0 AND delta < 0 AND cancelled = 0 AND id != ?')
+        .get(m.session_id, newSaleNo, m.id);
+      if (dup) return res.status(409).json({ error: `Le n° #${newSaleNo} existe déjà dans ce live` });
+    }
+  }
+
+  let newProductId = m.product_id;
+  if (req.body.product_id !== undefined) {
+    newProductId = Number(req.body.product_id);
+    if (newProductId !== m.product_id) {
+      const target = db.prepare('SELECT * FROM products WHERE id = ?').get(newProductId);
+      if (!target) return res.status(404).json({ error: 'Produit introuvable' });
+      if (target.stock < -m.delta) return res.status(400).json({ error: `Stock insuffisant pour « ${target.name} »` });
+    }
+  }
+
+  withTransaction(() => {
+    if (newProductId !== m.product_id) {
+      const qty = -m.delta;
+      const oldP = db.prepare('SELECT * FROM products WHERE id = ?').get(m.product_id);
+      if (oldP) {
+        db.prepare('UPDATE products SET stock = stock + ?, updated_at = ? WHERE id = ?').run(qty, now(), oldP.id);
+      }
+      restoreLots(m.id, qty, m.product_id);
+      db.prepare('UPDATE products SET stock = stock - ?, updated_at = ? WHERE id = ?').run(qty, now(), newProductId);
+      db.prepare('UPDATE movements SET product_id = ? WHERE id = ?').run(newProductId, m.id);
+      consumeLots(newProductId, qty, m.id);
+    }
+    if (newSaleNo !== m.sale_no) {
+      db.prepare('UPDATE movements SET sale_no = ? WHERE id = ?').run(newSaleNo, m.id);
+      if (!m.is_gift) {
+        // les cadeaux rattachés à cette vente suivent son nouveau numéro
+        db.prepare('UPDATE movements SET sale_no = ? WHERE session_id = ? AND sale_no = ? AND is_gift = 1 AND id != ?')
+          .run(newSaleNo, m.session_id, m.sale_no, m.id);
+      }
+    }
+    // la vérification devra être refaite
+    db.prepare('UPDATE live_sessions SET validated_at = NULL WHERE id = ?').run(m.session_id);
+  });
+  res.json({ ok: true });
+});
+
+// Fusionner deux lives terminés de la même plateforme (ex : un bug en plein
+// live a fait créer un deuxième live) : les ventes, cadeaux et lignes hors
+// écran de l'autre live rejoignent celui-ci, qui prend la période complète
+// (début le plus tôt → fin la plus tarde). Si des numéros de vente se
+// chevauchent, ceux de l'autre live sont décalés à la suite.
+app.post('/api/lives/:id/merge', (req, res) => {
+  const target = db.prepare('SELECT * FROM live_sessions WHERE id = ?').get(Number(req.params.id));
+  const source = db.prepare('SELECT * FROM live_sessions WHERE id = ?').get(Number(req.body.other_id));
+  if (!target || !source) return res.status(404).json({ error: 'Live introuvable' });
+  if (target.id === source.id) return res.status(400).json({ error: 'Choisissez un autre live' });
+  if (!target.ended_at || !source.ended_at) return res.status(400).json({ error: 'Les deux lives doivent être terminés' });
+  if (target.platform !== source.platform) {
+    return res.status(400).json({ error: 'Les deux lives doivent être sur la même plateforme' });
+  }
+
+  const nosOf = (sid) =>
+    db.prepare('SELECT sale_no FROM movements WHERE session_id = ? AND sale_no IS NOT NULL AND is_gift = 0 AND delta < 0 AND cancelled = 0')
+      .all(sid)
+      .map((r) => r.sale_no);
+  const targetNos = new Set(nosOf(target.id));
+  const conflict = nosOf(source.id).some((n) => targetNos.has(n));
+  let offset = 0;
+  if (conflict) {
+    const maxTarget = db
+      .prepare('SELECT COALESCE(MAX(sale_no), 0) AS m FROM movements WHERE session_id = ?')
+      .get(target.id).m;
+    offset = maxTarget;
+  }
+
+  withTransaction(() => {
+    if (offset > 0) {
+      db.prepare('UPDATE movements SET sale_no = sale_no + ? WHERE session_id = ? AND sale_no IS NOT NULL').run(offset, source.id);
+    }
+    db.prepare('UPDATE movements SET session_id = ? WHERE session_id = ?').run(target.id, source.id);
+    db.prepare('UPDATE live_extras SET session_id = ? WHERE session_id = ?').run(target.id, source.id);
+    const started = new Date(target.started_at) < new Date(source.started_at) ? target.started_at : source.started_at;
+    const ended = new Date(target.ended_at) > new Date(source.ended_at) ? target.ended_at : source.ended_at;
+    db.prepare('UPDATE live_sessions SET started_at = ?, ended_at = ?, start_no = ?, validated_at = NULL WHERE id = ?')
+      .run(started, ended, Math.min(target.start_no || 1, source.start_no || 1), target.id);
+    db.prepare('DELETE FROM live_sessions WHERE id = ?').run(source.id);
+  });
+  res.json({
+    ...sessionSummary(db.prepare('SELECT * FROM live_sessions WHERE id = ?').get(target.id)),
+    renumbered: offset > 0,
+  });
+});
+
+// Supprimer un live terminé (doublon, live de test, saisie ratée…) :
+// ses ventes et cadeaux sont effacés et les articles REVIENNENT en stock
+// (comme si le live n'avait jamais existé). Irréversible.
+app.delete('/api/lives/:id', (req, res) => {
+  const session = db.prepare('SELECT * FROM live_sessions WHERE id = ?').get(Number(req.params.id));
+  if (!session) return res.status(404).json({ error: 'Live introuvable' });
+  if (!session.ended_at) return res.status(400).json({ error: 'Terminez le live avant de le supprimer' });
+
+  const movements = db.prepare('SELECT * FROM movements WHERE session_id = ?').all(session.id);
+  withTransaction(() => {
+    for (const m of movements) {
+      // Retour en stock des ventes/cadeaux réels — les ventes annulées ont
+      // déjà été restockées, les remboursées aussi (mouvement Retour)
+      if (m.delta < 0 && !m.cancelled && m.payment_status !== 'refunded') {
+        db.prepare('UPDATE products SET stock = stock + ?, updated_at = ? WHERE id = ?')
+          .run(-m.delta, now(), m.product_id);
+        restoreLots(m.id, -m.delta, m.product_id);
+      }
+      db.prepare('DELETE FROM movement_lots WHERE movement_id = ?').run(m.id);
+    }
+    db.prepare('DELETE FROM movements WHERE session_id = ?').run(session.id);
+    db.prepare('DELETE FROM live_extras WHERE session_id = ?').run(session.id);
+    db.prepare('DELETE FROM live_sessions WHERE id = ?').run(session.id);
+  });
+  // Photos des ventes du live (hors transaction : best effort)
+  for (const m of movements) {
+    if (m.photo && m.photo.startsWith('/uploads/live-photos/')) {
+      fs.unlink(path.join(LIVE_PHOTOS_DIR, path.basename(m.photo)), () => {});
+    }
+  }
+  res.json({ ok: true, restored: movements.filter((m) => m.delta < 0 && !m.cancelled && m.payment_status !== 'refunded').length });
 });
 
 // Live en cours (pour reprendre après un rechargement de page)
@@ -915,11 +1297,27 @@ app.get('/api/lives', (req, res) => {
 app.get('/api/lives/:id', (req, res) => {
   const session = db.prepare('SELECT * FROM live_sessions WHERE id = ?').get(Number(req.params.id));
   if (!session) return res.status(404).json({ error: 'Live introuvable' });
+  // TVA déductible : TVA payée à l'achat des produits partis (ventes +
+  // cadeaux), pour les achats en France TTC uniquement — un produit acheté
+  // en intracommunautaire (HT) n'ouvre aucun droit à déduction.
+  const vatRate = parseFloat(getSetting('vat_rate', '20')) || 0;
+  const deductible = db
+    .prepare(
+      `SELECT COALESCE(SUM(
+         (SELECT CASE WHEN m.cost_fr IS NOT NULL THEN m.cost_fr
+                 WHEN p.vat_intra = 1 THEN 0 ELSE -m.delta * p.cost END)
+         * (1 - 1 / (1 + ? / 100.0))), 0) AS v
+       FROM movements m JOIN products p ON p.id = m.product_id
+       WHERE m.session_id = ? AND m.delta < 0 AND m.cancelled = 0
+         AND COALESCE(m.payment_status, 'paid') != 'refunded'`
+    )
+    .get(vatRate, session.id).v;
   res.json({
     ...sessionSummary(session),
     sales: sessionSales.all(session.id),
     extra_lines: sessionExtras.all(session.id),
-    fee_config: getFees(session.platform),
+    fee_config: feesForSession(session),
+    vat_deductible: deductible,
   });
 });
 
@@ -953,6 +1351,7 @@ app.post('/api/lives/:id/gift', (req, res) => {
     db.prepare('UPDATE products SET stock = ?, updated_at = ? WHERE id = ?').run(after, now(), product.id);
     movementId = logMovement(product.id, session.platform, -1, after, `Cadeau (vente #${saleNo})`, session.id, saleNo);
     db.prepare('UPDATE movements SET is_gift = 1, sold_price = 0 WHERE id = ?').run(movementId);
+    consumeLots(product.id, 1, movementId);
     // Cadeau ajouté après le live : daté comme la vente à laquelle il est rattaché
     if (session.ended_at) {
       const saleTs = db
@@ -989,7 +1388,7 @@ app.get('/api/lives/:id/export.csv', (req, res) => {
     return /[;"\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
   };
   const PAYMENT_FR = { paid: 'payé', pending: 'en attente', failed: 'échec', refunded: 'remboursé' };
-  const feeCfg = getFees(session.platform);
+  const feeCfg = feesForSession(session);
   const estFees = (price) =>
     price > 0 ? (price * (feeCfg.commission + feeCfg.processing)) / 100 + feeCfg.fixed : 0;
   const lines = sales.map((m) => {
@@ -1139,6 +1538,16 @@ app.post('/api/lives/:id/report/commit', (req, res) => {
   if (!mapping.sale_no || !mapping.sold_price) {
     return res.status(400).json({ error: 'Associez les colonnes Numéro / référence de vente et Prix de vente' });
   }
+  // Pourcentage de frais saisi à la main (le taux varie selon les lives) :
+  // déduit du prix de vente TTC de chaque ligne quand le rapport ne fournit
+  // ni gains nets ni frais. Enregistré aussi comme barème du live.
+  let manualPct = null;
+  if (req.body.manual_fee_pct !== undefined && req.body.manual_fee_pct !== null && req.body.manual_fee_pct !== '') {
+    manualPct = parseFloat(String(req.body.manual_fee_pct).replace(',', '.'));
+    if (!Number.isFinite(manualPct) || manualPct < 0 || manualPct > 100) {
+      return res.status(400).json({ error: 'Pourcentage de frais invalide (entre 0 et 100)' });
+    }
+  }
 
   // Seules les ventes « Vue à l'écran » (pas les cadeaux) sont associées aux
   // ventes enregistrées dans l'app
@@ -1164,7 +1573,12 @@ app.post('/api/lives/:id/report/commit', (req, res) => {
       const { type, num } = classifyRef(rawRef);
       const price = toNum(row[mapping.sold_price]);
       const net = mapping.net_amount ? toNum(row[mapping.net_amount]) : null;
-      const fees = mapping.fees ? toNum(row[mapping.fees]) : null;
+      let fees = mapping.fees ? toNum(row[mapping.fees]) : null;
+      // Frais manuels : prioritaires quand la ligne n'a pas de gains nets —
+      // net = prix TTC − pourcentage saisi
+      if (manualPct != null && net == null) {
+        fees = (price * manualPct) / 100;
+      }
       // le statut peut être dans sa propre colonne, sinon on le détecte dans
       // le texte de la colonne gains (ex : « en attente de paiement »)
       const statusSource = mapping.payment_status
@@ -1188,11 +1602,17 @@ app.post('/api/lives/:id/report/commit', (req, res) => {
         matched++;
       } else {
         const label = mapping.name ? String(row[mapping.name]).trim() : '';
-        insExtra.run(session.id, type, String(rawRef).trim(), label, price, net, status, now());
+        const extraNet = net != null ? net : manualPct != null ? price - (price * manualPct) / 100 : null;
+        insExtra.run(session.id, type, String(rawRef).trim(), label, price, extraNet, status, now());
         extras++;
       }
     }
     db.prepare('UPDATE live_sessions SET report_imported_at = ?, validated_at = NULL WHERE id = ?').run(now(), session.id);
+    // Le pourcentage manuel devient le barème de CE live (affichages cohérents)
+    if (manualPct != null) {
+      db.prepare('UPDATE live_sessions SET fee_commission = ?, fee_processing = 0, fee_fixed = 0 WHERE id = ?')
+        .run(manualPct, session.id);
+    }
   });
   pendingImports.delete(importId);
   const fresh = db.prepare('SELECT * FROM live_sessions WHERE id = ?').get(session.id);
@@ -1430,7 +1850,9 @@ app.post('/api/inventory', (req, res) => {
         report.push({ id: p.id, name: p.name, sku: p.sku, before: p.stock, counted, diff });
         if (diff !== 0) {
           db.prepare('UPDATE products SET stock = ?, updated_at = ? WHERE id = ?').run(counted, now(), p.id);
-          logMovement(p.id, 'adjust', diff, counted, `Inventaire (écart ${diff > 0 ? '+' : ''}${diff})`);
+          const movId = logMovement(p.id, 'adjust', diff, counted, `Inventaire (écart ${diff > 0 ? '+' : ''}${diff})`);
+          if (diff > 0) addLot(p.id, diff, p.cost, p.vat_intra, 'Inventaire');
+          else consumeLots(p.id, -diff, movId);
         }
       }
     });
@@ -1462,6 +1884,7 @@ const FIELD_PATTERNS = {
   sku: [/^(sku|ref|r[ée]f[ée]rence|code)/i],
   variant_group: [/^(groupe|variante|parent|mod[èe]le|model)/i],
   brand: [/^(marque|brand|fabricant)/i],
+  vat_intra: [/intra/i],
   name: [/^(nom|name|produit(?!\s*€)|product|titre|title|d[ée]signation|article|libell[ée])/i],
   category: [/^(cat[ée]gorie|category|famille|collection)/i, /^type/i],
   price: [
@@ -1541,9 +1964,13 @@ app.post('/api/import/commit', (req, res) => {
   const findByBarcode = db.prepare(`SELECT * FROM products WHERE barcode = ? AND barcode != ''`);
   const findByName = db.prepare('SELECT * FROM products WHERE name = ? COLLATE NOCASE');
   const insert = db.prepare(
-    `INSERT INTO products (sku, barcode, variant_group, brand, name, category, price, cost, photo, stock, min_stock, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?)`
+    `INSERT INTO products (sku, barcode, variant_group, brand, vat_intra, name, category, price, cost, photo, stock, min_stock, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?)`
   );
+  const boolIntra = (v) => {
+    const s = String(v).trim().toLowerCase();
+    return s && !['non', 'no', '0', 'false', 'faux'].includes(s) ? 1 : 0;
+  };
 
   let created = 0;
   let updated = 0;
@@ -1579,6 +2006,11 @@ app.post('/api/import/commit', (req, res) => {
         if (sku && sku !== existing.sku) { sets.push('sku = ?'); vals.push(sku); }
         if (barcode && barcode !== existing.barcode) { sets.push('barcode = ?'); vals.push(barcode); }
         if (mapping.variant_group) { sets.push('variant_group = ?'); vals.push(String(get('variant_group')).trim()); }
+        if (mapping.vat_intra) {
+          const v = String(get('vat_intra')).trim().toLowerCase();
+          sets.push('vat_intra = ?');
+          vals.push(v && !['non', 'no', '0', 'false', 'faux'].includes(v) ? 1 : 0);
+        }
         if (mapping.brand) {
           const brandVal = String(get('brand')).trim();
           sets.push('brand = ?');
@@ -1599,7 +2031,13 @@ app.post('/api/import/commit', (req, res) => {
           if (newVal !== existing.stock) {
             sets.push('stock = ?');
             vals.push(newVal);
-            logMovement(existing.id, 'adjust', newVal - existing.stock, newVal, 'Import fichier');
+            const diff = newVal - existing.stock;
+            const movId = logMovement(existing.id, 'adjust', diff, newVal, 'Import fichier');
+            // lot au coût du fichier s'il est fourni, sinon au coût de la fiche
+            const lotCost = mapping.cost ? toNum(get('cost')) : existing.cost;
+            const lotIntra = mapping.vat_intra ? boolIntra(get('vat_intra')) : existing.vat_intra;
+            if (diff > 0) addLot(existing.id, diff, lotCost, lotIntra, 'Import fichier');
+            else consumeLots(existing.id, -diff, movId);
           }
         }
         if (sets.length) {
@@ -1610,11 +2048,14 @@ app.post('/api/import/commit', (req, res) => {
         updated++;
       } else {
         const info = insert.run(
-          sku, barcode, String(get('variant_group')).trim(), String(get('brand')).trim(), name || sku, String(get('category')).trim(),
+          sku, barcode, String(get('variant_group')).trim(), String(get('brand')).trim(), boolIntra(get('vat_intra')), name || sku, String(get('category')).trim(),
           toNum(get('price')), toNum(get('cost')),
           stockVal, toInt(get('min_stock')), ts, ts
         );
-        if (stockVal > 0) logMovement(info.lastInsertRowid, 'adjust', stockVal, stockVal, 'Import fichier');
+        if (stockVal > 0) {
+          logMovement(info.lastInsertRowid, 'adjust', stockVal, stockVal, 'Import fichier');
+          addLot(info.lastInsertRowid, stockVal, toNum(get('cost')), boolIntra(get('vat_intra')), 'Import fichier');
+        }
         created++;
       }
     }
@@ -1797,6 +2238,7 @@ app.post('/api/lives/:id/photo-sales', (req, res) => {
       const after = product.stock - 1;
       db.prepare('UPDATE products SET stock = ?, updated_at = ? WHERE id = ?').run(after, now(), product.id);
       const movementId = logMovement(product.id, session.platform, -1, after, 'Vente live (photo)', session.id, saleNo);
+      consumeLots(product.id, 1, movementId);
       if (s.photo) db.prepare('UPDATE movements SET photo = ? WHERE id = ?').run(String(s.photo), movementId);
       // Live déjà terminé (ex : live passé créé après coup) : la vente est
       // datée dans la fenêtre du live (début + n° de vente en minutes,
@@ -1828,7 +2270,7 @@ function computeStatistics(days) {
     : '';
   const rows = db
     .prepare(
-      `SELECT m.channel, m.delta, m.sold_price, m.fees, m.net_amount, m.shipping_cost,
+      `SELECT m.channel, m.delta, m.sold_price, m.fees, m.net_amount, m.shipping_cost, m.cost_used,
               p.id AS pid, p.name, p.sku, p.price, p.cost, p.stock, p.min_stock
        FROM movements m JOIN products p ON p.id = m.product_id
        WHERE m.delta < 0 AND m.cancelled = 0 AND m.is_gift = 0
@@ -1853,7 +2295,9 @@ function computeStatistics(days) {
     if (!STAT_CHANNELS.includes(channel)) continue;
     const qty = -r.delta;
     const eff = r.sold_price != null ? r.sold_price : r.price;
-    const marginUnit = netUnitOf(r, channel) - r.cost;
+    // coût réel consommé (lots FIFO) quand il est connu, sinon coût de la fiche
+    const costMove = r.cost_used != null ? r.cost_used : qty * r.cost;
+    const marginUnit = netUnitOf(r, channel) - costMove / qty;
     const shipping = r.shipping_cost || 0; // par vente, pas par unité
     const e = byProduct.get(r.pid) || {
       id: r.pid, name: r.name, sku: r.sku, price: r.price, cost: r.cost,
@@ -2084,6 +2528,240 @@ setInterval(maybeAutoReport, 10 * 60 * 1000).unref();
 setTimeout(maybeAutoReport, 15 * 1000).unref();
 
 // ---------------------------------------------------------------------------
+// Comptabilité : récapitulatif TVA et ventes pour la déclaration française.
+// Ventes payées uniquement (échecs et remboursements exclus), TVA calculée
+// au taux configuré, TVA déductible estimée sur le coût des produits vendus
+// achetés en France TTC (les produits 🇪🇺 intracommunautaires n'ouvrent pas
+// de droit), frais de plateforme réels quand le rapport est importé, sinon
+// estimés au barème.
+// ---------------------------------------------------------------------------
+function accountingData(fromIso, toIso) {
+  const r = (parseFloat(getSetting('vat_rate', '20')) || 0) / 100;
+  const rows = db
+    .prepare(
+      `SELECT m.created_at, m.channel, m.delta, m.sold_price, m.fees, m.net_amount,
+              m.shipping_cost, m.sale_no, m.is_gift, m.session_id, m.cost_used, m.cost_fr,
+              p.name, p.sku, p.price, p.cost, p.vat_intra
+       FROM movements m JOIN products p ON p.id = m.product_id
+       WHERE m.delta < 0 AND m.cancelled = 0
+         AND COALESCE(m.payment_status, 'paid') NOT IN ('failed', 'refunded')
+         AND m.channel NOT IN ('adjust', 'return')
+         AND m.created_at >= ? AND m.created_at < ?
+       ORDER BY m.created_at`
+    )
+    .all(fromIso, toIso);
+  const extras = db
+    .prepare(
+      `SELECT x.ref, x.label, x.kind, x.sold_price, x.net_amount, s.platform, s.started_at
+       FROM live_extras x JOIN live_sessions s ON s.id = x.session_id
+       WHERE x.payment_status != 'failed' AND s.started_at >= ? AND s.started_at < ?`
+    )
+    .all(fromIso, toIso);
+
+  const blank = () => ({
+    sales: 0, gifts: 0, extras: 0,
+    ca_ttc: 0, ca_ht: 0, tva_collectee: 0, tva_deductible: 0,
+    cogs_total: 0, cogs_intra: 0, cogs_fr: 0,
+    fees: 0, shipping: 0,
+  });
+  const totals = blank();
+  const byChannel = new Map();
+  const byMonth = new Map();
+
+  const feeOf = (channel, eff, fees, net) => {
+    if (net != null) return Math.max(0, eff - net);
+    if (fees != null) return fees;
+    const plat = channel === 'live' ? 'tiktok' : channel;
+    if (!['tiktok', 'whatnot'].includes(plat) || eff <= 0) return 0;
+    const f = getFees(plat);
+    return (eff * (f.commission + f.processing)) / 100 + f.fixed;
+  };
+
+  const add = (bucket, fn) => {
+    fn(totals);
+    fn(bucket);
+  };
+  const bucketFor = (map, key) => {
+    if (!map.has(key)) map.set(key, blank());
+    return map.get(key);
+  };
+
+  for (const m of rows) {
+    const qty = -m.delta;
+    const channel = m.channel === 'live' ? 'tiktok' : m.channel;
+    const month = String(m.created_at).slice(0, 7);
+    const eff = m.is_gift ? 0 : qty * (m.sold_price != null ? m.sold_price : m.price);
+    const ht = eff / (1 + r);
+    // coût réel consommé (lots FIFO) et sa part France TTC — sinon coût fiche
+    const cost = m.cost_used != null ? m.cost_used : qty * (m.cost || 0);
+    const costFr = m.cost_fr != null ? m.cost_fr : m.vat_intra ? 0 : cost;
+    const deduct = costFr - costFr / (1 + r);
+    const fees = m.is_gift ? 0 : feeOf(m.channel, eff, m.fees, m.net_amount != null ? qty * m.net_amount : null);
+    for (const b of [totals, bucketFor(byChannel, channel), bucketFor(byMonth, month)]) {
+      if (m.is_gift) b.gifts += qty;
+      else b.sales += qty;
+      b.ca_ttc += eff;
+      b.ca_ht += ht;
+      b.tva_collectee += eff - ht;
+      b.tva_deductible += deduct;
+      b.cogs_total += cost;
+      b.cogs_intra += cost - costFr;
+      b.cogs_fr += costFr;
+      b.fees += fees;
+      b.shipping += m.shipping_cost || 0;
+    }
+  }
+  for (const x of extras) {
+    const month = String(x.started_at).slice(0, 7);
+    const eff = x.sold_price || 0;
+    const ht = eff / (1 + r);
+    const fees = x.net_amount != null ? Math.max(0, eff - x.net_amount) : 0;
+    for (const b of [totals, bucketFor(byChannel, x.platform), bucketFor(byMonth, month)]) {
+      b.extras += 1;
+      b.ca_ttc += eff;
+      b.ca_ht += ht;
+      b.tva_collectee += eff - ht;
+      b.fees += fees;
+    }
+  }
+
+  const finish = (b) => ({ ...b, tva_nette: b.tva_collectee - b.tva_deductible });
+  return {
+    vat_rate: r * 100,
+    totals: finish(totals),
+    by_channel: [...byChannel.entries()].map(([channel, b]) => ({ channel, ...finish(b) })),
+    by_month: [...byMonth.entries()].sort().map(([month, b]) => ({ month, ...finish(b) })),
+    rows,
+    extras,
+  };
+}
+
+function accountingPeriod(query) {
+  const yearNow = new Date().getFullYear();
+  const year = Math.min(2100, Math.max(2000, parseInt(query.year, 10) || yearNow));
+  const month = Math.min(12, Math.max(0, parseInt(query.month, 10) || 0)); // 0 = année entière
+  const from = month ? new Date(year, month - 1, 1) : new Date(year, 0, 1);
+  const to = month ? new Date(year, month, 1) : new Date(year + 1, 0, 1);
+  return { year, month, fromIso: from.toISOString(), toIso: to.toISOString() };
+}
+
+app.get('/api/accounting', (req, res) => {
+  const p = accountingPeriod(req.query);
+  const data = accountingData(p.fromIso, p.toIso);
+  // Valeur du stock au coût d'achat, aujourd'hui — basée sur les lots FIFO
+  // (chaque lot garde le coût auquel il a vraiment été acheté)
+  const stock = db
+    .prepare(
+      `SELECT COALESCE(SUM(qty_left * unit_cost), 0) AS total,
+              COALESCE(SUM(CASE WHEN vat_intra = 1 THEN qty_left * unit_cost ELSE 0 END), 0) AS intra,
+              COALESCE(SUM(CASE WHEN vat_intra = 0 THEN qty_left * unit_cost ELSE 0 END), 0) AS fr,
+              COALESCE(SUM(qty_left), 0) AS units
+       FROM stock_lots WHERE qty_left > 0`
+    )
+    .get();
+  const years = db
+    .prepare(`SELECT DISTINCT substr(created_at, 1, 4) AS y FROM movements WHERE delta < 0 ORDER BY y DESC`)
+    .all()
+    .map((x) => Number(x.y))
+    .filter((y) => y > 2000);
+  res.json({
+    year: p.year,
+    month: p.month,
+    vat_rate: data.vat_rate,
+    totals: data.totals,
+    by_channel: data.by_channel,
+    by_month: data.by_month,
+    stock,
+    years: years.length ? years : [p.year],
+  });
+});
+
+// Journal des ventes détaillé pour le comptable (CSV Excel)
+app.get('/api/accounting/journal.csv', (req, res) => {
+  const p = accountingPeriod(req.query);
+  const data = accountingData(p.fromIso, p.toIso);
+  const r = data.vat_rate / 100;
+  const esc = (v) => {
+    const s = String(v ?? '');
+    return /[;"\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+  const num = (v) => Number(v).toFixed(2).replace('.', ',');
+  const CH = { online: 'En ligne', store: 'Boutique', tiktok: 'TikTok', whatnot: 'Whatnot', live: 'TikTok' };
+  // Frais : mêmes règles que les totaux (réels si rapport importé, sinon barème)
+  const feeOf = (channel, eff, fees, net) => {
+    if (net != null) return Math.max(0, eff - net);
+    if (fees != null) return fees;
+    const plat = channel === 'live' ? 'tiktok' : channel;
+    if (!['tiktok', 'whatnot'].includes(plat) || eff <= 0) return 0;
+    const f = getFees(plat);
+    return (eff * (f.commission + f.processing)) / 100 + f.fixed;
+  };
+  const lines = data.rows.map((m) => {
+    const qty = -m.delta;
+    const eff = m.is_gift ? 0 : qty * (m.sold_price != null ? m.sold_price : m.price);
+    const ht = eff / (1 + r);
+    const cost = m.cost_used != null ? m.cost_used : qty * (m.cost || 0);
+    const costFr = m.cost_fr != null ? m.cost_fr : m.vat_intra ? 0 : cost;
+    const deduct = costFr - costFr / (1 + r);
+    const intraTxt = cost === 0 ? (m.vat_intra ? 'oui' : 'non') : costFr === 0 ? 'oui' : costFr >= cost - 0.005 ? 'non' : 'mixte';
+    const d = new Date(m.created_at);
+    return [
+      d.toLocaleDateString('fr-FR'), d.toLocaleTimeString('fr-FR'),
+      CH[m.channel] || m.channel,
+      m.session_id || '', m.sale_no ? `#${m.sale_no}` : '',
+      m.is_gift ? 'Cadeau' : 'Vente',
+      m.name, m.sku || '', intraTxt, qty,
+      num(eff), num(ht), num(eff - ht),
+      num(cost), num(deduct),
+      num(m.is_gift ? 0 : feeOf(m.channel, eff, m.fees, m.net_amount != null ? qty * m.net_amount : null)),
+      num(m.shipping_cost || 0),
+      m.net_amount != null ? num(qty * m.net_amount) : '',
+      m.is_gift ? '' : m.sold_price != null ? 'rapport plateforme' : 'prix catalogue estimé',
+    ].map(esc).join(';');
+  });
+  const extraLines = data.extras.map((x) => {
+    const eff = x.sold_price || 0;
+    const ht = eff / (1 + r);
+    const d = new Date(x.started_at);
+    return [
+      d.toLocaleDateString('fr-FR'), '', CH[x.platform] || x.platform, '', x.ref,
+      x.kind && x.kind.startsWith('give') ? 'Give' : 'Vente boutique plateforme',
+      x.label, '', '', 1,
+      num(eff), num(ht), num(eff - ht), '', '',
+      x.net_amount != null ? num(Math.max(0, eff - x.net_amount)) : '',
+      '', x.net_amount != null ? num(x.net_amount) : '', 'rapport plateforme',
+    ].map(esc).join(';');
+  });
+  const header =
+    'Date;Heure;Canal;Live n°;Vente n°;Type;Produit;SKU;Achat intracom;Quantité;Prix TTC;Prix HT;TVA collectée;Coût d\'achat;TVA déductible est.;Frais plateforme;Frais envoi;Net perçu;Source du prix';
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader(
+    'Content-Disposition',
+    `attachment; filename="journal-ventes-${p.year}${p.month ? '-' + String(p.month).padStart(2, '0') : ''}.csv"`
+  );
+  res.send('﻿' + [header, ...lines, ...extraLines].join('\n'));
+});
+
+// Récapitulatif mensuel (CSV Excel)
+app.get('/api/accounting/summary.csv', (req, res) => {
+  const p = accountingPeriod({ year: req.query.year, month: 0 });
+  const data = accountingData(p.fromIso, p.toIso);
+  const num = (v) => Number(v).toFixed(2).replace('.', ',');
+  const lines = data.by_month.map((m) =>
+    [
+      m.month, m.sales, m.gifts, m.extras,
+      num(m.ca_ttc), num(m.ca_ht), num(m.tva_collectee), num(m.tva_deductible), num(m.tva_nette),
+      num(m.cogs_total), num(m.cogs_intra), num(m.cogs_fr), num(m.fees), num(m.shipping),
+    ].join(';')
+  );
+  const header =
+    'Mois;Ventes;Cadeaux;Hors écran;CA TTC;CA HT;TVA collectée;TVA déductible est.;TVA nette;Coût marchandises vendues;dont achats intracom;dont achats France TTC;Frais plateformes;Frais envoi';
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename="recap-mensuel-${p.year}.csv"`);
+  res.send('﻿' + [header, ...lines].join('\n'));
+});
+
+// ---------------------------------------------------------------------------
 // Sauvegarde automatique : chaque jour, une copie cohérente de la base
 // (VACUUM INTO) + les photos sont écrites dans le dossier choisi par
 // l'utilisateur (iCloud Drive, Dropbox, disque externe…). 14 jours conservés.
@@ -2095,6 +2773,17 @@ const localDay = () => new Date().toLocaleDateString('sv-SE'); // YYYY-MM-DD loc
 function backupRoot() {
   const dir = getSetting('backup_dir', '');
   return dir ? path.join(dir, 'WowMart-sauvegardes') : '';
+}
+
+// Dossier proposé selon la machine : /var/backups/wowmart sur un serveur
+// Linux (créé par deploy/install.sh), iCloud Drive ou Documents sur un Mac
+function suggestedBackupDir() {
+  if (process.platform === 'darwin') {
+    const icloud = path.join(os.homedir(), 'Library/Mobile Documents/com~apple~CloudDocs');
+    if (fs.existsSync(icloud)) return path.join(icloud, 'WowMart');
+    return path.join(os.homedir(), 'Documents', 'WowMart-sauvegardes');
+  }
+  return '/var/backups/wowmart';
 }
 
 function listBackups() {
@@ -2145,6 +2834,8 @@ function runBackup() {
 app.get('/api/backup', (req, res) => {
   res.json({
     dir: getSetting('backup_dir', ''),
+    suggested_dir: suggestedBackupDir(),
+    on_server: process.platform === 'linux',
     last_backup: getSetting('last_backup', '') || null,
     backups: listBackups(),
   });
@@ -2181,24 +2872,22 @@ app.post('/api/backup/run', (req, res) => {
 });
 
 // Restauration : la base et les photos sont remplacées par la sauvegarde,
-// puis l'application s'arrête (elle doit être relancée avec npm start).
-app.post('/api/backup/restore', (req, res) => {
-  const name = String(req.body.name || '');
-  if (!/^sauvegarde-\d{4}-\d{2}-\d{2}$/.test(name)) {
-    return res.status(400).json({ error: 'Sauvegarde invalide' });
-  }
-  const source = path.join(backupRoot(), name);
-  if (!fs.existsSync(path.join(source, 'stock.db'))) {
-    return res.status(404).json({ error: 'Sauvegarde introuvable' });
-  }
+// puis l'application s'arrête. Sur un serveur (systemd), elle redémarre
+// toute seule ; en local, la relancer avec npm start.
+const RESTART_MSG =
+  process.platform === 'linux'
+    ? 'Sauvegarde restaurée — l’application redémarre, rechargez la page dans quelques secondes'
+    : 'Sauvegarde restaurée — relancez l’application (npm start)';
+
+function performRestore(sourceDir, res, label) {
   try {
     db.close();
     for (const suffix of ['', '-wal', '-shm']) {
       const f = `${DB_PATH}${suffix}`;
       if (fs.existsSync(f)) fs.rmSync(f);
     }
-    fs.copyFileSync(path.join(source, 'stock.db'), DB_PATH);
-    const uploadsBackup = path.join(source, 'uploads');
+    fs.copyFileSync(path.join(sourceDir, 'stock.db'), DB_PATH);
+    const uploadsBackup = path.join(sourceDir, 'uploads');
     if (fs.existsSync(uploadsBackup)) {
       fs.cpSync(uploadsBackup, UPLOADS_DIR, { recursive: true, force: true });
     }
@@ -2210,9 +2899,95 @@ app.post('/api/backup/restore', (req, res) => {
     setTimeout(() => process.exit(1), 400);
     return;
   }
-  res.json({ ok: true, message: 'Sauvegarde restaurée — relancez l’application (npm start)' });
-  console.log(`Sauvegarde ${name} restaurée — arrêt de l'application, relancez avec npm start`);
+  res.json({ ok: true, message: RESTART_MSG });
+  console.log(`Sauvegarde ${label} restaurée — arrêt de l'application`);
   setTimeout(() => process.exit(0), 400);
+}
+
+app.post('/api/backup/restore', (req, res) => {
+  const name = String(req.body.name || '');
+  if (!/^sauvegarde-\d{4}-\d{2}-\d{2}$/.test(name)) {
+    return res.status(400).json({ error: 'Sauvegarde invalide' });
+  }
+  const source = path.join(backupRoot(), name);
+  if (!fs.existsSync(path.join(source, 'stock.db'))) {
+    return res.status(404).json({ error: 'Sauvegarde introuvable' });
+  }
+  performRestore(source, res, name);
+});
+
+// Télécharger une sauvegarde en archive .tar.gz (copie hors du serveur)
+app.get('/api/backup/download/:name', (req, res) => {
+  const name = String(req.params.name || '');
+  if (!/^sauvegarde-\d{4}-\d{2}-\d{2}$/.test(name)) {
+    return res.status(400).json({ error: 'Sauvegarde invalide' });
+  }
+  const root = backupRoot();
+  if (!root || !fs.existsSync(path.join(root, name, 'stock.db'))) {
+    return res.status(404).json({ error: 'Sauvegarde introuvable' });
+  }
+  const tmp = path.join(os.tmpdir(), `wowmart-${name}-${Date.now()}.tar.gz`);
+  execFile('tar', ['-czf', tmp, '-C', root, name], (err) => {
+    if (err) return res.status(500).json({ error: `Archive impossible : ${err.message}` });
+    res.download(tmp, `wowmart-${name}.tar.gz`, () => fs.rm(tmp, { force: true }, () => {}));
+  });
+});
+
+// Télécharger l'état ACTUEL (photo instantanée cohérente), même sans dossier
+// de sauvegarde configuré — pour garder une copie sur son ordinateur
+app.get('/api/backup/export', (req, res) => {
+  const day = localDay();
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wowmart-export-'));
+  const stage = path.join(tmpDir, `sauvegarde-${day}`);
+  fs.mkdirSync(stage);
+  try {
+    db.exec(`VACUUM INTO '${path.join(stage, 'stock.db').replace(/'/g, "''")}'`);
+    if (fs.existsSync(UPLOADS_DIR)) {
+      fs.cpSync(UPLOADS_DIR, path.join(stage, 'uploads'), { recursive: true });
+    }
+  } catch (e) {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+    return res.status(500).json({ error: `Export impossible : ${e.message}` });
+  }
+  const tmpFile = path.join(os.tmpdir(), `wowmart-export-${Date.now()}.tar.gz`);
+  execFile('tar', ['-czf', tmpFile, '-C', tmpDir, `sauvegarde-${day}`], (err) => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+    if (err) return res.status(500).json({ error: `Archive impossible : ${err.message}` });
+    res.download(tmpFile, `wowmart-${day}.tar.gz`, () => fs.rm(tmpFile, { force: true }, () => {}));
+  });
+});
+
+// Restaurer depuis une archive téléchargée (.tar.gz) — envoyée depuis le
+// navigateur, ex : rapatrier ses données du Mac vers le serveur
+const uploadArchive = multer({
+  dest: os.tmpdir(),
+  limits: { fileSize: 2 * 1024 * 1024 * 1024 },
+});
+app.post('/api/backup/upload', uploadArchive.single('archive'), (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'Aucun fichier reçu' });
+  const extract = fs.mkdtempSync(path.join(os.tmpdir(), 'wowmart-restore-'));
+  const cleanup = () => {
+    fs.rmSync(extract, { recursive: true, force: true });
+    fs.rmSync(req.file.path, { force: true });
+  };
+  execFile('tar', ['-xzf', req.file.path, '-C', extract], (err) => {
+    if (err) {
+      cleanup();
+      return res.status(400).json({ error: 'Archive illisible — attendu : un .tar.gz téléchargé depuis WowMart' });
+    }
+    // stock.db à la racine de l'archive, ou dans son unique dossier
+    let source = extract;
+    if (!fs.existsSync(path.join(source, 'stock.db'))) {
+      const sub = fs.readdirSync(extract).find((n) => fs.existsSync(path.join(extract, n, 'stock.db')));
+      if (!sub) {
+        cleanup();
+        return res.status(400).json({ error: 'Archive invalide : stock.db introuvable dedans' });
+      }
+      source = path.join(extract, sub);
+    }
+    performRestore(source, res, `archive ${req.file.originalname}`);
+    // le process s'arrête juste après : le nettoyage de /tmp suivra au reboot
+  });
 });
 
 // Une sauvegarde par jour, dès que l'app tourne (vérification toutes les 30 min)
@@ -2234,13 +3009,13 @@ setTimeout(maybeAutoBackup, 20 * 1000).unref();
 // ---------------------------------------------------------------------------
 app.get('/api/export.csv', (req, res) => {
   const rows = db.prepare('SELECT * FROM products ORDER BY name COLLATE NOCASE').all();
-  const header = 'SKU;Code barre;Nom;Marque;Groupe;Catégorie;Prix;Coût;Stock;Seuil alerte';
+  const header = 'SKU;Code barre;Nom;Marque;Groupe;Catégorie;Prix;Coût;TVA intracom;Stock;Seuil alerte';
   const esc = (v) => {
     const s = String(v ?? '');
     return /[;"\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
   };
   const lines = rows.map((p) =>
-    [p.sku, p.barcode, p.name, p.brand, p.variant_group, p.category, p.price, p.cost, p.stock, p.min_stock].map(esc).join(';')
+    [p.sku, p.barcode, p.name, p.brand, p.variant_group, p.category, p.price, p.cost, p.vat_intra ? 'oui' : 'non', p.stock, p.min_stock].map(esc).join(';')
   );
   res.setHeader('Content-Type', 'text/csv; charset=utf-8');
   res.setHeader('Content-Disposition', 'attachment; filename="stock-wowmart.csv"');
@@ -2252,6 +3027,16 @@ app.use((err, req, res, next) => {
   res.status(400).json({ error: err.message || 'Erreur inattendue' });
 });
 
-app.listen(PORT, () => {
-  console.log(`WowMart Stock démarré sur http://localhost:${PORT}`);
+// HOST=127.0.0.1 sur un serveur derrière un reverse proxy (voir deploy/)
+const server = app.listen(PORT, process.env.HOST || '0.0.0.0', () => {
+  console.log(`✅ WowMart Stock démarré — ouvrez http://localhost:${PORT}`);
+});
+server.on('error', (err) => {
+  if (err.code === 'EADDRINUSE') {
+    console.error(`⚠ Le port ${PORT} est déjà utilisé : l'application tourne probablement déjà.`);
+    console.error(`  → Essayez d'ouvrir http://localhost:${PORT} dans votre navigateur.`);
+    console.error(`  → Sinon, fermez l'autre fenêtre Terminal qui la lance (ou tapez : pkill -f "node server.js"), puis relancez npm start.`);
+    process.exit(1);
+  }
+  throw err;
 });

@@ -55,7 +55,9 @@ Nécessite une **clé API Anthropic** (console.anthropic.com), enregistrée dans
 
 ### 💶 TVA
 
-Le taux de TVA est configurable (20 % par défaut, onglet Lives). Chaque live affiche : **CA TTC**, **CA HT** et **TVA collectée**.
+Le taux de TVA est configurable (20 % par défaut, onglet Lives). Chaque live affiche : **CA TTC**, **CA HT**, **TVA collectée**, **TVA récupérable** et **TVA nette estimée**.
+
+Chaque produit porte une case **« 🇪🇺 Achat intracommunautaire »** : coché = acheté HT en Europe (autoliquidation, aucune TVA déductible) ; décoché = acheté en France TTC (saisissez le coût TTC — la TVA payée à l'achat est déduite dans le bilan TVA du live). Exemple : produit vendu 20 € TTC → 3,33 € de TVA collectée ; s'il a été acheté 12 € TTC en France, 2 € sont récupérables → TVA nette 1,33 € ; acheté 10 € HT en Pologne → TVA nette 3,33 €. Importable via une colonne `Intracom` (oui/non), présent dans l'export CSV.
 
 L'onglet **Lives** garde l'historique de toutes vos sessions : date et heure, plateforme, durée, articles vendus (+ cadeaux + hors écran), CA TTC, marge et statut de vérification.
 
@@ -65,17 +67,29 @@ L'onglet **Lives** garde l'historique de toutes vos sessions : date et heure, pl
 - **À commander chez le fournisseur** : liste quotidienne des produits sous leur seuil, avec quantité conseillée calculée d'après les ventes des 30 derniers jours, exportable en **bon de commande CSV**.
 - **Conseils de l'IA** : Claude analyse vos chiffres réels et rédige un rapport actionnable — produits à mettre en avant (et sur quelle plateforme), produits à gros volume mais faible marge, réassorts prioritaires, idées de bundles. Utilise la même clé API que les ventes par photos.
 
+## 📦 Lots d'achat (FIFO)
+
+Le prix d'achat d'un même produit peut varier d'un réassort à l'autre (et son régime de TVA aussi : Chine, 🇪🇺 intracom, France TTC). Chaque entrée en stock crée un **lot** qui garde son coût unitaire et son régime de TVA ; les ventes consomment les lots **du plus ancien au plus récent (FIFO)**. Marge, TVA déductible et compta utilisent le **coût réellement consommé** par chaque vente. Le coût et la case 🇪🇺 de la fiche produit s'appliquent aux **prochaines** entrées en stock ; la fiche affiche les lots restants. Annulations, retours et suppressions de live restaurent **les lots d'origine**.
+
+## 🧾 Onglet Compta
+
+Prépare la déclaration de TVA française, par mois ou par année : **TVA collectée** (ventes payées, tous canaux, gives inclus), **TVA déductible estimée** (achats France TTC des produits vendus — les produits 🇪🇺 intracom sont isolés, sans droit à déduction), **TVA nette à reverser**, coût des marchandises vendues (dont intracom), frais de plateformes, détail par mois et par canal, **valeur du stock au coût** (dont 🇪🇺/France). Deux exports CSV pour le comptable : **journal des ventes** ligne à ligne et **récap mensuel**, plus une note de méthode intégrée.
+
 ## 🕐 Meilleurs créneaux de live
 
 L'onglet Stats compare tous vos lives terminés : **CA et marge moyens par jour de la semaine et par heure de début** (filtrable par plateforme), et le **rythme des ventes par tranche de 15 minutes** pour repérer le moment où un live s'essouffle.
 
 ## 💾 Sauvegarde automatique
 
-Dans l'onglet Importer : choisissez un dossier (iCloud Drive, Dropbox, disque externe…) — une copie de la base et des photos y est faite **chaque jour automatiquement** (14 jours conservés), avec sauvegarde manuelle et **restauration en un clic** (l'app redémarre sur la sauvegarde choisie).
+Dans l'onglet Importer : **activation en un clic** (dossier proposé automatiquement — `/var/backups/wowmart` sur un serveur, iCloud Drive/Documents sur un Mac) — une copie de la base et des photos est faite **chaque jour** (14 jours conservés). En plus :
+
+- **⬇ Télécharger une copie complète** : archive `.tar.gz` de l'état actuel (base + photos) à garder sur votre ordinateur — indispensable quand l'app tourne sur un serveur ;
+- téléchargement de chaque sauvegarde quotidienne ;
+- **restauration en un clic** depuis une sauvegarde du serveur **ou depuis une archive téléchargée** (pratique aussi pour migrer ses données d'une machine à l'autre) — l'app redémarre sur les données restaurées (automatiquement via systemd sur un serveur).
 
 ## Fonctionnalités
 
-- **Fiches produits avec photo** : ajoutez une photo en la glissant-déposant (ou en cliquant) directement dans l'application.
+- **Fiches produits avec photo** : glissez-déposez une photo, cliquez pour la choisir, ou **collez-la (Ctrl/⌘+V)** après l'avoir copiée n'importe où (Google Images, capture d'écran…).
 - **🖼 Photos depuis le web** : bouton dans l'onglet Produits — l'app cherche des images (marque + référence + nom), vous propose plusieurs candidates par produit et n'assigne que celles que vous validez. **Moteur recommandé : l'API officielle Google Custom Search** (gratuite, 100 recherches/jour, configuration guidée dans la modale — clé stockée chiffrée) ; sans elle, repli sur Bing/DuckDuckGo, nettement moins fiables.
 - **Code-barres (EAN)** : champ facultatif sur chaque fiche, importable depuis vos fichiers (colonne `Code barre`, `EAN`…), inclus dans l'export CSV et cherchable partout (recherche produits, mode live, cadeaux) — prévu pour servir plus tard à la préparation des colis au scanner.
 - **Boutons de vente par canal** : sur chaque carte produit, un clic sur « En ligne », « Boutique », « TikTok » ou « Whatnot » enregistre une vente sur ce canal. Les boutons **+ / −** servent aux réassorts et corrections.
@@ -101,6 +115,15 @@ npm install
 npm start
 ```
 
+## Remise à zéro
+
+```bash
+npm run reset        # vide produits, ventes, lives, historique, photos — réglages conservés
+npm run reset -- --tout   # supprime aussi les réglages (clés API, TVA, mot de passe…)
+```
+
+Confirmation demandée (tapez `OUI`). Arrêtez le serveur avant, et pensez à faire une sauvegarde si vous voulez pouvoir revenir en arrière.
+
 Puis ouvrez [http://localhost:3000](http://localhost:3000).
 
 ## Format de fichier d'import
@@ -123,12 +146,18 @@ Les produits existants sont reconnus par SKU (ou par nom) : pas de doublons, leu
 - **Clé API chiffrée** : la clé Anthropic est stockée **chiffrée (AES-256-GCM)** dans la base, avec un secret local (`data/.secret`, hors git et hors sauvegardes). Une sauvegarde volée sur iCloud/Dropbox ne permet donc pas de lire la clé. Elle n'est **jamais renvoyée au navigateur**. Une clé enregistrée en clair par une ancienne version est chiffrée automatiquement au démarrage.
 - **Protection par mot de passe** (onglet Importer) : optionnelle en local, **obligatoire avant d'exposer l'app sur un serveur**. Toutes les données (`/api`) et les photos (`/uploads`) sont bloquées sans session ; hachage scrypt, sessions signées (30 jours), 8 essais max par IP puis 10 min d'attente ; changer le mot de passe déconnecte tous les appareils.
 
-### Déployer sur un serveur
+### Déployer sur un serveur (VPS Ubuntu)
 
-1. **Définissez un mot de passe** dans l'app (onglet Importer → 🔒) avant d'ouvrir l'accès.
-2. Passez la clé API par variable d'environnement plutôt qu'en base : `ANTHROPIC_API_KEY=sk-ant-… npm start`.
-3. Mettez l'app **derrière HTTPS** (reverse proxy Caddy ou nginx + certificat — Caddy le fait tout seul). Ne servez jamais le port 3000 directement sur Internet en HTTP.
-4. Sauvegardez `data/` et `uploads/` côté serveur. Note : `data/.secret` est propre à chaque machine — si vous restaurez la base sur une autre machine, il faudra resaisir la clé API (c'est voulu).
+Un script d'installation automatique est fourni :
+
+```bash
+git clone -b claude/stock-management-app-k2kgb0 https://github.com/thefollowmovement/wowmartstock.git /opt/wowmartstock
+bash /opt/wowmartstock/deploy/install.sh
+```
+
+Il installe Node.js 22, crée un service systemd (démarrage automatique, redémarrage en cas de crash, utilisateur système dédié), propose le **HTTPS automatique via Caddy** (certificat Let's Encrypt sur le nom de domaine du VPS), configure le pare-feu et le fuseau horaire. Mises à jour ensuite avec `bash /opt/wowmartstock/deploy/update.sh`.
+
+Après l'installation : **définissez un mot de passe** (Importer → 🔒) immédiatement, configurez la sauvegarde vers `/var/backups/wowmart`, et resaisissez vos clés API (elles sont chiffrées avec un secret propre à chaque machine — c'est voulu). Recommandé : passer la clé Anthropic en variable d'environnement dans le service (`Environment=ANTHROPIC_API_KEY=…` dans `/etc/systemd/system/wowmartstock.service`).
 
 ## Données
 
