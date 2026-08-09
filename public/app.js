@@ -1218,7 +1218,7 @@ window.showLiveDetail = async (id) => {
 
       ${extraRows ? `
       <h4>Autres ventes du live (gives, produits boutique)</h4>
-      ${(l.extra_lines || []).some((x) => (x.kind === 'order' || x.kind === 'boutique') && x.payment_status !== 'failed')
+      ${(l.extra_lines || []).some(isAssignable)
         ? `<p class="muted small">Ces lignes comptent dans le CA mais ne sont <strong>pas reliées au stock</strong>.
            <button class="btn small" onclick="openAssignExtras(${l.id})">🔗 Associer aux produits du stock</button>
            — l'association est mémorisée pour les prochains rapports.</p>`
@@ -1379,6 +1379,9 @@ window.commitReport = async () => {
       msg += ` — numéros introuvables : ${result.unmatched.slice(0, 10).join(', ')}${result.unmatched.length > 10 ? '…' : ''}`;
     }
     if (result.skipped) msg += ` · ${result.skipped} ligne(s) sans numéro ignorée(s)`;
+    if (result.screen_lost) {
+      msg += ` · ⚠ ${result.screen_lost} ligne(s) « Vue à l'écran » sans numéro retrouvable dans le fichier`;
+    }
     if (result.unrecognized && result.unrecognized.length) {
       msg += ` · ⚠ ${result.unrecognized.length} produit(s) non reconnu(s) — indiquez à quoi ils correspondent`;
     }
@@ -1841,13 +1844,16 @@ $('#btnSeCancelSale').addEventListener('click', async () => {
 
 // ---- Associer les commandes boutique non reconnues à des produits ----
 let assignLiveId = null;
+// Une ligne « Vue à l'écran » est une vente du live mal numérotée, pas un
+// produit boutique : elle ne doit pas être proposée à l'association
+const SCREEN_LABEL_RE = /vue\s*[àa]\s*l|à l['’]?\s*[ée]cran|screen|flash/i;
+const isAssignable = (x) =>
+  (x.kind === 'order' || x.kind === 'boutique') && x.payment_status !== 'failed' && !SCREEN_LABEL_RE.test(x.label || '');
 
 window.openAssignExtras = async (liveId) => {
   try {
     const l = await api(`/api/lives/${liveId}`);
-    const lines = (l.extra_lines || []).filter(
-      (x) => (x.kind === 'order' || x.kind === 'boutique') && x.payment_status !== 'failed'
-    );
+    const lines = (l.extra_lines || []).filter(isAssignable);
     if (!lines.length) return toast('Aucune commande boutique à associer dans ce live');
     assignLiveId = liveId;
     const options = products

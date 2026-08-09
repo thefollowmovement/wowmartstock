@@ -1652,7 +1652,7 @@ const REPORT_PATTERNS = {
   net_amount: /(gains? nets?|statut? du gain|montant total du r[èe]glement|r[èe]glement|settlement|gains?|earn|net|payout|revers|vers[ée])/i,
   payment_status: /(statut.*(paiement|commande|r[èe]glement)|motifs? d.absence|paiement|payment|pay[ée]|status)/i,
   fees: /(frais de traitement|frais de commission|commission|frais|fee)/i,
-  sku: /(sku|r[ée]f[ée]rence (vendeur|marque|produit)|seller)/i,
+  sku: /(sku|r[ée]f[ée]rence (vendeur|marque|produit)|seller|variante|variation)/i,
   qty: /(quantit|qty|quantity|nombre d)/i,
 };
 
@@ -1751,6 +1751,33 @@ function buildProductMatcher() {
   };
 }
 
+// Sur TikTok, TOUTES les lignes du rapport portent un long numéro de
+// commande — y compris les ventes à l'écran. Celles-ci se reconnaissent au
+// NOM du produit (« Vue à l'écran », le listing générique du live) ; le
+// numéro de la vente (#1, #2…) est alors dans le nom, la variante /
+// référence vendeur, ou une autre colonne sous la forme « #N ».
+const SCREEN_LABEL_RE = /vue\s*[àa]\s*l|à l['’]?\s*[ée]cran|screen|flash/i;
+
+function screenNoFromRow(row, label, skuVal) {
+  if (!SCREEN_LABEL_RE.test(label) && !SCREEN_LABEL_RE.test(skuVal)) return null;
+  for (const source of [label, skuVal]) {
+    const s = String(source || '');
+    if (!s) continue;
+    const direct = s.match(/#\s*(\d{1,5})\b/);
+    if (direct) return parseInt(direct[1], 10);
+    // « Vue à l'écran 12 », variante « 12 »… : premier nombre hors mot-clé
+    const rest = s.replace(SCREEN_LABEL_RE, ' ').match(/(?:^|[^\d])(\d{1,5})(?:[^\d]|$)/);
+    if (rest) return parseInt(rest[1], 10);
+  }
+  // dernier recours : un « #N » dans n'importe quelle colonne de la ligne
+  // (jamais un nombre nu — les prix et quantités en sont)
+  for (const v of Object.values(row)) {
+    const mm = String(v ?? '').match(/#\s*(\d{1,5})\b/);
+    if (mm) return parseInt(mm[1], 10);
+  }
+  return null;
+}
+
 function guessReportMapping(headers, rows = []) {
   const mapping = {};
   const used = new Set();
@@ -1845,6 +1872,7 @@ app.post('/api/lives/:id/report/commit', (req, res) => {
   let extras = 0;
   let stockLines = 0;
   let stockUnits = 0;
+  let screenLost = 0; // lignes « Vue à l'écran » dont le n° n'a pas été retrouvé
   const unmatched = [];
   const unrecognized = new Map(); // libellés boutique non reliés à un produit
   const matchProduct = buildProductMatcher();
@@ -1871,7 +1899,19 @@ app.post('/api/lives/:id/report/commit', (req, res) => {
     );
     for (const row of pending.rows) {
       const rawRef = row[mapping.sale_no];
-      const { type, num } = classifyRef(rawRef);
+      let { type, num } = classifyRef(rawRef);
+      const label = mapping.name ? String(row[mapping.name]).trim() : '';
+      const skuVal = mapping.sku ? String(row[mapping.sku]).trim() : '';
+      // Rapport TikTok : la référence est un long n° de commande même pour
+      // les ventes à l'écran — on les reconnaît alors au nom du produit
+      // (« Vue à l'écran ») et on retrouve leur numéro dans la ligne.
+      if (type === 'order' || type === 'boutique') {
+        const n = screenNoFromRow(row, label, skuVal);
+        if (n != null && (byNo.has(n) || /vue|[ée]cran/i.test(label))) {
+          type = 'screen';
+          num = n;
+        }
+      }
       const price = toNum(row[mapping.sold_price]);
       const net = mapping.net_amount ? toNum(row[mapping.net_amount]) : null;
       let fees = mapping.fees ? toNum(row[mapping.fees]) : null;
@@ -1902,14 +1942,16 @@ app.post('/api/lives/:id/report/commit', (req, res) => {
         upd.run(price, fees, net, status, movementId);
         matched++;
       } else {
-        const label = mapping.name ? String(row[mapping.name]).trim() : '';
         const extraNet = net != null ? net : manualPct != null ? price - (price * manualPct) / 100 : null;
         const qty = mapping.qty ? Math.max(1, parseInt(row[mapping.qty], 10) || 1) : 1;
         // Commandes boutique : si le produit est reconnu (SKU ou nom), la
         // ligne devient une vraie vente du live → stock décompté (lots FIFO),
         // CA et marge calculés comme pour une vente à l'écran.
         // Les paiements en échec restent de simples lignes (rien n'est parti).
-        if (type === 'order' || type === 'boutique') {
+        // Une ligne « Vue à l'écran » dont le numéro n'a pas été retrouvé ne
+        // doit JAMAIS être associée à un produit du catalogue.
+        const isScreenLabel = SCREEN_LABEL_RE.test(label);
+        if ((type === 'order' || type === 'boutique') && !isScreenLabel) {
           const product = status !== 'failed'
             ? matchProduct(label, mapping.sku ? row[mapping.sku] : '')
             : null;
@@ -1935,6 +1977,7 @@ app.post('/api/lives/:id/report/commit', (req, res) => {
             if (key) unrecognized.set(key, (unrecognized.get(key) || 0) + 1);
           }
         }
+        if ((type === 'order' || type === 'boutique') && isScreenLabel) screenLost++;
         insExtra.run(session.id, type, String(rawRef).trim(), label, price, extraNet, status, qty, now());
         extras++;
       }
@@ -1956,6 +1999,7 @@ app.post('/api/lives/:id/report/commit', (req, res) => {
     unmatched,
     stock_lines: stockLines,
     stock_units: stockUnits,
+    screen_lost: screenLost,
     unrecognized: [...unrecognized.entries()].map(([label, count]) => ({ label, count })),
     unpaid: summary.unpaid,
     session: summary,
@@ -2013,8 +2057,9 @@ app.post('/api/lives/:id/extras/assign', (req, res) => {
       consumeLots(p.id, qty, movId);
       db.prepare('DELETE FROM live_extras WHERE id = ?').run(x.id);
       // L'association est apprise : le même libellé sera reconnu tout seul
-      // aux prochains imports (et lors d'un ré-import de ce rapport)
-      const alias = normTxt(x.label);
+      // aux prochains imports (et lors d'un ré-import de ce rapport).
+      // Jamais pour un libellé « Vue à l'écran » : ce n'est pas un produit.
+      const alias = SCREEN_LABEL_RE.test(x.label) ? '' : normTxt(x.label);
       if (alias) {
         db.prepare(
           'INSERT INTO product_aliases (alias, product_id, created_at) VALUES (?, ?, ?) ' +
