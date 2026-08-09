@@ -1182,16 +1182,30 @@ function sessionSummary(session) {
               COALESCE(SUM(CASE WHEN m.is_gift = 0 AND m.sold_price IS NOT NULL THEN 1 ELSE 0 END),0) AS reported,
               COALESCE(SUM(CASE WHEN m.is_gift = 0 AND m.payment_status IN ('failed','pending') THEN 1 ELSE 0 END),0) AS unpaid
        FROM movements m JOIN products p ON p.id = m.product_id
-       WHERE m.session_id = ? AND m.delta < 0 AND m.cancelled = 0`
+       WHERE m.session_id = ? AND m.delta < 0 AND m.cancelled = 0
+         AND COALESCE(m.from_report, 0) = 0`
     )
     .get(feePct, feeFixed, session.id);
+  // Les lignes SANS numéro d'écran (commandes boutique TikTok Shop) ne
+  // comptent PAS dans le CA / la marge du live — elles vivent à part
+  // (stats de la boutique, compta). Seuls les gives restent rattachés.
   const extras = db
     .prepare(
       `SELECT COUNT(*) AS n,
               COALESCE(SUM(CASE WHEN payment_status != 'failed' THEN COALESCE(sold_price,0) ELSE 0 END),0) AS revenue,
               COALESCE(SUM(CASE WHEN payment_status != 'failed' THEN COALESCE(net_amount, COALESCE(sold_price,0)) ELSE 0 END),0) AS net,
               COALESCE(SUM(CASE WHEN payment_status IN ('failed','pending') THEN 1 ELSE 0 END),0) AS unpaid
-       FROM live_extras WHERE session_id = ?`
+       FROM live_extras WHERE session_id = ? AND kind LIKE 'give%'`
+    )
+    .get(session.id);
+  // Commandes boutique liées à ce live (produits décomptés du stock) —
+  // affichées à part dans le détail, hors CA du live
+  const shop = db
+    .prepare(
+      `SELECT COALESCE(SUM(-delta),0) AS items,
+              COALESCE(SUM(CASE WHEN COALESCE(payment_status,'paid') NOT IN ('failed','refunded')
+                THEN -delta * COALESCE(sold_price, 0) ELSE 0 END),0) AS revenue
+       FROM movements WHERE session_id = ? AND delta < 0 AND cancelled = 0 AND COALESCE(from_report, 0) = 1`
     )
     .get(session.id);
   const plateau = session.plateau_id
@@ -1202,6 +1216,8 @@ function sessionSummary(session) {
     plateau_name: plateau ? plateau.name : null,
     items: agg.items,
     gifts: agg.gifts,
+    shop_items: shop.items,
+    shop_revenue: shop.revenue,
     revenue: agg.revenue + extras.revenue,
     margin: agg.margin + extras.net,
     shipping: agg.shipping,
@@ -1522,7 +1538,8 @@ app.get('/api/lives/:id', (req, res) => {
          * (1 - 1 / (1 + ? / 100.0))), 0) AS v
        FROM movements m JOIN products p ON p.id = m.product_id
        WHERE m.session_id = ? AND m.delta < 0 AND m.cancelled = 0
-         AND COALESCE(m.payment_status, 'paid') != 'refunded'`
+         AND COALESCE(m.payment_status, 'paid') != 'refunded'
+         AND COALESCE(m.from_report, 0) = 0`
     )
     .get(vatRate, session.id).v;
   res.json({
@@ -1859,6 +1876,10 @@ app.post('/api/lives/:id/report/commit', (req, res) => {
       return res.status(400).json({ error: 'Pourcentage de frais invalide (entre 0 et 100)' });
     }
   }
+  // Choix fait à l'import : décompter (ou non) le stock des commandes
+  // boutique reconnues. Dans les deux cas, ces lignes sans # restent HORS
+  // du CA et de la marge du live.
+  const shopStock = req.body.shop_stock !== false && req.body.shop_stock !== 'false' && req.body.shop_stock !== 0;
 
   // Seules les ventes « Vue à l'écran » (pas les cadeaux) sont associées aux
   // ventes enregistrées dans l'app
@@ -1951,7 +1972,7 @@ app.post('/api/lives/:id/report/commit', (req, res) => {
         // Une ligne « Vue à l'écran » dont le numéro n'a pas été retrouvé ne
         // doit JAMAIS être associée à un produit du catalogue.
         const isScreenLabel = SCREEN_LABEL_RE.test(label);
-        if ((type === 'order' || type === 'boutique') && !isScreenLabel) {
+        if ((type === 'order' || type === 'boutique') && !isScreenLabel && shopStock) {
           const product = status !== 'failed'
             ? matchProduct(label, mapping.sku ? row[mapping.sku] : '')
             : null;
@@ -2826,6 +2847,7 @@ app.get('/api/statistics/lives', (req, res) => {
     `SELECT m.created_at, COALESCE(m.sold_price, p.price) AS eff
      FROM movements m JOIN products p ON p.id = m.product_id
      WHERE m.session_id = ? AND m.delta < 0 AND m.cancelled = 0 AND m.is_gift = 0
+       AND COALESCE(m.from_report, 0) = 0
        AND COALESCE(m.payment_status,'paid') NOT IN ('failed','refunded')`
   );
   for (const s of sessions) {

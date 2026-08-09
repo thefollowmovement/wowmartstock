@@ -522,7 +522,9 @@ document.querySelectorAll('.platform-btn').forEach((btn) => {
 // Journal des ventes reconstruit depuis le serveur (source de vérité —
 // permet à plusieurs appareils de vendre dans le même live)
 function salesFromServer(sales) {
-  return sales.map((m) => ({
+  // les commandes boutique importées du rapport (from_report) ne font pas
+  // partie du déroulé du live — elles n'apparaissent pas dans l'écran live
+  return sales.filter((m) => !m.from_report).map((m) => ({
     movement_id: m.id,
     sale_no: m.sale_no,
     product_id: m.product_id,
@@ -972,7 +974,7 @@ async function loadLives() {
         <td>${dateFr(l.started_at)}</td>
         <td>${PLATFORM_LABELS[l.platform] || l.platform}${l.plateau_name ? ` <span class="tag tag-plateau" title="Plateau">🎪 ${escapeHtml(l.plateau_name)}</span>` : ''}${l.created_by ? ` <small class="muted" title="Lancé par">· ${escapeHtml(l.created_by)}</small>` : ''}</td>
         <td>${dur}</td>
-        <td>${l.items}${l.gifts ? ` <small>+ ${l.gifts} 🎁</small>` : ''}${l.extras ? ` <small>+ ${l.extras} hors écran</small>` : ''}</td>
+        <td>${l.items}${l.gifts ? ` <small>+ ${l.gifts} 🎁</small>` : ''}${l.shop_items ? ` <small title="Commandes boutique TikTok Shop — hors CA du live">+ ${l.shop_items} 🛍</small>` : ''}${l.extras ? ` <small>+ ${l.extras} give(s)</small>` : ''}</td>
         <td>${euro(l.revenue)}</td>
         <td>${l.reported > 0 ? euro(l.margin) : '<span class="muted-cell">—</span>'}</td>
         <td>${st.label}</td>
@@ -1021,6 +1023,10 @@ window.showLiveDetail = async (id) => {
   try {
     const l = await api(`/api/lives/${id}`);
     if (l.fee_config) detailFees = l.fee_config;
+    // Les commandes boutique TikTok Shop (sans #) sont détachées du live :
+    // affichées dans leur propre section, hors CA / marge / récap du live
+    const shopSales = (l.sales || []).filter((m) => m.from_report);
+    l.sales = (l.sales || []).filter((m) => !m.from_report);
     liveDetailSaleNos = l.sales.filter((m) => !m.is_gift && !m.cancelled && m.sale_no).map((m) => m.sale_no);
     const valid = l.sales.filter((m) => !m.cancelled && m.payment_status !== 'refunded');
 
@@ -1216,10 +1222,36 @@ window.showLiveDetail = async (id) => {
         </table>
       </div>
 
+      ${shopSales.length ? `
+      <h4>🛍 Commandes boutique TikTok Shop — hors CA du live</h4>
+      <p class="muted small">Passées dans la boutique de la plateforme pendant le live (lignes sans #) :
+        <strong>stock décompté</strong>, comptées dans la compta et les stats du canal, mais
+        <strong>pas dans le CA ni la marge de ce live</strong>.
+        Total : <strong>${shopSales.reduce((s, m) => s + saleQty(m), 0)} article(s) · ${euro(l.shop_revenue || 0)}</strong></p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Référence</th><th>Produit</th><th>Qté</th><th>Prix vendu</th><th>Gains nets</th><th>Paiement</th><th></th></tr></thead>
+          <tbody>${shopSales
+            .map((m) => {
+              const q = saleQty(m);
+              return `<tr class="${m.cancelled ? 'row-cancelled' : ''} ${m.payment_status === 'failed' || m.payment_status === 'refunded' ? 'row-unpaid' : ''}">
+              <td><span class="product-sku">${escapeHtml((m.reason || '').replace(/Commande boutique\s*/i, '').replace(/\s*\((rapport|associée à la main)\)/i, '')) || '🛍'}</span></td>
+              <td>${escapeHtml(m.product_name)}${m.product_sku ? ` <span class="product-sku">(${escapeHtml(m.product_sku)})</span>` : ''}${q > 1 ? ` <strong title="Quantité">× ${q}</strong>` : ''}</td>
+              <td>${q}</td>
+              <td>${m.sold_price != null ? euro(q * m.sold_price) : '<span class="muted-cell">—</span>'}</td>
+              <td>${m.net_amount != null ? euro(q * m.net_amount) : '<span class="muted-cell">—</span>'}</td>
+              <td>${PAYMENT_LABELS[m.payment_status] || m.payment_status || '—'}</td>
+              <td>${m.cancelled ? 'annulée' : `<button class="btn ghost-mini" onclick="openSaleEdit(${m.id}, ${l.id}, 0, ${m.product_id}, 0)" title="Corriger le produit de cette commande (le stock s'ajuste)">✏</button>`}</td>
+            </tr>`;
+            })
+            .join('')}</tbody>
+        </table>
+      </div>` : ''}
+
       ${extraRows ? `
-      <h4>Autres ventes du live (gives, produits boutique)</h4>
+      <h4>Hors live : gives et lignes boutique non associées</h4>
       ${(l.extra_lines || []).some(isAssignable)
-        ? `<p class="muted small">Ces lignes comptent dans le CA mais ne sont <strong>pas reliées au stock</strong>.
+        ? `<p class="muted small">Les lignes boutique non associées ne touchent <strong>ni le stock ni le CA du live</strong> (elles comptent dans la compta).
            <button class="btn small" onclick="openAssignExtras(${l.id})">🔗 Associer aux produits du stock</button>
            — l'association est mémorisée pour les prochains rapports.</p>`
         : ''}
@@ -1340,6 +1372,14 @@ window.previewReport = async (liveId, file) => {
           <strong>déduit du prix de vente TTC de chaque ligne</strong> pour calculer vos gains nets, et deviendra le barème de ce live.
           Laissez vide pour ne pas l'appliquer. Les lignes avec gains nets importés ne sont pas touchées.</p>
       </div>
+      <div class="manual-fee-row">
+        <label class="check"><input type="checkbox" id="reportShopStock" checked>
+          🛍 Lignes sans # (commandes boutique) : <strong>retirer les produits reconnus du stock</strong></label>
+        <p class="muted small">Ces commandes TikTok Shop sont comptées <strong>à part</strong> : elles n'entrent
+          <strong>jamais</strong> dans le CA ni la marge du live (plus de décalage avec les chiffres du live de la plateforme).
+          Cochée : les produits reconnus sont décomptés du stock et comptent dans la compta et les stats du canal TikTok.
+          Décochée : les lignes sont seulement listées pour information, sans toucher au stock.</p>
+      </div>
       <div class="table-wrap"><table><thead><tr>${previewHead}</tr></thead><tbody>${previewBody}</tbody></table></div>
       <div class="actions">
         <button class="btn primary" onclick="commitReport()">Associer les ventes</button>
@@ -1365,15 +1405,16 @@ window.commitReport = async () => {
         importId: currentReport.importId,
         mapping,
         manual_fee_pct: (document.getElementById('reportFeePct') || {}).value || null,
+        shop_stock: !document.getElementById('reportShopStock') || document.getElementById('reportShopStock').checked,
       }),
     });
     const liveId = currentReport.liveId;
     currentReport = null;
     let msg = `✅ ${result.matched} vente(s) « Vue à l'écran » associée(s)`;
     if (result.stock_lines) {
-      msg += ` · 🛍 ${result.stock_lines} commande(s) boutique reliée(s) aux produits (${result.stock_units} article(s) retiré(s) du stock)`;
+      msg += ` · 🛍 ${result.stock_lines} commande(s) boutique — ${result.stock_units} article(s) retiré(s) du stock, comptées HORS CA du live`;
     }
-    if (result.extras) msg += ` · ${result.extras} ligne(s) hors écran (gives, boutique non reconnue)`;
+    if (result.extras) msg += ` · ${result.extras} ligne(s) hors live (gives, boutique non reconnue)`;
     if (result.unpaid) msg += ` · ⚠ ${result.unpaid} non réglée(s) à vérifier`;
     if (result.unmatched.length) {
       msg += ` — numéros introuvables : ${result.unmatched.slice(0, 10).join(', ')}${result.unmatched.length > 10 ? '…' : ''}`;
