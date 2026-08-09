@@ -195,6 +195,9 @@ CREATE TABLE IF NOT EXISTS movement_lots (
   // TTC (base de la TVA déductible)
   if (!mcols.includes('cost_used')) db.exec('ALTER TABLE movements ADD COLUMN cost_used REAL');
   if (!mcols.includes('cost_fr')) db.exec('ALTER TABLE movements ADD COLUMN cost_fr REAL');
+  // Ventes créées depuis un rapport de plateforme (commandes boutique) : un
+  // ré-import du rapport les remplace proprement (stock et lots restaurés)
+  if (!mcols.includes('from_report')) db.exec('ALTER TABLE movements ADD COLUMN from_report INTEGER NOT NULL DEFAULT 0');
 
   const scols = db.prepare('PRAGMA table_info(live_sessions)').all().map((c) => c.name);
   if (!scols.includes('report_imported_at')) db.exec('ALTER TABLE live_sessions ADD COLUMN report_imported_at TEXT');
@@ -1127,7 +1130,7 @@ app.get('/api/stats', (req, res) => {
 const sessionSales = db.prepare(
   `SELECT m.id, m.created_at, m.delta, m.channel, m.reason, m.cancelled,
           m.sale_no, m.sold_price, m.fees, m.is_gift, m.payment_status, m.net_amount, m.photo,
-          m.shipping_cost, m.cost_used,
+          m.shipping_cost, m.cost_used, m.from_report,
           p.id AS product_id, p.name AS product_name, p.sku AS product_sku,
           p.price AS product_price, p.cost AS product_cost, p.photo AS product_photo
    FROM movements m JOIN products p ON p.id = m.product_id
@@ -1588,21 +1591,25 @@ app.get('/api/lives/:id/export.csv', (req, res) => {
   const estFees = (price) =>
     price > 0 ? (price * (feeCfg.commission + feeCfg.processing)) / 100 + feeCfg.fixed : 0;
   const lines = sales.map((m) => {
+    // prix / frais / net stockés à l'unité — une commande boutique importée
+    // du rapport peut porter plusieurs unités (delta < -1)
+    const qty = Math.max(1, -m.delta);
     const eff = m.sold_price != null ? m.sold_price : m.product_price;
     const net = m.net_amount != null ? m.net_amount : eff - (m.fees != null ? m.fees : estFees(eff));
-    const margin = m.cancelled ? '' : (net - m.product_cost - (m.shipping_cost || 0)).toFixed(2);
+    const unitCost = m.cost_used != null ? m.cost_used / qty : m.product_cost;
+    const margin = m.cancelled ? '' : (qty * (net - unitCost) - (m.shipping_cost || 0)).toFixed(2);
     return [
-      m.sale_no ? `Vue à l'écran #${m.sale_no}` : '',
+      m.sale_no ? `Vue à l'écran #${m.sale_no}` : m.from_report ? 'Commande boutique' : '',
       new Date(m.created_at).toLocaleString('fr-FR'),
       m.product_sku, m.product_name,
       m.product_price,
-      m.sold_price != null ? m.sold_price : '',
-      m.fees != null ? m.fees : '',
-      m.net_amount != null ? m.net_amount : '',
+      m.sold_price != null ? qty * m.sold_price : '',
+      m.fees != null ? qty * m.fees : '',
+      m.net_amount != null ? qty * m.net_amount : '',
       m.shipping_cost != null ? m.shipping_cost : '',
       margin,
       m.payment_status ? PAYMENT_FR[m.payment_status] || m.payment_status : '',
-      m.cancelled ? 'annulée' : m.is_gift ? 'cadeau' : '',
+      m.cancelled ? 'annulée' : m.is_gift ? 'cadeau' : qty > 1 ? `× ${qty}` : '',
     ].map(esc).join(';');
   });
   const extraLines = sessionExtras.all(session.id).map((x) =>
@@ -1631,6 +1638,8 @@ const REPORT_PATTERNS = {
   net_amount: /(gains? nets?|statut? du gain|montant total du r[èe]glement|r[èe]glement|settlement|gains?|earn|net|payout|revers|vers[ée])/i,
   payment_status: /(statut.*(paiement|commande|r[èe]glement)|motifs? d.absence|paiement|payment|pay[ée]|status)/i,
   fees: /(frais de traitement|frais de commission|commission|frais|fee)/i,
+  sku: /(sku|r[ée]f[ée]rence (vendeur|marque|produit)|seller)/i,
+  qty: /(quantit|qty|quantity|nombre d)/i,
 };
 
 // Statut de paiement normalisé depuis le texte de la plateforme
@@ -1661,6 +1670,64 @@ function classifyRef(raw) {
     return { type: /achet|buyer|client/.test(s) ? 'give_buyer' : 'give_sub', num };
   }
   return { type: 'boutique', num };
+}
+
+// Reconnaissance d'un produit du catalogue depuis une ligne de rapport
+// (commande boutique TikTok/Whatnot) : par SKU/code-barres si le rapport a
+// une colonne référence, sinon par le nom (exact, inclusion, ou ≥ 70 % des
+// mots du nom du produit présents dans le libellé de la ligne).
+const normTxt = (s) =>
+  String(s || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+
+function buildProductMatcher() {
+  const prods = db.prepare('SELECT id, name, sku, barcode FROM products').all();
+  const byRef = new Map();
+  for (const p of prods) {
+    if (p.sku) byRef.set(normTxt(p.sku), p);
+    if (p.barcode) byRef.set(normTxt(p.barcode), p);
+  }
+  const byName = prods
+    .map((p) => {
+      const n = normTxt(p.name);
+      return { p, n, tokens: n.split(' ').filter(Boolean) };
+    })
+    .filter((e) => e.n);
+  return (label, sku) => {
+    if (sku) {
+      const hit = byRef.get(normTxt(sku));
+      if (hit) return hit;
+    }
+    const l = normTxt(label);
+    if (!l) return null;
+    let best = null;
+    let bestLen = 0;
+    for (const e of byName) {
+      if (e.n === l) return e.p;
+      if ((l.includes(e.n) || e.n.includes(l)) && e.n.length > bestLen) {
+        best = e.p;
+        bestLen = e.n.length;
+      }
+    }
+    if (best) return best;
+    const lTokens = new Set(l.split(' ').filter(Boolean));
+    let bestScore = 0;
+    for (const e of byName) {
+      if (e.tokens.length < 2) continue;
+      const hits = e.tokens.filter((t) => lTokens.has(t)).length;
+      const score = hits / e.tokens.length;
+      if (score >= 0.7 && (score > bestScore || (score === bestScore && e.tokens.length > bestLen))) {
+        best = e.p;
+        bestScore = score;
+        bestLen = e.tokens.length;
+      }
+    }
+    return best;
+  };
 }
 
 function guessReportMapping(headers, rows = []) {
@@ -1755,10 +1822,27 @@ app.post('/api/lives/:id/report/commit', (req, res) => {
   let matched = 0;
   let skipped = 0;
   let extras = 0;
+  let stockLines = 0;
+  let stockUnits = 0;
   const unmatched = [];
+  const unrecognized = new Map(); // libellés boutique non reliés à un produit
+  const matchProduct = buildProductMatcher();
   withTransaction(() => {
-    // ré-import : on remplace les lignes hors « Vue à l'écran » précédentes
+    // ré-import : on remplace les lignes hors « Vue à l'écran » précédentes,
+    // et on défait les ventes boutique créées par un import précédent
+    // (stock et lots restaurés) avant de les recréer depuis le fichier
     db.prepare('DELETE FROM live_extras WHERE session_id = ?').run(session.id);
+    const prevReport = db
+      .prepare('SELECT * FROM movements WHERE session_id = ? AND from_report = 1')
+      .all(session.id);
+    for (const m of prevReport) {
+      const prod = db.prepare('SELECT * FROM products WHERE id = ?').get(m.product_id);
+      if (prod && m.delta < 0) {
+        db.prepare('UPDATE products SET stock = ?, updated_at = ? WHERE id = ?').run(prod.stock - m.delta, now(), prod.id);
+        restoreLots(m.id, -m.delta, m.product_id);
+      }
+      db.prepare('DELETE FROM movements WHERE id = ?').run(m.id);
+    }
     const upd = db.prepare('UPDATE movements SET sold_price = ?, fees = ?, net_amount = ?, payment_status = ? WHERE id = ?');
     const insExtra = db.prepare(
       `INSERT INTO live_extras (session_id, kind, ref, label, sold_price, net_amount, payment_status, created_at)
@@ -1799,6 +1883,37 @@ app.post('/api/lives/:id/report/commit', (req, res) => {
       } else {
         const label = mapping.name ? String(row[mapping.name]).trim() : '';
         const extraNet = net != null ? net : manualPct != null ? price - (price * manualPct) / 100 : null;
+        // Commandes boutique : si le produit est reconnu (SKU ou nom), la
+        // ligne devient une vraie vente du live → stock décompté (lots FIFO),
+        // CA et marge calculés comme pour une vente à l'écran.
+        // Les paiements en échec restent de simples lignes (rien n'est parti).
+        if (type === 'order' || type === 'boutique') {
+          const product = status !== 'failed'
+            ? matchProduct(label, mapping.sku ? row[mapping.sku] : '')
+            : null;
+          if (product) {
+            const qty = mapping.qty ? Math.max(1, parseInt(row[mapping.qty], 10) || 1) : 1;
+            const p = db.prepare('SELECT * FROM products WHERE id = ?').get(product.id);
+            const after = Math.max(0, p.stock - qty);
+            db.prepare('UPDATE products SET stock = ?, updated_at = ? WHERE id = ?').run(after, now(), p.id);
+            const movId = logMovement(
+              p.id, session.platform, -qty, after,
+              `Commande boutique${rawRef ? ` ${String(rawRef).trim()}` : ''} (rapport)`, session.id, null
+            );
+            // prix / frais / net de la ligne = total → ramenés à l'unité
+            db.prepare(
+              'UPDATE movements SET from_report = 1, sold_price = ?, fees = ?, net_amount = ?, payment_status = ? WHERE id = ?'
+            ).run(price / qty, fees != null ? fees / qty : null, extraNet != null ? extraNet / qty : null, status, movId);
+            consumeLots(p.id, qty, movId);
+            stockLines++;
+            stockUnits += qty;
+            continue;
+          }
+          if (status !== 'failed' && (label || mapping.sku)) {
+            const key = label || String(row[mapping.sku] || '').trim();
+            if (key) unrecognized.set(key, (unrecognized.get(key) || 0) + 1);
+          }
+        }
         insExtra.run(session.id, type, String(rawRef).trim(), label, price, extraNet, status, now());
         extras++;
       }
@@ -1818,6 +1933,9 @@ app.post('/api/lives/:id/report/commit', (req, res) => {
     skipped,
     extras,
     unmatched,
+    stock_lines: stockLines,
+    stock_units: stockUnits,
+    unrecognized: [...unrecognized.entries()].map(([label, count]) => ({ label, count })),
     unpaid: summary.unpaid,
     session: summary,
   });
@@ -2283,7 +2401,7 @@ const PHOTO_SCHEMA = {
 };
 
 const stripAccents = (s) =>
-  String(s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9 ]/g, ' ');
+  String(s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9 ]/g, ' ');
 
 // Correspondance de secours par similarité de nom (si Claude n'a pas trouvé le SKU)
 function fuzzyMatches(name, products) {
@@ -2792,7 +2910,9 @@ function accountingData(fromIso, toIso) {
     const cost = m.cost_used != null ? m.cost_used : qty * (m.cost || 0);
     const costFr = m.cost_fr != null ? m.cost_fr : m.vat_intra ? 0 : cost;
     const deduct = costFr - costFr / (1 + r);
-    const fees = m.is_gift ? 0 : feeOf(m.channel, eff, m.fees, m.net_amount != null ? qty * m.net_amount : null);
+    const fees = m.is_gift
+      ? 0
+      : feeOf(m.channel, eff, m.fees != null ? qty * m.fees : null, m.net_amount != null ? qty * m.net_amount : null);
     for (const b of [totals, bucketFor(byChannel, channel), bucketFor(byMonth, month)]) {
       if (m.is_gift) b.gifts += qty;
       else b.sales += qty;
@@ -2909,7 +3029,7 @@ app.get('/api/accounting/journal.csv', (req, res) => {
       m.name, m.sku || '', intraTxt, qty,
       num(eff), num(ht), num(eff - ht),
       num(cost), num(deduct),
-      num(m.is_gift ? 0 : feeOf(m.channel, eff, m.fees, m.net_amount != null ? qty * m.net_amount : null)),
+      num(m.is_gift ? 0 : feeOf(m.channel, eff, m.fees != null ? qty * m.fees : null, m.net_amount != null ? qty * m.net_amount : null)),
       num(m.shipping_cost || 0),
       m.net_amount != null ? num(qty * m.net_amount) : '',
       m.is_gift ? '' : m.sold_price != null ? 'rapport plateforme' : 'prix catalogue estimé',

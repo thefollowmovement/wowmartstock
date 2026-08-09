@@ -34,6 +34,10 @@ Après le live, importez le rapport dans le **détail du live** (onglet Lives �
 - l'app récupère le **prix de vente réel (TTC)**, les **gains nets** (colonne « Statut du gains » = ce que vous touchez après commission et frais) et le **statut du paiement** ;
 - la **marge nette** est calculée : gains nets − coût d'achat (cadeaux inclus).
 
+### 🛍 Commandes boutique du rapport → stock
+
+Les lignes du rapport qui ne sont pas des « Vue à l'écran » (commandes passées dans la **boutique TikTok/Whatnot**, identifiées par leur long numéro de commande) sont **reconnues automatiquement** : par la colonne *SKU / référence vendeur* du rapport si elle existe, sinon par le **nom du produit** (correspondance exacte, inclusion, ou ≥ 70 % des mots). Une ligne reconnue devient une **vraie vente du live** : stock décompté (lots FIFO, avec la colonne *Quantité* si présente), CA, marge, frais et TVA calculés comme pour une vente à l'écran — badge 🛍 dans le détail, produit corrigeable avec ✏ si la reconnaissance s'est trompée. Les lignes non reconnues et les gives restent comptées à part (CA seulement), listées après l'import. **Réimporter le même rapport est sans risque** : les ventes boutique précédentes sont défaites (stock et lots restaurés) puis recréées depuis le fichier.
+
 ### ✅ Vérification et validation
 
 - Les ventes en **échec de paiement** ou **en attente** sont détectées et listées dans une étape de vérification ; elles sont **exclues du CA et de la marge**, avec un bouton **↩ Restock** pour annuler la vente et remettre l'article en stock.

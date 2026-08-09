@@ -987,8 +987,12 @@ const saleNet = (m) => {
   const eff = m.sold_price != null ? m.sold_price : m.product_price;
   return eff - (m.fees != null ? m.fees : estPlatformFees(eff));
 };
-// Coût réel consommé (lots FIFO) si connu, sinon coût de la fiche
-const saleCost = (m) => (m.cost_used != null ? m.cost_used : m.product_cost);
+// Quantité d'une vente (les commandes boutique importées peuvent porter
+// plusieurs unités ; les ventes à l'écran restent à 1)
+const saleQty = (m) => Math.max(1, -(m.delta || -1));
+// Coût réel consommé (lots FIFO) si connu, sinon coût de la fiche — à l'unité
+const saleCost = (m) => (m.cost_used != null ? m.cost_used / saleQty(m) : m.product_cost);
+// Marge à l'unité (net et coût sont des valeurs unitaires)
 const saleMargin = (m) => saleNet(m) - saleCost(m);
 const saleNetIsEstimated = (m) => m.net_amount == null && m.fees == null;
 
@@ -1021,9 +1025,10 @@ window.showLiveDetail = async (id) => {
       const e = byProduct.get(key) || {
         name: m.product_name, sku: m.product_sku, isGift: !!m.is_gift, qty: 0, total: 0, margin: 0,
       };
-      e.qty += 1;
-      e.total += m.sold_price != null ? m.sold_price : m.product_price;
-      e.margin += saleMargin(m) - (m.shipping_cost || 0);
+      const q = saleQty(m);
+      e.qty += q;
+      e.total += q * (m.sold_price != null ? m.sold_price : m.product_price);
+      e.margin += q * saleMargin(m) - (m.shipping_cost || 0);
       byProduct.set(key, e);
     }
     const productRows = [...byProduct.values()]
@@ -1042,24 +1047,25 @@ window.showLiveDetail = async (id) => {
       ? l.sales
           .map((m) => {
             const refunded = m.payment_status === 'refunded';
-            const margin = saleMargin(m) - (m.shipping_cost || 0);
+            const q = saleQty(m);
+            const margin = q * saleMargin(m) - (m.shipping_cost || 0);
             const failed = m.payment_status === 'failed' && !m.cancelled;
             return `<tr class="${m.cancelled ? 'row-cancelled' : ''} ${failed || refunded ? 'row-unpaid' : ''}">
           <td>${!m.is_gift && !m.cancelled && m.sale_no
             ? `<button class="live-gift-btn" onclick="openGiftPicker(${m.sale_no}, ${l.id})" title="Ajouter un cadeau à la vente #${m.sale_no}">🎁</button>`
-            : ''}<strong>${m.is_gift ? '🎁 ' : ''}${m.sale_no ? '#' + m.sale_no : ''}</strong>
+            : ''}<strong>${m.is_gift ? '🎁 ' : ''}${m.sale_no ? '#' + m.sale_no : m.from_report ? '<span title="Commande boutique de la plateforme (importée du rapport) — stock décompté">🛍</span>' : ''}</strong>
             ${!m.cancelled && !refunded
-              ? `<button class="btn ghost-mini" onclick="openSaleEdit(${m.id}, ${l.id}, ${m.sale_no || 1}, ${m.product_id}, ${m.is_gift ? 1 : 0})" title="Corriger cette vente : numéro ou produit">✏</button>`
+              ? `<button class="btn ghost-mini" onclick="openSaleEdit(${m.id}, ${l.id}, ${m.sale_no || 0}, ${m.product_id}, ${m.is_gift ? 1 : 0})" title="Corriger cette vente : numéro ou produit">✏</button>`
               : ''}</td>
           <td>${timeFr(m.created_at)}</td>
-          <td>${m.photo ? `<a href="${escapeHtml(m.photo)}" target="_blank" rel="noopener"><img class="sale-photo-thumb" src="${escapeHtml(m.photo)}" alt=""></a> ` : ''}${escapeHtml(m.product_name)}${m.product_sku ? ` <span class="product-sku">(${escapeHtml(m.product_sku)})</span>` : ''}</td>
+          <td>${m.photo ? `<a href="${escapeHtml(m.photo)}" target="_blank" rel="noopener"><img class="sale-photo-thumb" src="${escapeHtml(m.photo)}" alt=""></a> ` : ''}${escapeHtml(m.product_name)}${m.product_sku ? ` <span class="product-sku">(${escapeHtml(m.product_sku)})</span>` : ''}${q > 1 ? ` <strong title="Quantité">× ${q}</strong>` : ''}</td>
           <td>${euro(m.product_price)}</td>
-          <td>${m.is_gift ? '<span class="muted-cell">offert</span>' : m.sold_price != null ? `<strong>${euro(m.sold_price)}</strong>` : '<span class="muted-cell">—</span>'}</td>
+          <td>${m.is_gift ? '<span class="muted-cell">offert</span>' : m.sold_price != null ? `<strong>${euro(q * m.sold_price)}</strong>` : '<span class="muted-cell">—</span>'}</td>
           <td>${m.is_gift
             ? '<span class="muted-cell">—</span>'
             : saleNetIsEstimated(m)
-              ? `<span class="muted-cell" title="Estimation avec le barème de frais — importez le rapport pour la valeur exacte">≈ ${euro(saleNet(m))}</span>`
-              : `<strong>${euro(saleNet(m))}</strong>`}</td>
+              ? `<span class="muted-cell" title="Estimation avec le barème de frais — importez le rapport pour la valeur exacte">≈ ${euro(q * saleNet(m))}</span>`
+              : `<strong>${euro(q * saleNet(m))}</strong>`}</td>
           <td>${m.is_gift || m.cancelled || refunded
             ? '<span class="muted-cell">—</span>'
             : `<input class="ship-input" type="number" step="any" min="0" value="${m.shipping_cost != null ? m.shipping_cost : ''}"
@@ -1281,6 +1287,8 @@ window.liveRestock = async (movementId, liveId) => {
 const REPORT_FIELDS = [
   { key: 'sale_no', label: 'Référence de vente (ex : Vue à l\'écran #8)' },
   { key: 'name', label: 'Nom du produit (optionnel)' },
+  { key: 'sku', label: 'SKU / référence vendeur (optionnel — fiabilise la reconnaissance des commandes boutique)' },
+  { key: 'qty', label: 'Quantité (optionnel)' },
   { key: 'sold_price', label: 'Prix de vente (TTC)' },
   { key: 'net_amount', label: 'Gains nets (« Statut du gains »)' },
   { key: 'payment_status', label: 'Statut du paiement (optionnel)' },
@@ -1350,12 +1358,21 @@ window.commitReport = async () => {
     const liveId = currentReport.liveId;
     currentReport = null;
     let msg = `✅ ${result.matched} vente(s) « Vue à l'écran » associée(s)`;
-    if (result.extras) msg += ` · ${result.extras} ligne(s) hors écran (gives, boutique)`;
+    if (result.stock_lines) {
+      msg += ` · 🛍 ${result.stock_lines} commande(s) boutique reliée(s) aux produits (${result.stock_units} article(s) retiré(s) du stock)`;
+    }
+    if (result.extras) msg += ` · ${result.extras} ligne(s) hors écran (gives, boutique non reconnue)`;
     if (result.unpaid) msg += ` · ⚠ ${result.unpaid} non réglée(s) à vérifier`;
     if (result.unmatched.length) {
       msg += ` — numéros introuvables : ${result.unmatched.slice(0, 10).join(', ')}${result.unmatched.length > 10 ? '…' : ''}`;
     }
     if (result.skipped) msg += ` · ${result.skipped} ligne(s) sans numéro ignorée(s)`;
+    if (result.unrecognized && result.unrecognized.length) {
+      msg += ` · ⚠ produits non reconnus (stock non décompté) : ${result.unrecognized
+        .slice(0, 5)
+        .map((u) => u.label)
+        .join(', ')}${result.unrecognized.length > 5 ? '…' : ''}`;
+    }
     toast(msg);
     await loadLives();
     await showLiveDetail(liveId);
@@ -1728,12 +1745,17 @@ function fillSaleProductSelect(selectedId) {
 }
 
 window.openSaleEdit = (movementId, liveId, saleNo, productId, isGift) => {
-  seContext = { mode: 'edit', movementId, liveId };
+  // saleNo 0 = commande boutique importée du rapport : pas de numéro d'écran,
+  // seul le produit est modifiable (si la reconnaissance s'est trompée)
+  seContext = { mode: 'edit', movementId, liveId, noNumber: !saleNo };
   $('#saleEditTitle').textContent = isGift ? '✏ Corriger le cadeau' : '✏ Corriger la vente';
   $('#seHint').textContent = isGift
     ? 'Changer le numéro rattache ce cadeau à une autre vente.'
-    : 'Changer le produit ajuste le stock (l’ancien revient, le nouveau part). Les cadeaux rattachés suivent le nouveau numéro.';
-  $('#seNo').value = saleNo;
+    : seContext.noNumber
+      ? '🛍 Commande boutique importée du rapport : changez le produit si la reconnaissance automatique s’est trompée — le stock est ajusté (l’ancien revient, le nouveau part).'
+      : 'Changer le produit ajuste le stock (l’ancien revient, le nouveau part). Les cadeaux rattachés suivent le nouveau numéro.';
+  $('#seNo').value = saleNo || '';
+  $('#seNo').disabled = seContext.noNumber;
   fillSaleProductSelect(productId);
   $('#btnSeCancelSale').hidden = false;
   $('#saleEditModal').hidden = false;
@@ -1745,6 +1767,7 @@ window.openSaleAdd = (liveId) => {
   $('#seHint').textContent = 'La vente est créée avec ce numéro, datée dans la fenêtre du live, et le stock est décompté.';
   const nos = liveDetailSaleNos || [];
   $('#seNo').value = (nos.length ? Math.max(...nos) : 0) + 1;
+  $('#seNo').disabled = false;
   fillSaleProductSelect(null);
   $('#btnSeCancelSale').hidden = true;
   $('#saleEditModal').hidden = false;
@@ -1756,13 +1779,15 @@ $('#btnSeSave').addEventListener('click', async () => {
   if (!seContext) return;
   const saleNo = parseInt($('#seNo').value, 10);
   const productId = parseInt($('#seProduct').value, 10);
-  if (!Number.isFinite(saleNo) || saleNo <= 0) return toast('Numéro invalide', true);
+  if (!seContext.noNumber && (!Number.isFinite(saleNo) || saleNo <= 0)) return toast('Numéro invalide', true);
   try {
     if (seContext.mode === 'edit') {
       await api(`/api/movements/${seContext.movementId}/edit`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sale_no: saleNo, product_id: productId }),
+        body: JSON.stringify(
+          seContext.noNumber ? { product_id: productId } : { sale_no: saleNo, product_id: productId }
+        ),
       });
       toast('✏ Vente corrigée');
     } else {
