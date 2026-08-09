@@ -1173,17 +1173,28 @@ window.showLiveDetail = async (id) => {
         ${l.fee_config && l.fee_config.custom ? `<button class="btn" onclick="resetLiveFees(${l.id})">Revenir au barème de la plateforme</button>` : ''}
       </details>
       <div class="recap-grid wide">
-        <div class="stat"><div class="value">${l.items}</div><div class="label">Articles vendus</div></div>
-        <div class="stat"><div class="value">${l.gifts}</div><div class="label">🎁 Cadeaux offerts</div></div>
-        <div class="stat"><div class="value">${euro(l.revenue)}</div><div class="label">CA TTC${l.reported > 0 ? ' (réel)' : ' (catalogue)'}</div></div>
-        <div class="stat"><div class="value">${euro(ht)}</div><div class="label">CA HT</div></div>
-        <div class="stat"><div class="value">${euro(l.revenue - ht)}</div><div class="label">TVA collectée (${vatRate} %)</div></div>
-        <div class="stat"><div class="value">−${euro(l.vat_deductible || 0)}</div><div class="label" title="TVA payée à l'achat des produits partis (achats France TTC) — les achats intracommunautaires 🇪🇺 n'ouvrent pas de droit à déduction">TVA récupérable (achats FR)</div></div>
-        <div class="stat"><div class="value">${euro(l.revenue - ht - (l.vat_deductible || 0))}</div><div class="label" title="TVA collectée − TVA récupérable : estimation de ce que ce live ajoute à votre déclaration">TVA nette estimée</div></div>
-        <div class="stat"><div class="value">${euro(l.cogs || 0)}</div><div class="label" title="Coût d'achat réel (lots FIFO) de tout ce qui est parti pendant ce live — cadeaux inclus, ventes annulées et remboursées exclues">📦 Coût marchandise vendue</div></div>
-        <div class="stat"><div class="value">${euro(l.margin)}</div><div class="label">Marge nette estimée${l.shipping > 0 ? ` (envoi −${euro(l.shipping)})` : ''}</div></div>
-        <div class="stat ${l.unpaid > 0 ? 'alert' : ''}"><div class="value">${l.unpaid}</div><div class="label">⚠ Non réglée(s)</div></div>
-        <div class="stat"><div class="value">${l.reported}/${l.items}</div><div class="label">Ventes associées au rapport</div></div>
+        <div class="stat" title="Nombre d'articles vendus à l'écran (#) pendant ce live — cadeaux 🎁 et commandes boutique 🛍 non compris. Ventes annulées exclues.">
+          <div class="value">${l.items}</div><div class="label">Articles vendus</div></div>
+        <div class="stat" title="Articles offerts (🎁) : prix de vente 0 € — leur coût d'achat est déduit de la marge et ils partent du stock.">
+          <div class="value">${l.gifts}</div><div class="label">🎁 Cadeaux offerts</div></div>
+        <div class="stat" title="Somme des prix réellement payés par les clients (importés du rapport)${l.reported < l.items ? ' ; les ventes pas encore associées au rapport comptent au prix catalogue' : ''}. Paiements en échec et remboursements exclus. Commandes boutique 🛍 non comprises.">
+          <div class="value">${euro(l.revenue)}</div><div class="label">CA TTC${l.reported > 0 ? ' (réel)' : ' (catalogue)'}</div></div>
+        <div class="stat" title="CA TTC ÷ ${(1 + vatRate / 100).toLocaleString('fr-FR')} : le chiffre d'affaires hors TVA (taux configuré : ${vatRate} %).">
+          <div class="value">${euro(ht)}</div><div class="label">CA HT</div></div>
+        <div class="stat" title="TVA contenue dans vos ventes (CA TTC − CA HT) : c'est la TVA que vous collectez pour l'État sur ce live.">
+          <div class="value">${euro(l.revenue - ht)}</div><div class="label">TVA collectée (${vatRate} %)</div></div>
+        <div class="stat" title="TVA que vous aviez déjà payée à l'achat des produits partis (achats en France TTC uniquement) — elle se déduit de la TVA à reverser. Les achats intracommunautaires 🇪🇺 (HT) n'ouvrent aucun droit à déduction.">
+          <div class="value">−${euro(l.vat_deductible || 0)}</div><div class="label">TVA récupérable (achats FR)</div></div>
+        <div class="stat" title="TVA collectée − TVA récupérable : ce que ce live ajoutera environ à votre déclaration de TVA. C'est à retrancher de la marge pour connaître votre gain réel.">
+          <div class="value">${euro(l.revenue - ht - (l.vat_deductible || 0))}</div><div class="label">TVA nette estimée</div></div>
+        <div class="stat" title="Coût d'achat réel (lots FIFO : chaque vente consomme vos lots du plus ancien au plus récent, à leur vrai prix d'achat) de tout ce qui est parti pendant ce live — cadeaux inclus, ventes annulées et remboursées exclues.">
+          <div class="value">${euro(l.cogs || 0)}</div><div class="label">📦 Coût marchandise vendue</div></div>
+        <div class="stat" title="Gains nets (prix réels − commission et frais de la plateforme) − coût de la marchandise vendue (cadeaux inclus) − frais d'envoi. ⚠ C'est AVANT la TVA : ce qui vous reste vraiment ≈ marge − TVA nette estimée.">
+          <div class="value">${euro(l.margin)}</div><div class="label">Marge nette estimée${l.shipping > 0 ? ` (envoi −${euro(l.shipping)})` : ''}</div></div>
+        <div class="stat ${l.unpaid > 0 ? 'alert' : ''}" title="Ventes dont le paiement est en échec ou en attente d'après le rapport — déjà exclues du CA et de la marge. « Restock » permet d'annuler celles en échec.">
+          <div class="value">${l.unpaid}</div><div class="label">⚠ Non réglée(s)</div></div>
+        <div class="stat" title="Ventes du live retrouvées dans le rapport de la plateforme : elles utilisent leur prix réel. Les autres comptent au prix catalogue en attendant — réimportez le rapport pour les associer.">
+          <div class="value">${l.reported}/${l.items}</div><div class="label">Ventes associées au rapport</div></div>
       </div>
 
       <div class="report-import">

@@ -717,6 +717,8 @@ tr.row-unpaid td { background: #fef2f2; }
   margin: 12px 0;
 }
 .recap-grid.wide { grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); }
+/* les tuiles avec infobulle l'indiquent au survol */
+.recap-grid .stat[title] { cursor: help; }
 
 .live-sale-no {
   font-weight: 800;
