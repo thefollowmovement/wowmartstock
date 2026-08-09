@@ -1094,6 +1094,7 @@ window.showLiveDetail = async (id) => {
         <td>${EXTRA_KIND_LABELS[x.kind] || x.kind}</td>
         <td>${escapeHtml(x.ref)}</td>
         <td>${escapeHtml(x.label)}</td>
+        <td>${x.qty || 1}</td>
         <td>${x.sold_price != null ? euro(x.sold_price) : '<span class="muted-cell">—</span>'}</td>
         <td>${x.net_amount != null ? euro(x.net_amount) : '<span class="muted-cell">—</span>'}</td>
         <td>${PAYMENT_LABELS[x.payment_status] || x.payment_status}</td>
@@ -1211,9 +1212,14 @@ window.showLiveDetail = async (id) => {
 
       ${extraRows ? `
       <h4>Autres ventes du live (gives, produits boutique)</h4>
+      ${(l.extra_lines || []).some((x) => (x.kind === 'order' || x.kind === 'boutique') && x.payment_status !== 'failed')
+        ? `<p class="muted small">Ces lignes comptent dans le CA mais ne sont <strong>pas reliées au stock</strong>.
+           <button class="btn small" onclick="openAssignExtras(${l.id})">🔗 Associer aux produits du stock</button>
+           — l'association est mémorisée pour les prochains rapports.</p>`
+        : ''}
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Type</th><th>Référence</th><th>Produit</th><th>Prix</th><th>Gains nets</th><th>Paiement</th></tr></thead>
+          <thead><tr><th>Type</th><th>Référence</th><th>Produit</th><th>Qté</th><th>Prix</th><th>Gains nets</th><th>Paiement</th></tr></thead>
           <tbody>${extraRows}</tbody>
         </table>
       </div>` : ''}`;
@@ -1368,15 +1374,15 @@ window.commitReport = async () => {
     }
     if (result.skipped) msg += ` · ${result.skipped} ligne(s) sans numéro ignorée(s)`;
     if (result.unrecognized && result.unrecognized.length) {
-      msg += ` · ⚠ produits non reconnus (stock non décompté) : ${result.unrecognized
-        .slice(0, 5)
-        .map((u) => u.label)
-        .join(', ')}${result.unrecognized.length > 5 ? '…' : ''}`;
+      msg += ` · ⚠ ${result.unrecognized.length} produit(s) non reconnu(s) — indiquez à quoi ils correspondent`;
     }
     toast(msg);
     await loadLives();
     await showLiveDetail(liveId);
     loadStats();
+    // Des lignes boutique n'ont pas été reconnues : on demande directement
+    // à quels produits elles correspondent (l'association est mémorisée)
+    if (result.unrecognized && result.unrecognized.length) openAssignExtras(liveId);
   } catch (e) {
     toast(e.message, true);
   }
@@ -1822,6 +1828,74 @@ $('#btnSeCancelSale').addEventListener('click', async () => {
     await loadProducts();
     await loadLives();
     await showLiveDetail(liveId);
+  } catch (e) {
+    toast(e.message, true);
+  }
+});
+
+// ---- Associer les commandes boutique non reconnues à des produits ----
+let assignLiveId = null;
+
+window.openAssignExtras = async (liveId) => {
+  try {
+    const l = await api(`/api/lives/${liveId}`);
+    const lines = (l.extra_lines || []).filter(
+      (x) => (x.kind === 'order' || x.kind === 'boutique') && x.payment_status !== 'failed'
+    );
+    if (!lines.length) return toast('Aucune commande boutique à associer dans ce live');
+    assignLiveId = liveId;
+    const options = products
+      .map(
+        (p) =>
+          `<option value="${p.id}">${escapeHtml(p.name)}${p.sku ? ` (${escapeHtml(p.sku)})` : ''} · stock ${p.stock}</option>`
+      )
+      .join('');
+    document.querySelector('#assignTable tbody').innerHTML = lines
+      .map(
+        (x) => `<tr>
+        <td>${escapeHtml(x.label || x.ref)}${x.label && x.ref ? `<br><span class="product-sku">${escapeHtml(x.ref)}</span>` : ''}</td>
+        <td>${x.qty || 1}</td>
+        <td>${x.sold_price != null ? euro(x.sold_price) : '—'}</td>
+        <td><select data-assign-extra="${x.id}"><option value="">— Ne pas associer —</option>${options}</select></td>
+      </tr>`
+      )
+      .join('');
+    $('#assignModal').hidden = false;
+  } catch (e) {
+    toast(e.message, true);
+  }
+};
+
+$('#btnCloseAssign').addEventListener('click', () => {
+  $('#assignModal').hidden = true;
+  assignLiveId = null;
+});
+$('#assignModal').addEventListener('click', (e) => {
+  if (e.target === $('#assignModal')) $('#assignModal').hidden = true;
+});
+
+$('#btnSaveAssign').addEventListener('click', async () => {
+  if (!assignLiveId) return;
+  const assignments = [...document.querySelectorAll('[data-assign-extra]')]
+    .filter((s) => s.value)
+    .map((s) => ({ extra_id: Number(s.dataset.assignExtra), product_id: Number(s.value) }));
+  if (!assignments.length) return toast('Choisissez au moins un produit à associer', true);
+  try {
+    const r = await api(`/api/lives/${assignLiveId}/extras/assign`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ assignments }),
+    });
+    $('#assignModal').hidden = true;
+    const liveId = assignLiveId;
+    assignLiveId = null;
+    let msg = `🔗 ${r.converted} commande(s) associée(s) — ${r.units} article(s) retiré(s) du stock. Associations mémorisées pour les prochains rapports.`;
+    if (r.errors && r.errors.length) msg += ` ⚠ ${r.errors.join(' ; ')}`;
+    toast(msg, !!(r.errors && r.errors.length));
+    await loadProducts();
+    await loadLives();
+    await showLiveDetail(liveId);
+    loadStats();
   } catch (e) {
     toast(e.message, true);
   }

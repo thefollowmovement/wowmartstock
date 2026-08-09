@@ -477,7 +477,7 @@
         </p>
         <ol class="tuto-steps">
           <li><strong>Exportez le rapport CSV</strong> des ventes depuis Whatnot ou TikTok après le live.</li>
-          <li>Onglet <em>Lives</em> → <span class="tuto-btn">Détail</span> du live → <strong>importez le fichier</strong>. Les lignes « Vue à l'écran » sont associées à vos ventes grâce à leur numéro. Les <strong>🛍 commandes boutique</strong> de la plateforme sont <strong>reconnues automatiquement</strong> (par SKU ou par nom de produit) : elles deviennent de vraies ventes du live — <strong>stock décompté</strong>, marge et TVA calculées. Les lignes non reconnues (et les <strong>gives</strong>) restent comptées à part dans le bilan — associez la colonne <em>SKU / référence vendeur</em> du rapport pour fiabiliser la reconnaissance, et corrigez un produit mal reconnu avec <span class="tuto-btn">✏</span>. Réimporter le même rapport ne décompte jamais le stock deux fois.</li>
+          <li>Onglet <em>Lives</em> → <span class="tuto-btn">Détail</span> du live → <strong>importez le fichier</strong>. Les lignes « Vue à l'écran » sont associées à vos ventes grâce à leur numéro. Les <strong>🛍 commandes boutique</strong> de la plateforme sont <strong>reconnues automatiquement</strong> (par SKU ou par nom de produit) : elles deviennent de vraies ventes du live — <strong>stock décompté</strong>, marge et TVA calculées. Pour les lignes non reconnues, l'app <strong>vous demande à quel produit elles correspondent</strong> (fenêtre 🔗 après l'import, ou bouton <span class="tuto-btn">🔗 Associer aux produits du stock</span> dans le détail) : le stock est décompté et <strong>l'association est mémorisée</strong> — aux prochains rapports, ce libellé sera reconnu tout seul. Les <strong>gives</strong> restent comptés à part. Corrigez un produit mal reconnu avec <span class="tuto-btn">✏</span>. Réimporter le même rapport ne décompte jamais le stock deux fois.</li>
           <li>L'app récupère le <strong>prix réel (TTC)</strong>, les <strong>gains nets</strong> (après commission et frais de la plateforme) et le <strong>statut du paiement</strong> de chaque vente. Si le rapport n'a pas de colonne gains nets, saisissez les <strong>💸 frais manuels en %</strong> (variables selon les lives) : ils sont déduits du prix TTC de chaque ligne : <span class="pay-badge paid">payé</span> <span class="pay-badge pending">⏳ en attente</span> <span class="pay-badge failed">⚠ échec</span></li>
           <li><strong>Vérifiez</strong> : les paiements en échec sont listés et exclus du CA — le bouton <span class="tuto-btn">↩ Restock</span> annule la vente et remet l'article en stock.</li>
           <li><strong>Validez</strong> le live : la ligne passe au vert et l'alerte du tableau de bord disparaît.</li>
@@ -756,6 +756,27 @@
         <span class="spacer"></span>
         <button type="button" class="btn" id="btnCloseSaleEdit">Fermer</button>
         <button type="button" class="btn primary" id="btnSeSave">Enregistrer</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================== ASSOCIER LES COMMANDES BOUTIQUE ===================== -->
+  <div id="assignModal" class="modal-overlay" hidden>
+    <div class="modal">
+      <h2>🔗 Associer les commandes boutique aux produits</h2>
+      <p class="muted">Ces lignes du rapport n'ont pas été reconnues automatiquement. Indiquez le produit du stock qui correspond :
+        il sera <strong>décompté du stock</strong> et <strong>l'association sera mémorisée</strong> — aux prochains rapports,
+        ce libellé sera reconnu tout seul. Laissez « Ne pas associer » pour les lignes qui ne correspondent à aucun produit.</p>
+      <div class="table-wrap">
+        <table id="assignTable">
+          <thead><tr><th>Ligne du rapport</th><th>Qté</th><th>Prix</th><th>Produit du stock</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div class="actions">
+        <span class="spacer"></span>
+        <button type="button" class="btn" id="btnCloseAssign">Plus tard</button>
+        <button type="button" class="btn primary" id="btnSaveAssign">🔗 Associer et décompter le stock</button>
       </div>
     </div>
   </div>

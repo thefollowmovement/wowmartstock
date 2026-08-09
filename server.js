@@ -132,6 +132,16 @@ CREATE TABLE IF NOT EXISTS live_extras (
   created_at TEXT NOT NULL
 );
 
+-- Associations apprises : « ce libellé / cette référence du rapport de la
+-- plateforme = ce produit du catalogue ». Alimentées quand l'utilisateur
+-- associe à la main une ligne non reconnue — réutilisées aux imports suivants.
+CREATE TABLE IF NOT EXISTS product_aliases (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  alias TEXT NOT NULL UNIQUE,
+  product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+  created_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
@@ -198,6 +208,10 @@ CREATE TABLE IF NOT EXISTS movement_lots (
   // Ventes créées depuis un rapport de plateforme (commandes boutique) : un
   // ré-import du rapport les remplace proprement (stock et lots restaurés)
   if (!mcols.includes('from_report')) db.exec('ALTER TABLE movements ADD COLUMN from_report INTEGER NOT NULL DEFAULT 0');
+  const xcols = db.prepare('PRAGMA table_info(live_extras)').all().map((c) => c.name);
+  // quantité de la ligne du rapport (pour décompter le stock si la ligne est
+  // associée à un produit après coup)
+  if (!xcols.includes('qty')) db.exec('ALTER TABLE live_extras ADD COLUMN qty INTEGER NOT NULL DEFAULT 1');
 
   const scols = db.prepare('PRAGMA table_info(live_sessions)').all().map((c) => c.name);
   if (!scols.includes('report_imported_at')) db.exec('ALTER TABLE live_sessions ADD COLUMN report_imported_at TEXT');
@@ -1686,11 +1700,16 @@ const normTxt = (s) =>
 
 function buildProductMatcher() {
   const prods = db.prepare('SELECT id, name, sku, barcode FROM products').all();
+  const byId = new Map(prods.map((p) => [p.id, p]));
   const byRef = new Map();
   for (const p of prods) {
     if (p.sku) byRef.set(normTxt(p.sku), p);
     if (p.barcode) byRef.set(normTxt(p.barcode), p);
   }
+  // associations apprises (libellé du rapport → produit), prioritaires
+  const aliases = new Map(
+    db.prepare('SELECT alias, product_id FROM product_aliases').all().map((a) => [a.alias, a.product_id])
+  );
   const byName = prods
     .map((p) => {
       const n = normTxt(p.name);
@@ -1698,6 +1717,8 @@ function buildProductMatcher() {
     })
     .filter((e) => e.n);
   return (label, sku) => {
+    const viaAlias = aliases.get(normTxt(sku)) ?? aliases.get(normTxt(label));
+    if (viaAlias != null && byId.has(viaAlias)) return byId.get(viaAlias);
     if (sku) {
       const hit = byRef.get(normTxt(sku));
       if (hit) return hit;
@@ -1845,8 +1866,8 @@ app.post('/api/lives/:id/report/commit', (req, res) => {
     }
     const upd = db.prepare('UPDATE movements SET sold_price = ?, fees = ?, net_amount = ?, payment_status = ? WHERE id = ?');
     const insExtra = db.prepare(
-      `INSERT INTO live_extras (session_id, kind, ref, label, sold_price, net_amount, payment_status, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO live_extras (session_id, kind, ref, label, sold_price, net_amount, payment_status, qty, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
     );
     for (const row of pending.rows) {
       const rawRef = row[mapping.sale_no];
@@ -1883,6 +1904,7 @@ app.post('/api/lives/:id/report/commit', (req, res) => {
       } else {
         const label = mapping.name ? String(row[mapping.name]).trim() : '';
         const extraNet = net != null ? net : manualPct != null ? price - (price * manualPct) / 100 : null;
+        const qty = mapping.qty ? Math.max(1, parseInt(row[mapping.qty], 10) || 1) : 1;
         // Commandes boutique : si le produit est reconnu (SKU ou nom), la
         // ligne devient une vraie vente du live → stock décompté (lots FIFO),
         // CA et marge calculés comme pour une vente à l'écran.
@@ -1892,7 +1914,6 @@ app.post('/api/lives/:id/report/commit', (req, res) => {
             ? matchProduct(label, mapping.sku ? row[mapping.sku] : '')
             : null;
           if (product) {
-            const qty = mapping.qty ? Math.max(1, parseInt(row[mapping.qty], 10) || 1) : 1;
             const p = db.prepare('SELECT * FROM products WHERE id = ?').get(product.id);
             const after = Math.max(0, p.stock - qty);
             db.prepare('UPDATE products SET stock = ?, updated_at = ? WHERE id = ?').run(after, now(), p.id);
@@ -1914,7 +1935,7 @@ app.post('/api/lives/:id/report/commit', (req, res) => {
             if (key) unrecognized.set(key, (unrecognized.get(key) || 0) + 1);
           }
         }
-        insExtra.run(session.id, type, String(rawRef).trim(), label, price, extraNet, status, now());
+        insExtra.run(session.id, type, String(rawRef).trim(), label, price, extraNet, status, qty, now());
         extras++;
       }
     }
@@ -1939,6 +1960,74 @@ app.post('/api/lives/:id/report/commit', (req, res) => {
     unpaid: summary.unpaid,
     session: summary,
   });
+});
+
+// Associer à la main des lignes boutique non reconnues à des produits du
+// catalogue : { assignments: [{ extra_id, product_id }] }. Chaque ligne
+// devient une vraie vente du live (stock décompté, lots FIFO) et
+// l'association libellé → produit est MÉMORISÉE pour les prochains imports.
+app.post('/api/lives/:id/extras/assign', (req, res) => {
+  const session = db.prepare('SELECT * FROM live_sessions WHERE id = ?').get(Number(req.params.id));
+  if (!session) return res.status(404).json({ error: 'Live introuvable' });
+  const assignments = Array.isArray(req.body.assignments) ? req.body.assignments : [];
+  if (!assignments.length) return res.status(400).json({ error: 'Aucune association reçue' });
+
+  let converted = 0;
+  let units = 0;
+  const errors = [];
+  withTransaction(() => {
+    for (const a of assignments) {
+      const x = db
+        .prepare('SELECT * FROM live_extras WHERE id = ? AND session_id = ?')
+        .get(Number(a.extra_id), session.id);
+      if (!x) {
+        errors.push(`Ligne ${a.extra_id} introuvable`);
+        continue;
+      }
+      if (x.payment_status === 'failed') {
+        errors.push(`« ${x.label || x.ref} » : paiement en échec, rien n'est parti du stock`);
+        continue;
+      }
+      const p = db.prepare('SELECT * FROM products WHERE id = ?').get(Number(a.product_id));
+      if (!p) {
+        errors.push(`Produit ${a.product_id} introuvable`);
+        continue;
+      }
+      const qty = Math.max(1, x.qty || 1);
+      const after = Math.max(0, p.stock - qty);
+      db.prepare('UPDATE products SET stock = ?, updated_at = ? WHERE id = ?').run(after, now(), p.id);
+      const movId = logMovement(
+        p.id, session.platform, -qty, after,
+        `Commande boutique${x.ref ? ` ${x.ref}` : ''} (associée à la main)`, session.id, null
+      );
+      const price = x.sold_price != null ? x.sold_price : 0;
+      db.prepare(
+        'UPDATE movements SET from_report = 1, sold_price = ?, net_amount = ?, payment_status = ?, created_at = ? WHERE id = ?'
+      ).run(
+        price / qty,
+        x.net_amount != null ? x.net_amount / qty : null,
+        x.payment_status || 'paid',
+        x.created_at || now(),
+        movId
+      );
+      consumeLots(p.id, qty, movId);
+      db.prepare('DELETE FROM live_extras WHERE id = ?').run(x.id);
+      // L'association est apprise : le même libellé sera reconnu tout seul
+      // aux prochains imports (et lors d'un ré-import de ce rapport)
+      const alias = normTxt(x.label);
+      if (alias) {
+        db.prepare(
+          'INSERT INTO product_aliases (alias, product_id, created_at) VALUES (?, ?, ?) ' +
+          'ON CONFLICT(alias) DO UPDATE SET product_id = excluded.product_id'
+        ).run(alias, p.id, now());
+      }
+      converted++;
+      units += qty;
+      // Une nouvelle vente change les chiffres : le live devra être re-validé
+      if (session.validated_at) db.prepare('UPDATE live_sessions SET validated_at = NULL WHERE id = ?').run(session.id);
+    }
+  });
+  res.json({ converted, units, errors });
 });
 
 // Filtres : ?q=<produit/sku> &channel= &days= &page= (50 par page)
