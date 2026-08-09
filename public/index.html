@@ -276,21 +276,38 @@
     <div id="importResult" class="card success" hidden></div>
 
     <div class="card">
-      <h2>🔒 Protection par mot de passe</h2>
-      <p class="muted">Optionnelle sur votre ordinateur, <strong>indispensable si l'app est accessible depuis Internet</strong> (serveur, autre appareil…) :
-        sans mot de passe, n'importe qui pourrait voir vos ventes, modifier votre stock et utiliser votre clé API.</p>
-      <div id="secStatus" class="muted"></div>
-      <div class="sec-grid">
-        <label id="secCurrentWrap" hidden>Mot de passe actuel
-          <input type="password" id="secCurrent" autocomplete="current-password">
+      <h2>👥 Équipe, plateaux &amp; accès</h2>
+      <p class="muted">Créez <strong>un compte par personne</strong>. Un <strong>administrateur</strong> a accès à tout.
+        Un <strong>liveur</strong> ne voit que les produits et le stock de son plateau et peut lancer des lives et y vendre —
+        jamais les coûts d'achat, les marges, les stats ni la compta.
+        <strong>Sur un serveur accessible depuis Internet, créez au moins un compte administrateur</strong> :
+        sans compte, tout est en accès libre.</p>
+      <div id="teamStatus" class="muted"></div>
+      <div id="teamUsers"></div>
+      <h4>➕ Ajouter un compte</h4>
+      <div class="team-grid">
+        <label>Nom <input id="tuName" placeholder="Ex : Sarah" autocomplete="off"></label>
+        <label>Mot de passe <span class="muted small">(8 car. min.)</span><input type="password" id="tuPass" autocomplete="new-password"></label>
+        <label>Rôle
+          <select id="tuRole">
+            <option value="liveur">Liveur (produits + stock + lives)</option>
+            <option value="admin">Administrateur (accès total)</option>
+          </select>
         </label>
-        <label>Nouveau mot de passe <span class="muted small">(8 caractères min. — vide pour retirer la protection)</span>
-          <input type="password" id="secNew" autocomplete="new-password">
+        <label id="tuPlateauWrap">Plateau
+          <select id="tuPlateau"><option value="">— Tous les plateaux —</option></select>
         </label>
       </div>
       <div class="backup-row">
-        <button class="btn primary" id="btnSavePassword">Enregistrer</button>
+        <button class="btn primary" id="btnAddUser">Créer le compte</button>
         <button class="btn" id="btnLogout" hidden>Se déconnecter</button>
+      </div>
+      <h4>🎪 Plateaux</h4>
+      <p class="muted small">Un plateau = un espace de vente (Parfum, Déstockage…). Chaque plateau peut avoir <strong>son live en cours</strong> en même temps que les autres, et ses produits réservés.</p>
+      <div id="teamPlateaux" class="plateau-list"></div>
+      <div class="backup-row">
+        <input id="tpName" placeholder="Nom du plateau (ex : Parfum)" autocomplete="off">
+        <button class="btn" id="btnAddPlateau">+ Créer le plateau</button>
       </div>
     </div>
 
@@ -514,6 +531,24 @@
     </details>
 
     <details class="card tuto-section">
+      <summary><span class="tuto-emoji">👥</span> Équipe, plateaux et liveurs</summary>
+      <div class="tuto-body">
+        <p>Pour travailler à plusieurs (plateau parfum, plateau déstockage…), tout se règle dans l'onglet <em>Importer</em>, carte <strong>👥 Équipe, plateaux &amp; accès</strong> :</p>
+        <ul>
+          <li><strong>Créez vos plateaux</strong> (ex : <em>Parfum</em>, <em>Déstockage</em>). Chaque plateau peut avoir <strong>son live en cours en même temps</strong> que les autres, et des produits qui lui sont réservés (champ <em>Plateau</em> sur la fiche produit — vide = visible par tous).</li>
+          <li><strong>Créez un compte par personne</strong>. Deux rôles :
+            <ul>
+              <li><strong>🛠 Administrateur</strong> — accès total : produits, coûts, marges, stats, compta, imports, réglages.</li>
+              <li><strong>🎤 Liveur</strong> — rattaché à un plateau : il voit <strong>uniquement les produits et le stock de son plateau</strong> (jamais les coûts d'achat ni les marges), peut ajuster le stock, <strong>lancer un live</strong> et y vendre. Les onglets Stats, Compta, Lives, Importer et Historique lui sont fermés — côté serveur aussi, pas seulement à l'écran.</li>
+            </ul>
+          </li>
+          <li>Le <strong>premier compte créé</strong> est automatiquement administrateur et verrouille l'application : ensuite, chacun se connecte avec <strong>son nom + son mot de passe</strong>.</li>
+          <li>Quand un liveur lance un live, le live porte son plateau et son nom — vous retrouvez qui a vendu quoi dans l'historique des lives.</li>
+        </ul>
+      </div>
+    </details>
+
+    <details class="card tuto-section">
       <summary><span class="tuto-emoji">💾</span> Vos données et sauvegardes</summary>
       <div class="tuto-body">
         <p>Tout est stocké <strong>sur votre ordinateur</strong>, rien ne part dans le cloud (sauf les photos envoyées à l'IA quand vous utilisez les ventes par photos) :</p>
@@ -521,7 +556,7 @@
           <li><code>data/stock.db</code> — la base de données (produits, ventes, lives, réglages) ;</li>
           <li><code>uploads/</code> — les photos des produits et des ventes.</li>
         </ul>
-        <p><strong>🔒 Sécurité</strong> : votre clé API est <strong>chiffrée</strong> dans la base et n'est jamais renvoyée au navigateur. Dans l'onglet <em>Importer</em>, vous pouvez définir un <strong>mot de passe</strong> qui verrouille toute l'app (données et photos) — indispensable si elle est accessible depuis Internet ou un autre appareil.</p>
+        <p><strong>🔒 Sécurité</strong> : votre clé API est <strong>chiffrée</strong> dans la base et n'est jamais renvoyée au navigateur. Dans l'onglet <em>Importer</em>, créez des <strong>comptes</strong> qui verrouillent toute l'app (données et photos) — indispensable si elle est accessible depuis Internet ou un autre appareil.</p>
         <p><strong>💾 Sauvegarde automatique</strong> : dans l'onglet <em>Importer</em>, activez-la <strong>en un clic</strong> (le bon dossier est proposé selon la machine). Une copie complète (base + photos) est faite <strong>chaque jour</strong>, les 14 dernières sont conservées. <span class="tuto-btn">⬇ Télécharger une copie complète</span> met une archive sur votre ordinateur — le réflexe à avoir régulièrement quand l'app est sur un serveur — et <span class="tuto-btn">↩ Restaurer</span> revient à n'importe quelle sauvegarde, y compris depuis une archive téléchargée (pour migrer d'une machine à l'autre).</p>
       </div>
     </details>
@@ -547,6 +582,10 @@
               <label>Marque<input name="brand" list="brandList" placeholder="Ex : YESIDO" autocomplete="off"><datalist id="brandList"></datalist></label>
             </div>
             <label>Catégorie<input name="category" list="categoryList" placeholder="Ex : Chargeurs" autocomplete="off"><datalist id="categoryList"></datalist></label>
+            <label id="pPlateauWrap" hidden>Plateau
+              <select name="plateau_id" id="pPlateau"><option value="">— Visible par tous les plateaux —</option></select>
+              <span class="muted small">Réservez ce produit à un plateau (parfum, déstockage…) : seuls ses liveurs le verront. Vide = visible par toute l'équipe.</span>
+            </label>
             <label>Code-barres (EAN)
               <input name="barcode" placeholder="Ex : 3401234567890" inputmode="numeric" autocomplete="off">
               <span class="muted small">Facultatif — scannez ou tapez le code du produit, il servira à la préparation des colis.</span>
@@ -597,6 +636,9 @@
           <span class="platform-icon">🟡</span>Whatnot
         </button>
       </div>
+      <label id="livePlateauWrap" class="live-plateau" hidden>Plateau du live
+        <select id="livePlateau"><option value="">— Sans plateau —</option></select>
+      </label>
       <details class="api-key-setup start-no-setup">
         <summary>⚙ Premier n° de vente : <strong id="startNoPreview">#1</strong></summary>
         <p class="muted small">Laissez 1 en temps normal. Si le live a <strong>déjà commencé sur la plateforme</strong>
@@ -868,8 +910,9 @@
   <div id="loginOverlay" class="login-overlay" hidden>
     <form id="loginForm" class="login-box">
       <div class="login-brand">📦 <strong>WowMart Stock</strong></div>
-      <p class="muted">Cette application est protégée par un mot de passe.</p>
-      <input type="password" id="loginPassword" placeholder="Mot de passe" autocomplete="current-password" autofocus>
+      <p class="muted">Connectez-vous avec votre compte.</p>
+      <input type="text" id="loginName" placeholder="Nom du compte" autocomplete="username" autofocus>
+      <input type="password" id="loginPassword" placeholder="Mot de passe" autocomplete="current-password">
       <button class="btn primary" type="submit">Se connecter</button>
       <p id="loginError" class="login-error" hidden></p>
     </form>

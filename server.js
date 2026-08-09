@@ -137,6 +137,23 @@ CREATE TABLE IF NOT EXISTS settings (
   value TEXT NOT NULL
 );
 
+-- Plateaux (parfum, déstockage…) : cloisonnent produits et lives
+CREATE TABLE IF NOT EXISTS plateaux (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL UNIQUE
+);
+
+-- Comptes : admin (tout) ou liveur (produits, stock et lancement de live
+-- uniquement, sans les coûts d'achat), rattachés ou non à un plateau
+CREATE TABLE IF NOT EXISTS users (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+  password_hash TEXT NOT NULL,
+  role TEXT NOT NULL DEFAULT 'liveur',
+  plateau_id INTEGER REFERENCES plateaux(id) ON DELETE SET NULL,
+  created_at TEXT NOT NULL
+);
+
 -- Lots d'achat : chaque entrée en stock garde son coût unitaire et son régime
 -- de TVA (🇪🇺 intracom ou France TTC). Les ventes consomment les lots en FIFO
 -- (premier arrivé, premier vendu) : marge et TVA justes même quand le prix
@@ -226,6 +243,11 @@ CREATE TABLE IF NOT EXISTS movement_lots (
   // aucune TVA récupérable sur son coût — contrairement à un achat en France
   // TTC dont la TVA payée est déductible
   if (!cols.includes('vat_intra')) db.exec(`ALTER TABLE products ADD COLUMN vat_intra INTEGER NOT NULL DEFAULT 0`);
+  // Plateau du produit (NULL = commun à tous les plateaux)
+  if (!cols.includes('plateau_id')) db.exec(`ALTER TABLE products ADD COLUMN plateau_id INTEGER`);
+  const scols2 = db.prepare('PRAGMA table_info(live_sessions)').all().map((c) => c.name);
+  if (!scols2.includes('plateau_id')) db.exec('ALTER TABLE live_sessions ADD COLUMN plateau_id INTEGER');
+  if (!scols2.includes('created_by')) db.exec('ALTER TABLE live_sessions ADD COLUMN created_by TEXT');
 
   // Migration lots : le stock existant devient un lot initial au coût actuel
   const withoutLots = db
@@ -421,21 +443,39 @@ function verifyPassword(password, stored) {
 }
 
 const SESSION_DAYS = 30;
-function sessionSignature(expires, passwordHash) {
-  return crypto.createHmac('sha256', APP_SECRET).update(`session:${expires}:${passwordHash}`).digest('hex');
+function sessionSignature(expires, uid, passwordHash) {
+  return crypto.createHmac('sha256', APP_SECRET).update(`session:${expires}:${uid}:${passwordHash}`).digest('hex');
 }
 
-function makeSessionToken() {
+function makeSessionToken(user) {
   const expires = Date.now() + SESSION_DAYS * 24 * 3600 * 1000;
-  return `${expires}.${sessionSignature(expires, getSetting('app_password', ''))}`;
+  return `${expires}.${user.id}.${sessionSignature(expires, user.id, user.password_hash)}`;
 }
 
-function isValidSession(token) {
-  const [expiresStr, sig] = String(token || '').split('.');
+// Renvoie l'utilisateur du cookie de session, ou null
+function sessionUser(token) {
+  const [expiresStr, uidStr, sig] = String(token || '').split('.');
   const expires = Number(expiresStr);
-  if (!Number.isFinite(expires) || expires < Date.now() || !sig) return false;
-  const expected = sessionSignature(expires, getSetting('app_password', ''));
-  return sig.length === expected.length && crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected));
+  const uid = Number(uidStr);
+  if (!Number.isFinite(expires) || expires < Date.now() || !Number.isFinite(uid) || !sig) return null;
+  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(uid);
+  if (!user) return null;
+  const expected = sessionSignature(expires, uid, user.password_hash);
+  if (sig.length !== expected.length || !crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected))) return null;
+  return user;
+}
+
+const usersExist = () => db.prepare('SELECT COUNT(*) AS n FROM users').get().n > 0;
+
+// Migration : l'ancien mot de passe unique devient le compte « admin »
+{
+  const legacy = getSetting('app_password', '');
+  if (legacy && !usersExist()) {
+    db.prepare('INSERT INTO users (name, password_hash, role, created_at) VALUES (?, ?, ?, ?)')
+      .run('admin', legacy, 'admin', now());
+    db.prepare('DELETE FROM settings WHERE key = ?').run('app_password');
+    console.log('Compte « admin » créé à partir de l’ancien mot de passe ✓');
+  }
 }
 
 function readCookie(req, name) {
@@ -447,15 +487,20 @@ function readCookie(req, name) {
   return '';
 }
 
-function setSessionCookie(req, res) {
+function setSessionCookie(req, res, user) {
   const secure = req.secure || req.headers['x-forwarded-proto'] === 'https' ? '; Secure' : '';
   res.setHeader(
     'Set-Cookie',
-    `wm_session=${makeSessionToken()}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${SESSION_DAYS * 24 * 3600}${secure}`
+    `wm_session=${makeSessionToken(user)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${SESSION_DAYS * 24 * 3600}${secure}`
   );
 }
 
-const isAuthenticated = (req) => isValidSession(readCookie(req, 'wm_session'));
+const currentUser = (req) => sessionUser(readCookie(req, 'wm_session'));
+
+// Tant qu'aucun compte n'existe, l'app fonctionne en accès libre (comme avant)
+// avec un pseudo-administrateur — le premier compte créé verrouille tout.
+const OPEN_ADMIN = { id: 0, name: 'admin', role: 'admin', plateau_id: null };
+const publicUser = (u) => (u ? { id: u.id, name: u.name, role: u.role, plateau_id: u.plateau_id } : null);
 
 // Anti brute-force : 8 essais par IP puis 10 minutes d'attente
 const loginAttempts = new Map();
@@ -471,24 +516,26 @@ function recordLoginFailure(ip) {
 }
 
 app.get('/api/auth/status', (req, res) => {
-  const protected_ = !!getSetting('app_password', '');
-  res.json({ protected: protected_, authenticated: !protected_ || isAuthenticated(req) });
+  const protected_ = usersExist();
+  const user = protected_ ? currentUser(req) : OPEN_ADMIN;
+  res.json({ protected: protected_, authenticated: !!user, user: publicUser(user) });
 });
 
 app.post('/api/auth/login', (req, res) => {
-  const stored = getSetting('app_password', '');
-  if (!stored) return res.json({ ok: true });
+  if (!usersExist()) return res.json({ ok: true, user: publicUser(OPEN_ADMIN) });
   const ip = req.ip || 'inconnue';
   if (!loginAllowed(ip)) {
     return res.status(429).json({ error: 'Trop d’essais — réessayez dans 10 minutes' });
   }
-  if (!verifyPassword(String(req.body.password || ''), stored)) {
+  const name = String(req.body.name || '').trim();
+  const user = name ? db.prepare('SELECT * FROM users WHERE name = ?').get(name) : null;
+  if (!user || !verifyPassword(String(req.body.password || ''), user.password_hash)) {
     recordLoginFailure(ip);
-    return res.status(401).json({ error: 'Mot de passe incorrect' });
+    return res.status(401).json({ error: 'Nom ou mot de passe incorrect' });
   }
   loginAttempts.delete(ip);
-  setSessionCookie(req, res);
-  res.json({ ok: true });
+  setSessionCookie(req, res, user);
+  res.json({ ok: true, user: publicUser(user) });
 });
 
 app.post('/api/auth/logout', (req, res) => {
@@ -496,31 +543,136 @@ app.post('/api/auth/logout', (req, res) => {
   res.json({ ok: true });
 });
 
-// Définir / changer / retirer le mot de passe. L'ancien mot de passe est
-// exigé dès qu'il en existe un.
-app.post('/api/auth/password', (req, res) => {
-  const stored = getSetting('app_password', '');
-  if (stored && !verifyPassword(String(req.body.current_password || ''), stored)) {
-    return res.status(401).json({ error: 'Mot de passe actuel incorrect' });
-  }
-  const next = String(req.body.new_password || '');
-  if (!next) {
-    db.prepare('DELETE FROM settings WHERE key = ?').run('app_password');
-    res.setHeader('Set-Cookie', 'wm_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0');
-    return res.json({ ok: true, protected: false });
-  }
-  if (next.length < 8) return res.status(400).json({ error: 'Le mot de passe doit faire au moins 8 caractères' });
-  setSetting('app_password', hashPassword(next));
-  setSessionCookie(req, res); // reste connecté sur cet appareil, les autres sessions tombent
-  res.json({ ok: true, protected: true });
-});
+// Ce qu'un compte « liveur » a le droit de faire : voir les produits (sans
+// les coûts d'achat), ajuster le stock, lancer / rejoindre / terminer un live
+// et y vendre. Tout le reste (stats, compta, imports, réglages, historique,
+// gestion des lives passés…) est réservé aux administrateurs.
+const LIVEUR_ROUTES = [
+  ['GET', /^\/api\/settings$/],
+  ['GET', /^\/api\/products$/],
+  ['POST', /^\/api\/products\/\d+\/stock$/],
+  ['POST', /^\/api\/movements\/\d+\/cancel$/],
+  ['GET', /^\/api\/lives\/active$/],
+  ['POST', /^\/api\/lives$/],
+  ['POST', /^\/api\/lives\/\d+\/end$/],
+  ['POST', /^\/api\/lives\/\d+\/gift$/],
+  ['GET', /^\/uploads\//],
+];
 
 // Tout le reste (/api/* et /uploads/*) exige une session valide dès qu'un
-// mot de passe est défini
+// compte existe ; le rôle décide ensuite des routes accessibles.
 app.use((req, res, next) => {
-  if (!getSetting('app_password', '')) return next();
-  if (isAuthenticated(req)) return next();
-  res.status(401).json({ error: 'Connexion requise', auth_required: true });
+  if (!usersExist()) {
+    req.user = OPEN_ADMIN;
+    return next();
+  }
+  const user = currentUser(req);
+  if (!user) return res.status(401).json({ error: 'Connexion requise', auth_required: true });
+  req.user = user;
+  if (user.role === 'admin') return next();
+  const allowed = LIVEUR_ROUTES.some(([method, re]) => req.method === method && re.test(req.path));
+  if (!allowed) return res.status(403).json({ error: 'Accès réservé à l’administrateur' });
+  next();
+});
+
+// ---------------------------------------------------------------------------
+// Équipe : plateaux (parfum, déstockage…) et comptes (admin / liveur).
+// Un liveur est rattaché à un plateau : il ne voit que les produits de son
+// plateau (+ les produits sans plateau) et lance les lives de son plateau.
+// ---------------------------------------------------------------------------
+app.get('/api/users', (req, res) => {
+  const users = db
+    .prepare(
+      `SELECT u.id, u.name, u.role, u.plateau_id, u.created_at, pl.name AS plateau_name
+       FROM users u LEFT JOIN plateaux pl ON pl.id = u.plateau_id
+       ORDER BY u.role, u.name COLLATE NOCASE`
+    )
+    .all();
+  const plateaux = db.prepare('SELECT * FROM plateaux ORDER BY name COLLATE NOCASE').all();
+  res.json({ users, plateaux, me: publicUser(req.user) });
+});
+
+app.post('/api/users', (req, res) => {
+  const name = String(req.body.name || '').trim();
+  const password = String(req.body.password || '');
+  if (!name) return res.status(400).json({ error: 'Le nom du compte est obligatoire' });
+  if (password.length < 8) return res.status(400).json({ error: 'Le mot de passe doit faire au moins 8 caractères' });
+  const bootstrap = !usersExist();
+  // Le tout premier compte est forcément un administrateur
+  const role = bootstrap || req.body.role === 'admin' ? 'admin' : 'liveur';
+  const plateauId = role === 'liveur' && req.body.plateau_id ? Number(req.body.plateau_id) || null : null;
+  let info;
+  try {
+    info = db
+      .prepare('INSERT INTO users (name, password_hash, role, plateau_id, created_at) VALUES (?, ?, ?, ?, ?)')
+      .run(name, hashPassword(password), role, plateauId, now());
+  } catch (e) {
+    return res.status(409).json({ error: `Le compte « ${name} » existe déjà` });
+  }
+  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(info.lastInsertRowid);
+  // Création du premier admin : on le connecte tout de suite sur cet appareil
+  if (bootstrap) setSessionCookie(req, res, user);
+  res.status(201).json({ ok: true, user: publicUser(user), bootstrap });
+});
+
+app.patch('/api/users/:id', (req, res) => {
+  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(Number(req.params.id));
+  if (!user) return res.status(404).json({ error: 'Compte introuvable' });
+  let { role, plateau_id: plateauId, password } = req.body;
+  role = role === 'admin' || role === 'liveur' ? role : user.role;
+  if (user.role === 'admin' && role !== 'admin') {
+    const admins = db.prepare("SELECT COUNT(*) AS n FROM users WHERE role = 'admin'").get().n;
+    if (admins <= 1) return res.status(400).json({ error: 'Impossible : il faut garder au moins un administrateur' });
+  }
+  let hash = user.password_hash;
+  if (password != null && password !== '') {
+    if (String(password).length < 8) return res.status(400).json({ error: 'Le mot de passe doit faire au moins 8 caractères' });
+    hash = hashPassword(String(password));
+  }
+  const newPlateau = role === 'liveur' ? (plateauId !== undefined ? Number(plateauId) || null : user.plateau_id) : null;
+  db.prepare('UPDATE users SET role = ?, plateau_id = ?, password_hash = ? WHERE id = ?').run(role, newPlateau, hash, user.id);
+  const updated = db.prepare('SELECT * FROM users WHERE id = ?').get(user.id);
+  // Changer son propre mot de passe déconnecte les autres appareils mais pas
+  // celui-ci (le hachage entre dans la signature du cookie de session)
+  if (req.user.id === user.id && hash !== user.password_hash) setSessionCookie(req, res, updated);
+  res.json({ ok: true, user: publicUser(updated) });
+});
+
+app.delete('/api/users/:id', (req, res) => {
+  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(Number(req.params.id));
+  if (!user) return res.status(404).json({ error: 'Compte introuvable' });
+  if (user.role === 'admin') {
+    const admins = db.prepare("SELECT COUNT(*) AS n FROM users WHERE role = 'admin'").get().n;
+    if (admins <= 1) return res.status(400).json({ error: 'Impossible : il faut garder au moins un administrateur' });
+  }
+  db.prepare('DELETE FROM users WHERE id = ?').run(user.id);
+  res.json({ ok: true, self_deleted: req.user.id === user.id });
+});
+
+app.post('/api/plateaux', (req, res) => {
+  const name = String(req.body.name || '').trim();
+  if (!name) return res.status(400).json({ error: 'Le nom du plateau est obligatoire' });
+  const dup = db.prepare('SELECT id FROM plateaux WHERE name = ? COLLATE NOCASE').get(name);
+  if (dup) return res.status(409).json({ error: `Le plateau « ${name} » existe déjà` });
+  try {
+    const info = db.prepare('INSERT INTO plateaux (name) VALUES (?)').run(name);
+    res.status(201).json(db.prepare('SELECT * FROM plateaux WHERE id = ?').get(info.lastInsertRowid));
+  } catch (e) {
+    res.status(409).json({ error: `Le plateau « ${name} » existe déjà` });
+  }
+});
+
+app.delete('/api/plateaux/:id', (req, res) => {
+  const id = Number(req.params.id);
+  const plateau = db.prepare('SELECT * FROM plateaux WHERE id = ?').get(id);
+  if (!plateau) return res.status(404).json({ error: 'Plateau introuvable' });
+  withTransaction(() => {
+    db.prepare('UPDATE products SET plateau_id = NULL WHERE plateau_id = ?').run(id);
+    db.prepare('UPDATE live_sessions SET plateau_id = NULL WHERE plateau_id = ?').run(id);
+    db.prepare('UPDATE users SET plateau_id = NULL WHERE plateau_id = ?').run(id);
+    db.prepare('DELETE FROM plateaux WHERE id = ?').run(id);
+  });
+  res.json({ ok: true });
 });
 
 app.use('/uploads', express.static(UPLOADS_DIR));
@@ -528,12 +680,19 @@ app.use('/uploads', express.static(UPLOADS_DIR));
 // ---------------------------------------------------------------------------
 // Produits
 // ---------------------------------------------------------------------------
+// Un liveur ne voit que les produits de son plateau (+ ceux sans plateau) et
+// jamais les coûts d'achat ni le régime de TVA (données réservées à l'admin).
+function sanitizeProductForLiveur(p) {
+  return { ...p, cost: 0, vat_intra: 0 };
+}
+
 app.get('/api/products', (req, res) => {
   const search = (req.query.search || '').trim();
   // sold_30d permet le tri « meilleures ventes » côté interface
   const base = `
-    SELECT p.*, COALESCE(s.qty, 0) AS sold_30d
+    SELECT p.*, pl.name AS plateau_name, COALESCE(s.qty, 0) AS sold_30d
     FROM products p
+    LEFT JOIN plateaux pl ON pl.id = p.plateau_id
     LEFT JOIN (
       SELECT product_id, SUM(-delta) AS qty FROM movements
       WHERE delta < 0 AND cancelled = 0 AND is_gift = 0
@@ -543,18 +702,21 @@ app.get('/api/products', (req, res) => {
       GROUP BY product_id
     ) s ON s.product_id = p.id`;
   const since = new Date(Date.now() - 30 * 24 * 3600 * 1000).toISOString();
-  let rows;
+  const where = [];
+  const params = [since];
   if (search) {
     const like = `%${search}%`;
-    rows = db
-      .prepare(
-        `${base} WHERE p.name LIKE ? OR p.sku LIKE ? OR p.category LIKE ? OR p.barcode LIKE ? OR p.brand LIKE ?
-         ORDER BY p.name COLLATE NOCASE`
-      )
-      .all(since, like, like, like, like, like);
-  } else {
-    rows = db.prepare(`${base} ORDER BY p.name COLLATE NOCASE`).all(since);
+    where.push('(p.name LIKE ? OR p.sku LIKE ? OR p.category LIKE ? OR p.barcode LIKE ? OR p.brand LIKE ?)');
+    params.push(like, like, like, like, like);
   }
+  const liveur = req.user && req.user.role === 'liveur';
+  if (liveur) {
+    where.push('(p.plateau_id IS NULL OR p.plateau_id IS ?)');
+    params.push(req.user.plateau_id);
+  }
+  const sql = `${base}${where.length ? ` WHERE ${where.join(' AND ')}` : ''} ORDER BY p.name COLLATE NOCASE`;
+  let rows = db.prepare(sql).all(...params);
+  if (liveur) rows = rows.map(sanitizeProductForLiveur);
   res.json(rows);
 });
 
@@ -571,6 +733,7 @@ function readProductBody(body) {
     cost: Number(body.cost) || 0,
     stock: Math.max(0, parseInt(body.stock, 10) || 0),
     min_stock: Math.max(0, parseInt(body.min_stock, 10) || 0),
+    plateau_id: body.plateau_id ? Number(body.plateau_id) || null : null,
   };
 }
 
@@ -585,10 +748,10 @@ app.post('/api/products', uploadPhoto.single('photo'), (req, res) => {
   const ts = now();
   const info = db
     .prepare(
-      `INSERT INTO products (sku, barcode, variant_group, brand, vat_intra, name, category, price, cost, photo, stock, min_stock, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO products (sku, barcode, variant_group, brand, vat_intra, name, category, price, cost, photo, stock, min_stock, plateau_id, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
-    .run(p.sku, p.barcode, p.variant_group, p.brand, p.vat_intra, p.name, p.category, p.price, p.cost, photo, p.stock, p.min_stock, ts, ts);
+    .run(p.sku, p.barcode, p.variant_group, p.brand, p.vat_intra, p.name, p.category, p.price, p.cost, photo, p.stock, p.min_stock, p.plateau_id, ts, ts);
   const id = info.lastInsertRowid;
   if (p.stock > 0) {
     logMovement(id, 'adjust', p.stock, p.stock, 'Création du produit');
@@ -627,9 +790,9 @@ app.put('/api/products/:id', uploadPhoto.single('photo'), (req, res) => {
   }
 
   db.prepare(
-    `UPDATE products SET sku=?, barcode=?, variant_group=?, brand=?, vat_intra=?, name=?, category=?, price=?, cost=?, photo=?, stock=?, min_stock=?, updated_at=?
+    `UPDATE products SET sku=?, barcode=?, variant_group=?, brand=?, vat_intra=?, name=?, category=?, price=?, cost=?, photo=?, stock=?, min_stock=?, plateau_id=?, updated_at=?
      WHERE id=?`
-  ).run(p.sku, p.barcode, p.variant_group, p.brand, p.vat_intra, p.name, p.category, p.price, p.cost, photo, p.stock, p.min_stock, now(), id);
+  ).run(p.sku, p.barcode, p.variant_group, p.brand, p.vat_intra, p.name, p.category, p.price, p.cost, photo, p.stock, p.min_stock, p.plateau_id, now(), id);
   res.json(db.prepare('SELECT * FROM products WHERE id = ?').get(id));
 });
 
@@ -661,6 +824,9 @@ app.post('/api/products/:id/stock', (req, res) => {
   const id = Number(req.params.id);
   const existing = db.prepare('SELECT * FROM products WHERE id = ?').get(id);
   if (!existing) return res.status(404).json({ error: 'Produit introuvable' });
+  if (req.user.role === 'liveur' && existing.plateau_id != null && existing.plateau_id !== req.user.plateau_id) {
+    return res.status(403).json({ error: 'Ce produit appartient à un autre plateau' });
+  }
   const channel = req.body.channel;
   if (!MOVEMENT_CHANNELS.includes(channel)) {
     return res.status(400).json({ error: 'Canal invalide (online, store, tiktok, whatnot ou adjust)' });
@@ -1011,8 +1177,12 @@ function sessionSummary(session) {
        FROM live_extras WHERE session_id = ?`
     )
     .get(session.id);
+  const plateau = session.plateau_id
+    ? db.prepare('SELECT name FROM plateaux WHERE id = ?').get(session.plateau_id)
+    : null;
   return {
     ...session,
+    plateau_name: plateau ? plateau.name : null,
     items: agg.items,
     gifts: agg.gifts,
     revenue: agg.revenue + extras.revenue,
@@ -1034,6 +1204,11 @@ app.post('/api/lives', (req, res) => {
     return res.status(400).json({ error: 'Plateforme invalide (tiktok ou whatnot)' });
   }
 
+  // Plateau du live : celui du liveur connecté, ou au choix de l'admin
+  const plateauId =
+    req.user.role === 'liveur' ? req.user.plateau_id : req.body.plateau_id ? Number(req.body.plateau_id) || null : null;
+  const createdBy = req.user.name || null;
+
   if (req.body.started_at) {
     const started = new Date(req.body.started_at);
     const ended = new Date(req.body.ended_at || NaN);
@@ -1043,23 +1218,25 @@ app.post('/api/lives', (req, res) => {
     if (ended <= started) return res.status(400).json({ error: 'La fin du live doit être après son début' });
     if (started > new Date()) return res.status(400).json({ error: 'La date de début doit être dans le passé' });
     const info = db
-      .prepare('INSERT INTO live_sessions (platform, name, started_at, ended_at) VALUES (?, ?, ?, ?)')
-      .run(platform, (req.body.name || '').trim(), started.toISOString(), ended.toISOString());
+      .prepare('INSERT INTO live_sessions (platform, name, started_at, ended_at, plateau_id, created_by) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(platform, (req.body.name || '').trim(), started.toISOString(), ended.toISOString(), plateauId, createdBy);
     return res
       .status(201)
       .json(sessionSummary(db.prepare('SELECT * FROM live_sessions WHERE id = ?').get(info.lastInsertRowid)));
   }
 
-  const open = db.prepare('SELECT * FROM live_sessions WHERE ended_at IS NULL').get();
+  // Chaque plateau peut avoir SON live en cours (parfum et déstockage en même
+  // temps) — mais un seul à la fois par plateau.
+  const open = db.prepare('SELECT * FROM live_sessions WHERE ended_at IS NULL AND plateau_id IS ?').get(plateauId);
   if (open) {
-    return res.status(409).json({ error: 'Un live est déjà en cours, terminez-le d’abord', session: sessionSummary(open) });
+    return res.status(409).json({ error: 'Un live est déjà en cours sur ce plateau, terminez-le d’abord', session: sessionSummary(open) });
   }
   // Premier numéro de vente : > 1 si le live avait déjà commencé sur la
   // plateforme (bug, app relancée…) — les ventes manquées s'ajoutent après
   const startNo = Math.max(1, parseInt(req.body.start_no, 10) || 1);
   const info = db
-    .prepare('INSERT INTO live_sessions (platform, name, started_at, start_no) VALUES (?, ?, ?, ?)')
-    .run(platform, (req.body.name || '').trim(), now(), startNo);
+    .prepare('INSERT INTO live_sessions (platform, name, started_at, start_no, plateau_id, created_by) VALUES (?, ?, ?, ?, ?, ?)')
+    .run(platform, (req.body.name || '').trim(), now(), startNo, plateauId, createdBy);
   res.status(201).json(sessionSummary(db.prepare('SELECT * FROM live_sessions WHERE id = ?').get(info.lastInsertRowid)));
 });
 
@@ -1281,10 +1458,29 @@ app.delete('/api/lives/:id', (req, res) => {
 });
 
 // Live en cours (pour reprendre après un rechargement de page)
+// Le(s) live(s) en cours. Plusieurs plateaux peuvent être en live en même
+// temps : ?id=… permet à un appareil de suivre SON live ; sinon on renvoie
+// celui du plateau du liveur connecté, ou le plus récent pour un admin.
 app.get('/api/lives/active', (req, res) => {
-  const open = db.prepare('SELECT * FROM live_sessions WHERE ended_at IS NULL').get();
+  const opens = db.prepare('SELECT * FROM live_sessions WHERE ended_at IS NULL ORDER BY id DESC').all();
+  const liveur = req.user.role === 'liveur';
+  let visible = opens;
+  if (liveur) {
+    // le live du plateau du liveur d'abord, les lives « sans plateau » ensuite
+    visible = opens
+      .filter((s) => s.plateau_id == null || s.plateau_id === req.user.plateau_id)
+      .sort((a, b) => Number(b.plateau_id === req.user.plateau_id) - Number(a.plateau_id === req.user.plateau_id));
+  }
+  const wanted = Number(req.query.id) || 0;
+  const open = (wanted && visible.find((s) => s.id === wanted)) || (wanted ? null : visible[0] || null);
   if (!open) return res.json(null);
-  res.json({ ...sessionSummary(open), sales: sessionSales.all(open.id) });
+  const payload = { ...sessionSummary(open), sales: sessionSales.all(open.id), active_count: visible.length };
+  if (liveur) {
+    // Un liveur ne voit ni la marge ni les coûts d'achat
+    delete payload.margin;
+    payload.sales = payload.sales.map((m) => ({ ...m, cost_used: 0, product_cost: 0 }));
+  }
+  res.json(payload);
 });
 
 // Historique des lives

@@ -79,6 +79,17 @@ Prépare la déclaration de TVA française, par mois ou par année : **TVA colle
 
 L'onglet Stats compare tous vos lives terminés : **CA et marge moyens par jour de la semaine et par heure de début** (filtrable par plateforme), et le **rythme des ventes par tranche de 15 minutes** pour repérer le moment où un live s'essouffle.
 
+## 👥 Équipe, plateaux et rôles
+
+Pour travailler à plusieurs (plateau parfum, plateau déstockage…), l'onglet Importer propose la carte **👥 Équipe, plateaux & accès** :
+
+- **Plateaux** : chaque plateau peut avoir **son live en cours en même temps** que les autres (un seul live à la fois *par* plateau), et des produits qui lui sont réservés (champ *Plateau* de la fiche produit — vide = visible par tous).
+- **Comptes** : un compte par personne, deux rôles.
+  - **🛠 Administrateur** — accès total (produits, coûts, marges, stats, compta, imports, réglages, gestion de l'équipe).
+  - **🎤 Liveur** — rattaché à un plateau : il voit uniquement les produits et le stock de son plateau (**jamais les coûts d'achat ni les marges** — masqués côté serveur, pas seulement à l'écran), peut ajuster le stock, lancer un live sur son plateau, vendre et annuler une vente. Tout le reste répond `403`.
+- Le **premier compte créé est administrateur** et verrouille l'app ; connexion par **nom + mot de passe**. Un ancien mot de passe unique (versions précédentes) est migré automatiquement en compte `admin`.
+- Chaque live garde **qui l'a lancé** et **sur quel plateau** (visibles dans l'historique des lives).
+
 ## 💾 Sauvegarde automatique
 
 Dans l'onglet Importer : **activation en un clic** (dossier proposé automatiquement — `/var/backups/wowmart` sur un serveur, iCloud Drive/Documents sur un Mac) — une copie de la base et des photos est faite **chaque jour** (14 jours conservés). En plus :
@@ -144,7 +155,7 @@ Les produits existants sont reconnus par SKU (ou par nom) : pas de doublons, leu
 ## 🔒 Sécurité
 
 - **Clé API chiffrée** : la clé Anthropic est stockée **chiffrée (AES-256-GCM)** dans la base, avec un secret local (`data/.secret`, hors git et hors sauvegardes). Une sauvegarde volée sur iCloud/Dropbox ne permet donc pas de lire la clé. Elle n'est **jamais renvoyée au navigateur**. Une clé enregistrée en clair par une ancienne version est chiffrée automatiquement au démarrage.
-- **Protection par mot de passe** (onglet Importer) : optionnelle en local, **obligatoire avant d'exposer l'app sur un serveur**. Toutes les données (`/api`) et les photos (`/uploads`) sont bloquées sans session ; hachage scrypt, sessions signées (30 jours), 8 essais max par IP puis 10 min d'attente ; changer le mot de passe déconnecte tous les appareils.
+- **Comptes utilisateurs** (onglet Importer → 👥 Équipe) : optionnels en local, **obligatoires avant d'exposer l'app sur un serveur**. Toutes les données (`/api`) et les photos (`/uploads`) sont bloquées sans session ; hachage scrypt, sessions signées par utilisateur (30 jours), 8 essais max par IP puis 10 min d'attente ; changer un mot de passe déconnecte les autres appareils de ce compte. Les comptes « liveur » sont limités côté serveur (liste blanche de routes, coûts d'achat retirés des réponses).
 
 ### Déployer sur un serveur (VPS Ubuntu)
 
@@ -157,7 +168,7 @@ bash /opt/wowmartstock/deploy/install.sh
 
 Il installe Node.js 22, crée un service systemd (démarrage automatique, redémarrage en cas de crash, utilisateur système dédié), propose le **HTTPS automatique via Caddy** (certificat Let's Encrypt sur le nom de domaine du VPS), configure le pare-feu et le fuseau horaire. Mises à jour ensuite avec `bash /opt/wowmartstock/deploy/update.sh`.
 
-Après l'installation : **définissez un mot de passe** (Importer → 🔒) immédiatement, configurez la sauvegarde vers `/var/backups/wowmart`, et resaisissez vos clés API (elles sont chiffrées avec un secret propre à chaque machine — c'est voulu). Recommandé : passer la clé Anthropic en variable d'environnement dans le service (`Environment=ANTHROPIC_API_KEY=…` dans `/etc/systemd/system/wowmartstock.service`).
+Après l'installation : **créez votre compte administrateur** (Importer → 👥 Équipe) immédiatement, configurez la sauvegarde vers `/var/backups/wowmart`, et resaisissez vos clés API (elles sont chiffrées avec un secret propre à chaque machine — c'est voulu). Recommandé : passer la clé Anthropic en variable d'environnement dans le service (`Environment=ANTHROPIC_API_KEY=…` dans `/etc/systemd/system/wowmartstock.service`).
 
 ## Données
 

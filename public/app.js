@@ -46,6 +46,9 @@ let liveSession = null; // session en cours { id, platform, started_at, ... }
 let liveSalesLog = []; // [{ movement_id, product_id, name, sku, price, time, cancelled }]
 let liveTimerInterval = null;
 let liveSyncInterval = null; // synchronisation multi-appareils du live
+let currentUser = null; // { id, name, role, plateau_id } — rôle « liveur » = accès restreint
+let plateauxCache = null; // plateaux (parfum, déstockage…), chargés à la demande
+let teamUsers = []; // comptes affichés dans la carte Équipe
 
 // ---------------------------------------------------------------------------
 // Utilitaires
@@ -76,7 +79,7 @@ async function api(url, options = {}) {
 // ---------------------------------------------------------------------------
 function showLogin() {
   $('#loginOverlay').hidden = false;
-  setTimeout(() => $('#loginPassword').focus(), 100);
+  setTimeout(() => $('#loginName').focus(), 100);
 }
 
 document.getElementById('loginForm').addEventListener('submit', async (e) => {
@@ -86,7 +89,7 @@ document.getElementById('loginForm').addEventListener('submit', async (e) => {
     const res = await fetch('/api/auth/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ password: $('#loginPassword').value }),
+      body: JSON.stringify({ name: $('#loginName').value, password: $('#loginPassword').value }),
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.error || 'Connexion impossible');
@@ -98,6 +101,33 @@ document.getElementById('loginForm').addEventListener('submit', async (e) => {
     $('#loginPassword').focus();
   }
 });
+
+// Rôles : un « liveur » ne voit que les produits / le stock de son plateau et
+// le mode live — l'interface d'administration est masquée (classe CSS) et le
+// serveur refuse de toute façon les routes sensibles (403).
+const isLiveur = () => !!(currentUser && currentUser.role === 'liveur');
+function applyRole(user) {
+  currentUser = user || null;
+  document.body.classList.toggle('role-liveur', isLiveur());
+}
+
+async function getPlateaux() {
+  if (plateauxCache) return plateauxCache;
+  try {
+    plateauxCache = (await api('/api/users')).plateaux;
+  } catch (e) {
+    plateauxCache = [];
+  }
+  return plateauxCache;
+}
+
+function fillPlateauSelect(sel, plateaux, value, emptyLabel) {
+  sel.innerHTML =
+    `<option value="">${emptyLabel}</option>` +
+    plateaux.map((pl) => `<option value="${pl.id}">${escapeHtml(pl.name)}</option>`).join('');
+  sel.value = value != null && value !== '' ? String(value) : '';
+  if (sel.value !== String(value ?? '') && value != null) sel.value = '';
+}
 
 const euro = (n) => Number(n).toLocaleString('fr-FR', { style: 'currency', currency: 'EUR' });
 const isLow = (p) => p.min_stock > 0 && p.stock <= p.min_stock;
@@ -131,6 +161,7 @@ document.querySelectorAll('.tab').forEach((btn) => {
 // Statistiques
 // ---------------------------------------------------------------------------
 async function loadStats() {
+  if (isLiveur()) return; // le bandeau CA/marge est réservé à l'admin (403 côté serveur)
   const s = await api('/api/stats');
   const checkTile =
     s.lives_to_check > 0
@@ -249,7 +280,8 @@ function productTags(p) {
   return `
     ${p.brand ? `<span class="tag tag-brand" title="Marque">${escapeHtml(p.brand)}</span>` : ''}
     ${p.category ? `<span class="tag tag-cat" title="Catégorie">${escapeHtml(p.category)}</span>` : ''}
-    ${p.vat_intra ? '<span class="tag tag-eu" title="Achat intracommunautaire (HT) — pas de TVA récupérable sur le coût">🇪🇺 HT</span>' : ''}`;
+    ${p.vat_intra ? '<span class="tag tag-eu" title="Achat intracommunautaire (HT) — pas de TVA récupérable sur le coût">🇪🇺 HT</span>' : ''}
+    ${p.plateau_name ? `<span class="tag tag-plateau" title="Produit réservé à ce plateau">🎪 ${escapeHtml(p.plateau_name)}</span>` : ''}`;
 }
 
 function priceBlock(p) {
@@ -445,6 +477,15 @@ $('#btnStartLive').addEventListener('click', () => {
   $('#liveStartNo').value = 1;
   $('#startNoPreview').textContent = '#1';
   document.querySelector('.start-no-setup').open = false;
+  // Choix du plateau : admin uniquement (le live d'un liveur va sur SON plateau)
+  $('#livePlateauWrap').hidden = true;
+  if (!isLiveur()) {
+    getPlateaux().then((pls) => {
+      if (!pls.length || $('#platformModal').hidden) return;
+      fillPlateauSelect($('#livePlateau'), pls, '', '— Sans plateau —');
+      $('#livePlateauWrap').hidden = false;
+    });
+  }
   $('#platformModal').hidden = false;
 });
 $('#liveStartNo').addEventListener('input', () => {
@@ -466,6 +507,7 @@ document.querySelectorAll('.platform-btn').forEach((btn) => {
         body: JSON.stringify({
           platform: btn.dataset.platform,
           start_no: Math.max(1, parseInt($('#liveStartNo').value, 10) || 1),
+          plateau_id: $('#livePlateau').value || null,
         }),
       });
       $('#platformModal').hidden = true;
@@ -500,7 +542,9 @@ function salesFromServer(sales) {
 async function syncLiveFromServer() {
   if (!liveSession) return;
   try {
-    const active = await api('/api/lives/active');
+    // ?id= : plusieurs lives peuvent tourner en même temps (un par plateau),
+    // chaque appareil suit LE SIEN
+    const active = await api(`/api/lives/active?id=${liveSession.id}`);
     if (!active || active.id !== liveSession.id) {
       toast('Le live a été terminé sur un autre appareil');
       closeLiveMode();
@@ -559,7 +603,9 @@ function updateLiveCounters() {
   $('#liveCounters').innerHTML =
     `${t.items} vente(s)${t.gifts ? ` · ${t.gifts} 🎁` : ''}` +
     ` · <span title="Chiffre d'affaires du live">CA ${euro(t.revenue)}</span>` +
-    ` · <span class="live-cost" title="Dépense totale : coût d'achat des produits partis (cadeaux inclus)">💸 ${euro(t.cost)}</span>`;
+    (isLiveur()
+      ? '' // les coûts d'achat ne sont pas visibles pour un liveur
+      : ` · <span class="live-cost" title="Dépense totale : coût d'achat des produits partis (cadeaux inclus)">💸 ${euro(t.cost)}</span>`);
 }
 
 // Recherche rapide par référence ou nom (insensible à la casse)
@@ -918,7 +964,7 @@ async function loadLives() {
           const st = liveStatus(l);
           return `<tr class="${st.cls}">
         <td>${dateFr(l.started_at)}</td>
-        <td>${PLATFORM_LABELS[l.platform] || l.platform}</td>
+        <td>${PLATFORM_LABELS[l.platform] || l.platform}${l.plateau_name ? ` <span class="tag tag-plateau" title="Plateau">🎪 ${escapeHtml(l.plateau_name)}</span>` : ''}${l.created_by ? ` <small class="muted" title="Lancé par">· ${escapeHtml(l.created_by)}</small>` : ''}</td>
         <td>${dur}</td>
         <td>${l.items}${l.gifts ? ` <small>+ ${l.gifts} 🎁</small>` : ''}${l.extras ? ` <small>+ ${l.extras} hors écran</small>` : ''}</td>
         <td>${euro(l.revenue)}</td>
@@ -2040,7 +2086,7 @@ window.commitPhotoSales = async () => {
 const modal = $('#modal');
 const form = $('#productForm');
 
-function openModal() {
+function openModal(plateauId = null) {
   // Suggestions basées sur l'existant (groupes de variantes, marques, catégories)
   const datalist = (id, values) => {
     $(id).innerHTML = [...new Set(values.filter(Boolean))].map((v) => `<option value="${escapeHtml(v)}">`).join('');
@@ -2048,6 +2094,13 @@ function openModal() {
   datalist('#variantGroups', products.map((p) => p.variant_group));
   datalist('#brandList', products.map((p) => p.brand));
   datalist('#categoryList', products.map((p) => p.category));
+  // Choix du plateau (uniquement s'il en existe)
+  $('#pPlateauWrap').hidden = true;
+  getPlateaux().then((pls) => {
+    if (!pls.length || modal.hidden) return;
+    fillPlateauSelect($('#pPlateau'), pls, plateauId, '— Visible par tous les plateaux —');
+    $('#pPlateauWrap').hidden = false;
+  });
   modal.hidden = false;
   form.name.focus();
 }
@@ -2072,6 +2125,7 @@ modal.addEventListener('click', (e) => {
 });
 
 window.openEdit = (id) => {
+  if (isLiveur()) return; // la fiche produit (coûts, TVA…) est réservée à l'admin
   const p = products.find((x) => x.id === id);
   if (!p) return;
   editingId = id;
@@ -2093,7 +2147,7 @@ window.openEdit = (id) => {
     $('#photoHint').hidden = true;
   }
   $('#btnDelete').hidden = false;
-  openModal();
+  openModal(p.plateau_id);
   // Lots en stock (coûts d'achat réels, FIFO)
   $('#lotsInfo').hidden = true;
   api(`/api/products/${id}/lots`)
@@ -2499,40 +2553,201 @@ async function loadBackup() {
   } catch (e) {
     /* pas bloquant */
   }
-  loadSecurity();
+  loadTeam();
 }
 
-// ---- Carte « Protection par mot de passe » ----
-async function loadSecurity() {
+// ---- Carte « Équipe, plateaux & accès » ----
+async function loadTeam() {
   try {
     const st = await fetch('/api/auth/status').then((r) => r.json());
-    $('#secStatus').innerHTML = st.protected
-      ? '✅ L\'application est <strong>protégée par un mot de passe</strong>. Votre clé API est chiffrée dans la base.'
-      : '⚠ Aucun mot de passe : toute personne pouvant ouvrir cette page a accès à tout.';
-    $('#secCurrentWrap').hidden = !st.protected;
+    const data = await api('/api/users');
+    plateauxCache = data.plateaux;
+    teamUsers = data.users;
+    $('#teamStatus').innerHTML = st.protected
+      ? `✅ Application protégée — connecté : <strong>${escapeHtml(data.me.name)}</strong>
+         (${data.me.role === 'admin' ? 'administrateur' : 'liveur'}). Votre clé API est chiffrée dans la base.`
+      : '⚠ <strong>Aucun compte pour l\'instant :</strong> toute personne pouvant ouvrir cette page a accès à tout.<br>Créez le premier compte ci-dessous — il sera <strong>administrateur</strong> et verrouillera l\'application.';
     $('#btnLogout').hidden = !st.protected;
+    renderTeamUsers();
+    renderTeamPlateaux();
+    fillPlateauSelect($('#tuPlateau'), data.plateaux, $('#tuPlateau').value, '— Tous les plateaux —');
   } catch (e) {
     /* pas bloquant */
   }
 }
 
-$('#btnSavePassword').addEventListener('click', async () => {
-  const newPass = $('#secNew').value;
-  if (!newPass && !confirm('Retirer la protection par mot de passe ?')) return;
+function renderTeamUsers() {
+  if (!teamUsers.length) {
+    $('#teamUsers').innerHTML = '';
+    return;
+  }
+  const plateauOptions = (u) =>
+    `<option value="">— Tous —</option>` +
+    (plateauxCache || [])
+      .map((pl) => `<option value="${pl.id}" ${u.plateau_id === pl.id ? 'selected' : ''}>${escapeHtml(pl.name)}</option>`)
+      .join('');
+  $('#teamUsers').innerHTML = `<div class="table-wrap"><table>
+    <thead><tr><th>Compte</th><th>Rôle</th><th>Plateau</th><th>Actions</th></tr></thead>
+    <tbody>${teamUsers
+      .map(
+        (u) => `<tr>
+      <td><strong>${escapeHtml(u.name)}</strong>${currentUser && currentUser.id === u.id ? ' <span class="muted small">(vous)</span>' : ''}</td>
+      <td>
+        <select onchange="setUserRole(${u.id}, this.value)" title="Changer le rôle">
+          <option value="admin" ${u.role === 'admin' ? 'selected' : ''}>🛠 Administrateur</option>
+          <option value="liveur" ${u.role === 'liveur' ? 'selected' : ''}>🎤 Liveur</option>
+        </select>
+      </td>
+      <td>${
+        u.role === 'liveur'
+          ? `<select onchange="setUserPlateau(${u.id}, this.value)" title="Plateau du liveur">${plateauOptions(u)}</select>`
+          : '<span class="muted small">tous les plateaux</span>'
+      }</td>
+      <td>
+        <button class="btn" onclick="changeUserPassword(${u.id})" title="Définir un nouveau mot de passe">🔑 Mot de passe</button>
+        <button class="btn danger-ghost" onclick="deleteUser(${u.id})" title="Supprimer ce compte">🗑</button>
+      </td>
+    </tr>`
+      )
+      .join('')}</tbody></table></div>`;
+}
+
+function renderTeamPlateaux() {
+  const pls = plateauxCache || [];
+  $('#teamPlateaux').innerHTML = pls.length
+    ? pls
+        .map(
+          (pl) => `<span class="tag tag-plateau plateau-chip">🎪 ${escapeHtml(pl.name)}
+            <button class="chip-x" onclick="deletePlateau(${pl.id})" title="Supprimer ce plateau (les produits et comptes rattachés redeviennent « tous plateaux »)">✕</button></span>`
+        )
+        .join(' ')
+    : '<p class="muted small">Aucun plateau pour l\'instant.</p>';
+}
+
+$('#tuRole').addEventListener('change', () => {
+  $('#tuPlateauWrap').style.display = $('#tuRole').value === 'admin' ? 'none' : '';
+});
+
+$('#btnAddUser').addEventListener('click', async () => {
   try {
-    const r = await api('/api/auth/password', {
+    const r = await api('/api/users', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ current_password: $('#secCurrent').value, new_password: newPass }),
+      body: JSON.stringify({
+        name: $('#tuName').value,
+        password: $('#tuPass').value,
+        role: $('#tuRole').value,
+        plateau_id: $('#tuPlateau').value || null,
+      }),
     });
-    $('#secCurrent').value = '';
-    $('#secNew').value = '';
-    toast(r.protected ? '🔒 Mot de passe enregistré — les autres appareils devront se reconnecter' : 'Protection retirée');
-    loadSecurity();
+    $('#tuName').value = '';
+    $('#tuPass').value = '';
+    if (r.bootstrap) {
+      toast('🔒 Compte administrateur créé — l\'application est maintenant protégée');
+      setTimeout(() => location.reload(), 1200);
+      return;
+    }
+    toast(`Compte « ${r.user.name} » créé`);
+    loadTeam();
   } catch (e) {
     toast(e.message, true);
   }
 });
+
+window.setUserRole = async (id, role) => {
+  try {
+    await api(`/api/users/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ role }),
+    });
+    toast('Rôle mis à jour');
+  } catch (e) {
+    toast(e.message, true);
+  }
+  loadTeam();
+};
+
+window.setUserPlateau = async (id, plateauId) => {
+  try {
+    await api(`/api/users/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ plateau_id: plateauId || null }),
+    });
+    toast('Plateau mis à jour');
+  } catch (e) {
+    toast(e.message, true);
+  }
+  loadTeam();
+};
+
+window.changeUserPassword = async (id) => {
+  const u = teamUsers.find((x) => x.id === id);
+  const pw = prompt(`Nouveau mot de passe pour « ${u ? u.name : '?'} » (8 caractères min.) :`);
+  if (pw == null || pw === '') return;
+  try {
+    await api(`/api/users/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password: pw }),
+    });
+    toast('🔑 Mot de passe changé — ses autres appareils devront se reconnecter');
+  } catch (e) {
+    toast(e.message, true);
+  }
+};
+
+window.deleteUser = async (id) => {
+  const u = teamUsers.find((x) => x.id === id);
+  if (!confirm(`Supprimer le compte « ${u ? u.name : '?'} » ? Il ne pourra plus se connecter.`)) return;
+  try {
+    const r = await api(`/api/users/${id}`, { method: 'DELETE' });
+    if (r.self_deleted) {
+      location.reload();
+      return;
+    }
+    toast('Compte supprimé');
+    loadTeam();
+  } catch (e) {
+    toast(e.message, true);
+  }
+};
+
+$('#btnAddPlateau').addEventListener('click', async () => {
+  try {
+    const pl = await api('/api/plateaux', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: $('#tpName').value }),
+    });
+    $('#tpName').value = '';
+    toast(`🎪 Plateau « ${pl.name} » créé`);
+    plateauxCache = null;
+    loadTeam();
+  } catch (e) {
+    toast(e.message, true);
+  }
+});
+
+window.deletePlateau = async (id) => {
+  const pl = (plateauxCache || []).find((x) => x.id === id);
+  if (
+    !confirm(
+      `Supprimer le plateau « ${pl ? pl.name : '?'} » ? Les produits, lives et comptes rattachés redeviennent « tous plateaux » (rien n'est effacé).`
+    )
+  )
+    return;
+  try {
+    await api(`/api/plateaux/${id}`, { method: 'DELETE' });
+    toast('Plateau supprimé');
+    plateauxCache = null;
+    loadTeam();
+    loadProducts();
+  } catch (e) {
+    toast(e.message, true);
+  }
+};
 
 $('#btnLogout').addEventListener('click', async () => {
   await fetch('/api/auth/logout', { method: 'POST' });
@@ -2902,6 +3117,7 @@ $('#btnCommitInventory').addEventListener('click', async () => {
       showLogin();
       return;
     }
+    applyRole(st.user);
   } catch (e) {
     /* serveur injoignable : les appels suivants afficheront l'erreur */
   }

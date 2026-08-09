@@ -41,6 +41,15 @@ rl.question('\nTapez OUI (en majuscules) pour confirmer : ', (answer) => {
   db.exec(`DELETE FROM sqlite_sequence WHERE name IN (${tables.map((t) => `'${t}'`).join(',')})`);
   if (wipeAll) {
     db.exec('DELETE FROM settings');
+    // --tout supprime aussi les comptes et les plateaux (ces tables peuvent
+    // ne pas exister sur une vieille base : on ignore l'erreur)
+    for (const t of ['users', 'plateaux']) {
+      try {
+        db.exec(`DELETE FROM ${t}`);
+      } catch (e) {
+        /* table absente */
+      }
+    }
   } else {
     // Les caches liés aux données supprimées n'ont plus de sens
     db.exec(`DELETE FROM settings WHERE key IN ('last_ai_report', 'last_auto_report_day')`);

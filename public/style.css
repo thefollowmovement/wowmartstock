@@ -950,6 +950,57 @@ tr.row-unpaid td { background: #fef2f2; }
   font-size: .95rem;
 }
 
+/* ---------- Équipe, plateaux & accès ---------- */
+.team-grid { display: flex; gap: 14px; flex-wrap: wrap; margin: 10px 0 14px; }
+.team-grid label { display: flex; flex-direction: column; gap: 4px; font-size: .88rem; font-weight: 600; min-width: 180px; }
+.team-grid input, .team-grid select {
+  padding: 9px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: .95rem;
+}
+#teamUsers { margin: 12px 0; }
+#teamUsers select { padding: 6px 8px; border: 1px solid var(--border); border-radius: var(--radius); font-size: .88rem; }
+#teamUsers td .btn + .btn { margin-left: 6px; }
+.plateau-list { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0 12px; }
+.plateau-chip { display: inline-flex; align-items: center; gap: 6px; font-size: .9rem; padding: 6px 12px; }
+.chip-x {
+  border: none;
+  background: none;
+  cursor: pointer;
+  font-size: .8rem;
+  color: inherit;
+  opacity: .6;
+  padding: 0 2px;
+}
+.chip-x:hover { opacity: 1; }
+#tpName {
+  padding: 9px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: .95rem;
+  min-width: 220px;
+}
+.live-plateau { display: flex; flex-direction: column; gap: 4px; font-weight: 600; font-size: .9rem; margin-bottom: 10px; }
+.live-plateau select { padding: 9px 12px; border: 1px solid var(--border); border-radius: var(--radius); font-size: .95rem; }
+
+/* ---------- Rôle « liveur » : interface d'administration masquée ----------
+   (le serveur refuse de toute façon ces routes — ceci évite juste les
+   boutons morts et les données invisibles) */
+.role-liveur .tabs .tab[data-tab="lives"],
+.role-liveur .tabs .tab[data-tab="stats"],
+.role-liveur .tabs .tab[data-tab="compta"],
+.role-liveur .tabs .tab[data-tab="import"],
+.role-liveur .tabs .tab[data-tab="movements"],
+.role-liveur #stats,
+.role-liveur .topbar a[href="/api/export.csv"],
+.role-liveur #btnInventory,
+.role-liveur #btnWebPhotos,
+.role-liveur #btnAdd,
+.role-liveur .card-footer > .btn,
+.role-liveur .btn.ghost-mini,
+.role-liveur .live-cost { display: none !important; }
+
 /* ---------- Modale Ventes par photos ---------- */
 .photo-sales-modal {
   max-width: 920px;
@@ -1094,6 +1145,7 @@ tr.row-unpaid td { background: #fef2f2; }
 .tag-brand { background: var(--ink); color: #fff; }
 .tag-cat { background: var(--primary-soft); color: var(--primary-dark); border: 1px solid #c7d2fe; }
 .tag-eu { background: #eff6ff; color: #1d4ed8; border: 1px solid #bfdbfe; }
+.tag-plateau { background: #fdf4ff; color: #a21caf; border: 1px solid #f5d0fe; }
 .vat-check { margin-top: 4px; font-weight: 600; }
 .lots-info {
   margin-top: 8px;
