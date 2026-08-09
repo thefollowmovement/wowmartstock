@@ -1213,6 +1213,25 @@ function sessionSummary(session) {
   const plateau = session.plateau_id
     ? db.prepare('SELECT name FROM plateaux WHERE id = ?').get(session.plateau_id)
     : null;
+  // TVA du live : collectée sur le CA, moins la TVA déjà payée à l'achat des
+  // produits partis (achats France TTC — l'intracom 🇪🇺 n'ouvre aucun droit).
+  // La marge « TVA déduite » = ce qui reste vraiment en poche.
+  const vatRate = parseFloat(getSetting('vat_rate', '20')) || 0;
+  const deductible = db
+    .prepare(
+      `SELECT COALESCE(SUM(
+         (SELECT CASE WHEN m.cost_fr IS NOT NULL THEN m.cost_fr
+                 WHEN p.vat_intra = 1 THEN 0 ELSE -m.delta * p.cost END)
+         * (1 - 1 / (1 + ? / 100.0))), 0) AS v
+       FROM movements m JOIN products p ON p.id = m.product_id
+       WHERE m.session_id = ? AND m.delta < 0 AND m.cancelled = 0
+         AND COALESCE(m.payment_status, 'paid') != 'refunded'
+         AND COALESCE(m.from_report, 0) = 0`
+    )
+    .get(vatRate, session.id).v;
+  const revenue = agg.revenue + extras.revenue;
+  const margin = agg.margin + extras.net;
+  const vatNet = revenue * (1 - 1 / (1 + vatRate / 100)) - deductible;
   return {
     ...session,
     plateau_name: plateau ? plateau.name : null,
@@ -1221,8 +1240,11 @@ function sessionSummary(session) {
     shop_items: shop.items,
     shop_revenue: shop.revenue,
     cogs: agg.cogs,
-    revenue: agg.revenue + extras.revenue,
-    margin: agg.margin + extras.net,
+    vat_deductible: deductible,
+    vat_net: vatNet,
+    margin_net: margin - vatNet,
+    revenue,
+    margin,
     shipping: agg.shipping,
     reported: agg.reported,
     unpaid: agg.unpaid + extras.unpaid,
@@ -1529,28 +1551,12 @@ app.get('/api/lives', (req, res) => {
 app.get('/api/lives/:id', (req, res) => {
   const session = db.prepare('SELECT * FROM live_sessions WHERE id = ?').get(Number(req.params.id));
   if (!session) return res.status(404).json({ error: 'Live introuvable' });
-  // TVA déductible : TVA payée à l'achat des produits partis (ventes +
-  // cadeaux), pour les achats en France TTC uniquement — un produit acheté
-  // en intracommunautaire (HT) n'ouvre aucun droit à déduction.
-  const vatRate = parseFloat(getSetting('vat_rate', '20')) || 0;
-  const deductible = db
-    .prepare(
-      `SELECT COALESCE(SUM(
-         (SELECT CASE WHEN m.cost_fr IS NOT NULL THEN m.cost_fr
-                 WHEN p.vat_intra = 1 THEN 0 ELSE -m.delta * p.cost END)
-         * (1 - 1 / (1 + ? / 100.0))), 0) AS v
-       FROM movements m JOIN products p ON p.id = m.product_id
-       WHERE m.session_id = ? AND m.delta < 0 AND m.cancelled = 0
-         AND COALESCE(m.payment_status, 'paid') != 'refunded'
-         AND COALESCE(m.from_report, 0) = 0`
-    )
-    .get(vatRate, session.id).v;
+  // La TVA (collectée / déductible / nette) est déjà dans sessionSummary
   res.json({
     ...sessionSummary(session),
     sales: sessionSales.all(session.id),
     extra_lines: sessionExtras.all(session.id),
     fee_config: feesForSession(session),
-    vat_deductible: deductible,
   });
 });
 
@@ -2862,12 +2868,12 @@ app.get('/api/statistics/lives', (req, res) => {
     const w = byWeekday[d.getDay()];
     w.lives++;
     w.revenue += s.revenue;
-    w.margin += s.margin;
+    w.margin += s.margin_net; // marge « en poche » : frais et TVA nette déduits
     const h = d.getHours();
     const e = byHour.get(h) || { hour: h, lives: 0, revenue: 0, margin: 0 };
     e.lives++;
     e.revenue += s.revenue;
-    e.margin += s.margin;
+    e.margin += s.margin_net;
     byHour.set(h, e);
   }
 

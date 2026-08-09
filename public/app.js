@@ -865,7 +865,7 @@ $('#btnEndLive').addEventListener('click', async () => {
         <div class="stat"><div class="value">${dur} min</div><div class="label">Durée</div></div>
         <div class="stat"><div class="value">${session.items}${session.gifts ? ` <small>+ ${session.gifts} 🎁</small>` : ''}</div><div class="label">Articles vendus${session.gifts ? ' + cadeaux' : ''}</div></div>
         <div class="stat"><div class="value">${euro(session.revenue)}</div><div class="label">Chiffre d'affaires</div></div>
-        <div class="stat"><div class="value">${euro(session.margin)}</div><div class="label">Marge nette estimée (frais déduits)</div></div>
+        <div class="stat"><div class="value">${euro(session.margin_net != null ? session.margin_net : session.margin)}</div><div class="label">Marge nette estimée (frais et TVA déduits)</div></div>
       </div>
       <p class="muted">💡 Importez ensuite le rapport CSV de la plateforme depuis l'onglet <strong>Lives</strong> → Détail, pour récupérer les prix de vente réels et calculer votre marge.</p>
       <p><a class="btn" href="/api/lives/${session.id}/export.csv">⬇ Exporter les ventes de ce live (CSV)</a></p>`;
@@ -976,7 +976,7 @@ async function loadLives() {
         <td>${dur}</td>
         <td>${l.items}${l.gifts ? ` <small>+ ${l.gifts} 🎁</small>` : ''}${l.shop_items ? ` <small title="Commandes boutique TikTok Shop — hors CA du live">+ ${l.shop_items} 🛍</small>` : ''}${l.extras ? ` <small>+ ${l.extras} give(s)</small>` : ''}</td>
         <td>${euro(l.revenue)}</td>
-        <td>${l.reported > 0 ? euro(l.margin) : '<span class="muted-cell">—</span>'}</td>
+        <td>${l.reported > 0 ? euro(l.margin_net != null ? l.margin_net : l.margin) : '<span class="muted-cell">—</span>'}</td>
         <td>${st.label}</td>
         <td><button class="btn small" onclick="showLiveDetail(${l.id})">Détail</button></td>
       </tr>`;
@@ -1185,12 +1185,12 @@ window.showLiveDetail = async (id) => {
           <div class="value">${euro(l.revenue - ht)}</div><div class="label">TVA collectée (${vatRate} %)</div></div>
         <div class="stat" title="TVA que vous aviez déjà payée à l'achat des produits partis (achats en France TTC uniquement) — elle se déduit de la TVA à reverser. Les achats intracommunautaires 🇪🇺 (HT) n'ouvrent aucun droit à déduction.">
           <div class="value">−${euro(l.vat_deductible || 0)}</div><div class="label">TVA récupérable (achats FR)</div></div>
-        <div class="stat" title="TVA collectée − TVA récupérable : ce que ce live ajoutera environ à votre déclaration de TVA. C'est à retrancher de la marge pour connaître votre gain réel.">
-          <div class="value">${euro(l.revenue - ht - (l.vat_deductible || 0))}</div><div class="label">TVA nette estimée</div></div>
+        <div class="stat" title="TVA collectée − TVA récupérable : ce que ce live ajoutera environ à votre déclaration de TVA. Déjà déduite de la marge affichée à droite.">
+          <div class="value">${euro(l.vat_net || 0)}</div><div class="label">TVA nette estimée</div></div>
         <div class="stat" title="Coût d'achat réel (lots FIFO : chaque vente consomme vos lots du plus ancien au plus récent, à leur vrai prix d'achat) de tout ce qui est parti pendant ce live — cadeaux inclus, ventes annulées et remboursées exclues.">
           <div class="value">${euro(l.cogs || 0)}</div><div class="label">📦 Coût marchandise vendue</div></div>
-        <div class="stat" title="Gains nets (prix réels − commission et frais de la plateforme) − coût de la marchandise vendue (cadeaux inclus) − frais d'envoi. ⚠ C'est AVANT la TVA : ce qui vous reste vraiment ≈ marge − TVA nette estimée.">
-          <div class="value">${euro(l.margin)}</div><div class="label">Marge nette estimée${l.shipping > 0 ? ` (envoi −${euro(l.shipping)})` : ''}</div></div>
+        <div class="stat" title="Ce qui vous reste vraiment : gains nets (prix réels − commission et frais de la plateforme) − coût de la marchandise vendue (cadeaux inclus) − frais d'envoi − TVA nette à reverser. Avant TVA : ${euro(l.margin)}.">
+          <div class="value">${euro(l.margin_net != null ? l.margin_net : l.margin)}</div><div class="label">💶 Marge nette estimée (TVA déduite)${l.shipping > 0 ? ` (envoi −${euro(l.shipping)})` : ''}</div></div>
         <div class="stat ${l.unpaid > 0 ? 'alert' : ''}" title="Ventes dont le paiement est en échec ou en attente d'après le rapport — déjà exclues du CA et de la marge. « Restock » permet d'annuler celles en échec.">
           <div class="value">${l.unpaid}</div><div class="label">⚠ Non réglée(s)</div></div>
         <div class="stat" title="Ventes du live retrouvées dans le rapport de la plateforme : elles utilisent leur prix réel. Les autres comptent au prix catalogue en attendant — réimportez le rapport pour les associer.">
