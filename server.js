@@ -1817,21 +1817,33 @@ function guessReportMapping(headers, rows = []) {
   const used = new Set();
   // La colonne « référence de vente » est détectée par son contenu : c'est
   // celle dont les valeurs contiennent un numéro « #N » (Vue à l'écran #8,
-  // Give abonné #1…). Plus fiable que le nom de la colonne, qui varie.
+  // « #12 » dans la colonne Variation TikTok…). Une colonne de « #N » gagne
+  // sur une colonne de longs numéros de commande (Order ID) — le numéro de
+  // vente est la vraie référence, l'ID de commande n'est qu'un repli.
   let bestRef = null;
   let bestScore = 0;
-  const looksLikeRef = (v) => {
+  const refScore = (v) => {
     const s = String(v).trim();
-    return /#\s*\d+/.test(s) || /^\d{7,}$/.test(s); // « Vue à l'écran #8 » ou ID de commande long
+    if (/#\s*\d{1,5}\b/.test(s)) return 2; // « Vue à l'écran #8 », « #12 »
+    if (/^\d{7,}$/.test(s)) return 1; // long ID de commande (TikTok)
+    return 0;
   };
   for (const h of headers) {
-    const score = rows.filter((r) => looksLikeRef(r[h])).length;
-    if (score > bestScore) {
+    let hits = 0;
+    let score = 0;
+    for (const r of rows) {
+      const sc = refScore(r[h]);
+      if (sc) {
+        hits++;
+        score += sc;
+      }
+    }
+    if (hits >= Math.max(1, rows.length / 2) && score > bestScore) {
       bestScore = score;
       bestRef = h;
     }
   }
-  if (bestRef && bestScore >= Math.max(1, rows.length / 2)) {
+  if (bestRef) {
     mapping.sale_no = bestRef;
     used.add(bestRef);
   }
