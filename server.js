@@ -1179,6 +1179,8 @@ function sessionSummary(session) {
                 ELSE 0 END),0) AS margin,
               COALESCE(SUM(CASE WHEN COALESCE(m.payment_status,'paid') NOT IN ('failed','refunded')
                 THEN COALESCE(m.shipping_cost, 0) ELSE 0 END),0) AS shipping,
+              COALESCE(SUM(CASE WHEN COALESCE(m.payment_status,'paid') NOT IN ('failed','refunded')
+                THEN COALESCE(m.cost_used, -m.delta * p.cost) ELSE 0 END),0) AS cogs,
               COALESCE(SUM(CASE WHEN m.is_gift = 0 AND m.sold_price IS NOT NULL THEN 1 ELSE 0 END),0) AS reported,
               COALESCE(SUM(CASE WHEN m.is_gift = 0 AND m.payment_status IN ('failed','pending') THEN 1 ELSE 0 END),0) AS unpaid
        FROM movements m JOIN products p ON p.id = m.product_id
@@ -1218,6 +1220,7 @@ function sessionSummary(session) {
     gifts: agg.gifts,
     shop_items: shop.items,
     shop_revenue: shop.revenue,
+    cogs: agg.cogs,
     revenue: agg.revenue + extras.revenue,
     margin: agg.margin + extras.net,
     shipping: agg.shipping,

@@ -1180,6 +1180,7 @@ window.showLiveDetail = async (id) => {
         <div class="stat"><div class="value">${euro(l.revenue - ht)}</div><div class="label">TVA collectée (${vatRate} %)</div></div>
         <div class="stat"><div class="value">−${euro(l.vat_deductible || 0)}</div><div class="label" title="TVA payée à l'achat des produits partis (achats France TTC) — les achats intracommunautaires 🇪🇺 n'ouvrent pas de droit à déduction">TVA récupérable (achats FR)</div></div>
         <div class="stat"><div class="value">${euro(l.revenue - ht - (l.vat_deductible || 0))}</div><div class="label" title="TVA collectée − TVA récupérable : estimation de ce que ce live ajoute à votre déclaration">TVA nette estimée</div></div>
+        <div class="stat"><div class="value">${euro(l.cogs || 0)}</div><div class="label" title="Coût d'achat réel (lots FIFO) de tout ce qui est parti pendant ce live — cadeaux inclus, ventes annulées et remboursées exclues">📦 Coût marchandise vendue</div></div>
         <div class="stat"><div class="value">${euro(l.margin)}</div><div class="label">Marge nette estimée${l.shipping > 0 ? ` (envoi −${euro(l.shipping)})` : ''}</div></div>
         <div class="stat ${l.unpaid > 0 ? 'alert' : ''}"><div class="value">${l.unpaid}</div><div class="label">⚠ Non réglée(s)</div></div>
         <div class="stat"><div class="value">${l.reported}/${l.items}</div><div class="label">Ventes associées au rapport</div></div>
