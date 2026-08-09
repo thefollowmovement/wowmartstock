@@ -720,6 +720,30 @@ tr.row-unpaid td { background: #fef2f2; }
 /* les tuiles avec infobulle l'indiquent au survol */
 .recap-grid .stat[title] { cursor: help; }
 
+/* ---------- Sortie de stock motivée ---------- */
+.so-label { margin: 12px 0 6px; }
+.so-reasons { display: flex; flex-direction: column; gap: 8px; margin: 0 0 12px; }
+.so-reason {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  cursor: pointer;
+  font-weight: 600;
+  flex-wrap: wrap;
+}
+.so-reason:hover { border-color: var(--primary); }
+.so-reason:has(input:checked) { border-color: var(--primary); background: var(--primary-soft); }
+#soOther {
+  padding: 9px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: .95rem;
+}
+#soQty { max-width: 140px; }
+
 .live-sale-no {
   font-weight: 800;
   color: var(--primary);

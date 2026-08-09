@@ -424,7 +424,7 @@
         <p>Sur chaque carte produit de l'onglet <em>Produits</em> :</p>
         <ul>
           <li>Les boutons <span class="tuto-btn">🌐 En ligne</span> <span class="tuto-btn">🏬 Boutique</span> <span class="tuto-btn"><img src="img/tiktok.svg" class="ico-tiktok" alt=""> TikTok</span> <span class="tuto-btn">🟡 Whatnot</span> enregistrent <strong>une vente sur ce canal</strong> : le stock baisse de 1 et la vente est tracée.</li>
-          <li>Les boutons <span class="tuto-btn">+</span> / <span class="tuto-btn">−</span> servent aux <strong>réassorts et corrections</strong> (réception fournisseur, casse, erreur…). Ce ne sont pas des ventes.</li>
+          <li>Le bouton <span class="tuto-btn">+</span> ajoute au stock immédiatement (réassort, réception fournisseur). Le bouton <span class="tuto-btn">−</span> ouvre la fenêtre <strong>📤 Sortie de stock</strong> : choisissez la quantité et <strong>le motif</strong> — 🛒 <strong>Vente directe</strong> (hors live, comptée comme vente Boutique dans le CA), 🔧 SAV, 💥 Casse, 🧮 Correction, ou ✏️ Autre (motif libre). Chaque sortie est tracée dans l'Historique avec son motif, et le coût est décompté des lots FIFO.</li>
           <li>Cliquez sur la carte pour <strong>modifier la fiche</strong> (photo, prix, coût, seuil…).</li>
         </ul>
         <p>En haut : recherche par nom, SKU, marque ou catégorie, <strong>filtres par marque et par catégorie</strong>, et un <strong>tri</strong> (meilleures ventes 30 j, prix, stock bas/haut). La case <em>« Stock bas uniquement »</em> ne montre que les produits à recommander. Chaque carte affiche la marque et la catégorie en badges, et le <strong>prix de vente conseillé en HT</strong> (TTC en dessous) en bas à droite.</p>
@@ -757,6 +757,32 @@
         <span class="spacer"></span>
         <button type="button" class="btn" id="btnCloseSaleEdit">Fermer</button>
         <button type="button" class="btn primary" id="btnSeSave">Enregistrer</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================== SORTIE DE STOCK ===================== -->
+  <div id="stockOutModal" class="modal-overlay" hidden>
+    <div class="modal narrow">
+      <h2>📤 Sortie de stock</h2>
+      <p id="soProduct" class="muted"></p>
+      <label>Quantité à sortir
+        <input type="number" id="soQty" min="1" value="1">
+      </label>
+      <p class="so-label"><strong>Pourquoi ce produit sort-il du stock ?</strong></p>
+      <div class="so-reasons">
+        <label class="so-reason"><input type="radio" name="soReason" value="vente" checked> 🛒 Vente directe <span class="muted small">(hors live — comptée comme vente Boutique dans le CA et les stats)</span></label>
+        <label class="so-reason"><input type="radio" name="soReason" value="sav"> 🔧 SAV <span class="muted small">(échange, garantie — pas une vente)</span></label>
+        <label class="so-reason"><input type="radio" name="soReason" value="casse"> 💥 Casse <span class="muted small">(produit abîmé, perdu — pas une vente)</span></label>
+        <label class="so-reason"><input type="radio" name="soReason" value="correction"> 🧮 Correction de stock <span class="muted small">(erreur de comptage)</span></label>
+        <label class="so-reason"><input type="radio" name="soReason" value="autre"> ✏️ Autre motif</label>
+        <input type="text" id="soOther" placeholder="Précisez le motif (ex : cadeau influenceur, échantillon…)" autocomplete="off" hidden>
+      </div>
+      <p class="muted small">La sortie est tracée dans l'Historique avec son motif. Le coût est décompté des lots (FIFO), comme pour une vente.</p>
+      <div class="actions">
+        <span class="spacer"></span>
+        <button type="button" class="btn" id="btnCloseStockOut">Annuler</button>
+        <button type="button" class="btn primary" id="btnConfirmStockOut">📤 Sortir du stock</button>
       </div>
     </div>
   </div>

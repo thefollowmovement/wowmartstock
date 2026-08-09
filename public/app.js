@@ -317,7 +317,7 @@ function productCard(p) {
       ${isLow(p) ? '<span class="badge-low">⚠ Stock bas</span>' : ''}
       <div class="stock-row big">
         <span class="chan">📦 Stock</span>
-        <button onclick="adjust(${p.id}, -1)" title="Retirer 1 (correction)">−</button>
+        <button onclick="adjust(${p.id}, -1)" title="Sortir du stock : vente directe hors live, SAV, casse, correction… (le motif vous est demandé)">−</button>
         <span class="qty ${p.stock <= 0 ? 'zero' : ''}">${p.stock}</span>
         <button onclick="adjust(${p.id}, 1)" title="Ajouter 1 (réassort)">+</button>
       </div>
@@ -356,7 +356,7 @@ function variantGroupCard(group, items) {
     .map(
       (v) => `<div class="variant-row ${isLow(v) ? 'low' : ''}">
       <span class="variant-name" onclick="openEdit(${v.id})" title="${escapeHtml(v.name)}${v.sku ? ' · ' + escapeHtml(v.sku) : ''} — cliquer pour modifier">${escapeHtml(variantLabel(v))}${isLow(v) ? ' ⚠' : ''}</span>
-      <button onclick="adjust(${v.id}, -1)" title="Retirer 1 (correction)">−</button>
+      <button onclick="adjust(${v.id}, -1)" title="Sortir du stock : vente directe hors live, SAV, casse, correction… (le motif vous est demandé)">−</button>
       <span class="qty ${v.stock <= 0 ? 'zero' : ''}">${v.stock}</span>
       <button onclick="adjust(${v.id}, 1)" title="Ajouter 1 (réassort)">+</button>
       <span class="variant-sales">${SALE_CHANNELS.map(
@@ -457,8 +457,78 @@ async function moveStock(id, channel, delta, reason, sessionId = null) {
 
 // Vente : décompte 1 du stock partagé, en traçant le canal
 window.sell = (id, channel) => moveStock(id, channel, -1, 'Vente').catch((e) => toast(e.message, true));
-// Réassort / correction manuelle
-window.adjust = (id, delta) => moveStock(id, 'adjust', delta).catch((e) => toast(e.message, true));
+// « + » : réassort immédiat — « − » : fenêtre de sortie motivée (vente
+// directe hors live, SAV, casse, correction, autre)
+window.adjust = (id, delta) => {
+  if (delta < 0) return openStockOut(id);
+  moveStock(id, 'adjust', delta).catch((e) => toast(e.message, true));
+};
+
+// ---- Sortie de stock motivée ----
+let stockOutId = null;
+const SO_REASONS = {
+  vente: { channel: 'store', reason: 'Vente directe' },
+  sav: { channel: 'adjust', reason: 'SAV' },
+  casse: { channel: 'adjust', reason: 'Casse' },
+  correction: { channel: 'adjust', reason: 'Correction de stock' },
+};
+
+window.openStockOut = (id) => {
+  const p = products.find((x) => x.id === id);
+  if (!p) return;
+  if (p.stock <= 0) return toast('Stock déjà à zéro', true);
+  stockOutId = id;
+  $('#soProduct').innerHTML = `<strong>${escapeHtml(p.name)}</strong>${p.sku ? ` <span class="product-sku">(${escapeHtml(p.sku)})</span>` : ''} — stock actuel : <strong>${p.stock}</strong>`;
+  $('#soQty').value = 1;
+  $('#soQty').max = p.stock;
+  document.querySelector('input[name="soReason"][value="vente"]').checked = true;
+  $('#soOther').value = '';
+  $('#soOther').hidden = true;
+  $('#stockOutModal').hidden = false;
+  setTimeout(() => $('#soQty').select(), 80);
+};
+
+document.querySelectorAll('input[name="soReason"]').forEach((r) =>
+  r.addEventListener('change', () => {
+    const other = document.querySelector('input[name="soReason"]:checked').value === 'autre';
+    $('#soOther').hidden = !other;
+    if (other) $('#soOther').focus();
+  })
+);
+
+$('#btnCloseStockOut').addEventListener('click', () => {
+  $('#stockOutModal').hidden = true;
+  stockOutId = null;
+});
+$('#stockOutModal').addEventListener('click', (e) => {
+  if (e.target === $('#stockOutModal')) $('#stockOutModal').hidden = true;
+});
+
+$('#btnConfirmStockOut').addEventListener('click', async () => {
+  if (!stockOutId) return;
+  const qty = Math.max(1, parseInt($('#soQty').value, 10) || 1);
+  const kind = document.querySelector('input[name="soReason"]:checked').value;
+  let cfg;
+  if (kind === 'autre') {
+    const txt = $('#soOther').value.trim();
+    if (!txt) return toast('Précisez le motif de la sortie', true);
+    cfg = { channel: 'adjust', reason: txt };
+  } else {
+    cfg = SO_REASONS[kind];
+  }
+  try {
+    await moveStock(stockOutId, cfg.channel, -qty, cfg.reason);
+    toast(
+      kind === 'vente'
+        ? `🛒 Vente directe enregistrée — ${qty} article(s) (canal Boutique)`
+        : `📤 Sortie enregistrée (${cfg.reason}) — ${qty} article(s)`
+    );
+    $('#stockOutModal').hidden = true;
+    stockOutId = null;
+  } catch (e) {
+    toast(e.message, true);
+  }
+});
 
 let searchTimer;
 $('#search').addEventListener('input', () => {
