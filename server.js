@@ -1662,15 +1662,32 @@ app.get('/api/lives/:id/export.csv', (req, res) => {
 // grâce à son numéro (#1, #2…) — on y récupère le prix de vente réel et
 // les frais, pour calculer la marge.
 // ---------------------------------------------------------------------------
+// Chaque champ accepte plusieurs motifs, du plus précis au plus générique —
+// la première colonne libre qui correspond à un motif gagne (important pour
+// les exports TikTok Shop qui ont des dizaines de colonnes proches :
+// « SKU Unit Original Price » vs « SKU Subtotal Before Discount »,
+// « Shipping Fee » vs frais de commission, « SKU ID » vs « Seller SKU »…)
 const REPORT_PATTERNS = {
-  sale_no: /^#$|^id|^#?\s*(n°|no\b|num[ée]ro|order|commande|vente\b|sale\b|listing|placement|r[ée]f[ée]rence)/i,
-  name: /(produit|product|nom|name|titre|title|listing|article|description)/i,
-  sold_price: /(prix de vente|prix vendu|^prix$|total de la commande|ventes nettes|sold ?price|sale ?price|final ?price|sous.total|subtotal|price|montant(?! total du r))/i,
-  net_amount: /(gains? nets?|statut? du gain|montant total du r[èe]glement|r[èe]glement|settlement|gains?|earn|net|payout|revers|vers[ée])/i,
-  payment_status: /(statut.*(paiement|commande|r[èe]glement)|motifs? d.absence|paiement|payment|pay[ée]|status)/i,
-  fees: /(frais de traitement|frais de commission|commission|frais|fee)/i,
-  sku: /(sku|r[ée]f[ée]rence (vendeur|marque|produit)|seller|variante|variation)/i,
-  qty: /(quantit|qty|quantity|nombre d)/i,
+  sale_no: [/^#$|^id|^#?\s*(n°|no\b|num[ée]ro|order|commande|vente\b|sale\b|listing|placement|r[ée]f[ée]rence)/i],
+  name: [/(produit|product(?! category)|^nom|name|titre|title|listing|article|description)/i],
+  sold_price: [
+    /(subtotal|sous.total).*(before|avant)/i, // « SKU Subtotal Before Discount » : base du versement TikTok
+    /(subtotal|sous.total).*(after|apr[èe]s)/i,
+    /(prix de vente|prix vendu|^prix$|total de la commande|ventes nettes|sold ?price|sale ?price|final ?price|sous.total|subtotal)/i,
+    /^(?!.*(shipping|livraison|envoi|unit|unitaire)).*(price|montant(?! total du r))/i,
+    /(price|montant(?! total du r))/i,
+  ],
+  net_amount: [/(gains? nets?|statut? du gain|montant total du r[èe]glement|r[èe]glement|settlement|gains?|earn|net amount|payout|revers|vers[ée])/i],
+  payment_status: [/(statut.*(paiement|commande|r[èe]glement)|order status|motifs? d.absence|paiement|payment|pay[ée]|status)/i],
+  // jamais une colonne de frais de PORT (payés par l'acheteur) comme commission
+  fees: [/^(?!.*(shipping|livraison|envoi|exp[ée]di)).*(frais de traitement|frais de commission|commission|frais|fee)/i],
+  sku: [
+    /(seller sku|sku (du )?vendeur|r[ée]f[ée]rence (vendeur|marque|produit))/i,
+    /(variante|variation)/i,
+    /^(?!.*\bid\b).*sku/i, // « SKU ID » (identifiant interne TikTok) en dernier recours seulement
+    /sku|seller/i,
+  ],
+  qty: [/^(?!.*(return|retour)).*(quantit|qty|quantity|nombre d)/i, /(quantit|qty|quantity|nombre d)/i],
 };
 
 // Statut de paiement normalisé depuis le texte de la plateforme
@@ -1818,14 +1835,16 @@ function guessReportMapping(headers, rows = []) {
     mapping.sale_no = bestRef;
     used.add(bestRef);
   }
-  for (const [field, re] of Object.entries(REPORT_PATTERNS)) {
+  for (const [field, patterns] of Object.entries(REPORT_PATTERNS)) {
     if (mapping[field]) continue;
-    for (const h of headers) {
-      if (used.has(h)) continue;
-      if (re.test(String(h).trim())) {
-        mapping[field] = h;
-        used.add(h);
-        break;
+    outer: for (const re of patterns) {
+      for (const h of headers) {
+        if (used.has(h)) continue;
+        if (re.test(String(h).trim())) {
+          mapping[field] = h;
+          used.add(h);
+          break outer;
+        }
       }
     }
   }
