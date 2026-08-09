@@ -598,14 +598,16 @@ function liveTotals() {
   };
 }
 
+// En mode live, le prix affiché est le PRIX D'ACHAT — le prix de vente
+// conseillé reste sur la fiche produit, à titre indicatif seulement.
+// (Un liveur ne voit pas les coûts : pour lui, prix de vente conseillé.)
 function updateLiveCounters() {
   const t = liveTotals();
   $('#liveCounters').innerHTML =
     `${t.items} vente(s)${t.gifts ? ` · ${t.gifts} 🎁` : ''}` +
-    ` · <span title="Chiffre d'affaires du live">CA ${euro(t.revenue)}</span>` +
     (isLiveur()
-      ? '' // les coûts d'achat ne sont pas visibles pour un liveur
-      : ` · <span class="live-cost" title="Dépense totale : coût d'achat des produits partis (cadeaux inclus)">💸 ${euro(t.cost)}</span>`);
+      ? ` · <span title="Chiffre d'affaires estimé (prix de vente conseillé)">CA ${euro(t.revenue)}</span>`
+      : ` · <span class="live-cost" title="Dépense totale : coût d'achat des produits partis (cadeaux inclus)">💸 Achats ${euro(t.cost)}</span>`);
 }
 
 // Recherche rapide par référence ou nom (insensible à la casse)
@@ -635,7 +637,9 @@ function renderLiveResults() {
             <span class="live-product-sku">${escapeHtml(p.sku || '')}</span>
           </span>
           <span class="live-product-side">
-            <span class="live-product-price">${euro(p.price)}</span>
+            ${isLiveur()
+              ? `<span class="live-product-price" title="Prix de vente conseillé">${euro(p.price)}</span>`
+              : `<span class="live-product-price" title="Prix d'achat de ce produit (prix de vente conseillé : ${euro(p.price)})">${euro(p.cost)} <small>achat</small></span>`}
             <span class="live-product-stock ${p.stock <= 0 ? 'zero' : ''}">${p.stock <= 0 ? 'Épuisé' : 'Stock : ' + p.stock}</span>
             <span class="live-product-action">${p.stock <= 0 ? '—' : 'VENDU ✔'}</span>
           </span>
@@ -683,7 +687,9 @@ function renderLiveSales() {
         <span class="live-sale-no">${s.sale_no ? '#' + s.sale_no : ''}</span>
         <span class="live-sale-time">${timeFr(s.time)}</span>
         <span class="live-sale-name">${escapeHtml(s.name)}${s.sku ? ` <small>(${escapeHtml(s.sku)})</small>` : ''}</span>
-        <span class="live-sale-price">${euro(s.price)}</span>
+        ${isLiveur()
+          ? `<span class="live-sale-price" title="Prix de vente conseillé">${euro(s.price)}</span>`
+          : `<span class="live-sale-price" title="Prix d'achat">${euro(s.cost)} <small>achat</small></span>`}
         ${s.cancelled
           ? '<span class="live-sale-undone">annulée</span>'
           : `<button class="live-sale-undo" onclick="liveUndo(${s.movement_id})" title="Annuler cette vente">↩</button>`}
