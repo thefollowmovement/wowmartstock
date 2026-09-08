@@ -399,6 +399,16 @@ const uploadPhoto = multer({
   },
 });
 
+// Photos en masse (une par produit, nommées par référence) : jusqu'à 300 d'un coup
+const uploadPhotosBulk = multer({
+  storage: photoStorage,
+  limits: { fileSize: 10 * 1024 * 1024, files: 300 },
+  fileFilter: (req, file, cb) => {
+    if (/^image\//.test(file.mimetype)) cb(null, true);
+    else cb(new Error('Les fichiers doivent être des images (jpg, png, webp...)'));
+  },
+});
+
 // Fichiers d'import (Excel / CSV) gardés en mémoire
 const uploadImport = multer({
   storage: multer.memoryStorage(),
@@ -2426,6 +2436,35 @@ function guessMapping(headers) {
   }
   return mapping;
 }
+
+// Photos par référence : chaque fichier est nommé par la référence (SKU) ou
+// le code-barres du produit — « BR20D.jpg » → produit BR20D. Pratique après
+// un import fournisseur (catalogue Excel + dossier de photos).
+app.post('/api/import/photos', uploadPhotosBulk.array('photos', 300), (req, res) => {
+  const files = req.files || [];
+  if (!files.length) return res.status(400).json({ error: 'Aucune image reçue' });
+  const byKey = new Map();
+  for (const p of db.prepare('SELECT id, name, sku, barcode, photo FROM products').all()) {
+    if (p.sku) byKey.set(normTxt(p.sku), p);
+    if (p.barcode) byKey.set(normTxt(p.barcode), p);
+  }
+  const assigned = [];
+  const unmatched = [];
+  for (const f of files) {
+    const base = path.basename(f.originalname).replace(/\.[^.]+$/, '');
+    const p = byKey.get(normTxt(base));
+    if (!p) {
+      unmatched.push(f.originalname);
+      fs.unlink(f.path, () => {});
+      continue;
+    }
+    if (p.photo) fs.unlink(path.join(UPLOADS_DIR, path.basename(p.photo)), () => {});
+    p.photo = `/uploads/${f.filename}`;
+    db.prepare('UPDATE products SET photo = ?, updated_at = ? WHERE id = ?').run(p.photo, now(), p.id);
+    assigned.push({ sku: p.sku || p.barcode, name: p.name });
+  }
+  res.json({ assigned, unmatched });
+});
 
 app.post('/api/import/preview', uploadImport.single('file'), (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'Aucun fichier reçu' });

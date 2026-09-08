@@ -276,6 +276,19 @@
     <div id="importResult" class="card success" hidden></div>
 
     <div class="card">
+      <h2>🖼 Photos par référence</h2>
+      <p class="muted">Sélectionnez d'un coup toutes les photos <strong>nommées par référence</strong>
+        (<code>BR20D.jpg</code>, <code>DC35W.png</code>…) ou par code-barres : chacune est assignée au produit
+        correspondant. Idéal après un import fournisseur (catalogue Excel + dossier de photos).</p>
+      <div class="backup-row">
+        <input type="file" id="bulkPhotos" accept="image/*" multiple hidden>
+        <button class="btn primary" id="btnBulkPhotos">🖼 Choisir les photos…</button>
+        <span id="bulkPhotosStatus" class="muted small"></span>
+      </div>
+      <div id="bulkPhotosResult" class="muted small"></div>
+    </div>
+
+    <div class="card">
       <h2>👥 Équipe, plateaux &amp; accès</h2>
       <p class="muted">Créez <strong>un compte par personne</strong>. Un <strong>administrateur</strong> a accès à tout.
         Un <strong>liveur</strong> ne voit que les produits et le stock de son plateau et peut lancer des lives et y vendre —
@@ -430,6 +443,7 @@
         <p>En haut : recherche par nom, SKU, marque ou catégorie, <strong>filtres par marque et par catégorie</strong>, et un <strong>tri</strong> (meilleures ventes 30 j, prix, stock bas/haut). La case <em>« Stock bas uniquement »</em> ne montre que les produits à recommander. Chaque carte affiche la marque et la catégorie en badges, et le <strong>prix de vente conseillé en HT</strong> (TTC en dessous) en bas à droite.</p>
         <p><strong>📦 Lots d'achat (FIFO)</strong> : chaque réassort crée un <em>lot</em> qui garde son coût et son régime de TVA (🇪🇺 ou France). Exemple : 5 restants achetés en Chine à 16,86 €, puis 50 achetés en France à 18,89 € — pour ajouter le réassort, ouvrez la fiche, mettez le <strong>nouveau coût</strong>, cochez/décochez 🇪🇺 selon l'achat, et augmentez le stock : les ventes écouleront d'abord les 5 anciens à 16,86 €, puis les nouveaux à 18,89 €, avec la marge et la TVA justes pour chacun. La fiche affiche les lots restants.</p>
         <p><strong>Variantes</strong> : renseignez un <em>« Groupe de variantes »</em> (ex : T-shirt logo) sur plusieurs produits — ils s'affichent regroupés en une carte, chaque taille/couleur gardant son stock, son SKU et ses boutons de vente.</p>
+        <p><strong>🖼 Photos par référence</strong> : dans l'onglet <em>Importer</em>, sélectionnez d'un coup toutes les photos d'un dossier nommées par référence ou code-barres (<code>BR20D.jpg</code>…) — chacune est assignée automatiquement au bon produit. Le complément naturel d'un import fournisseur : le catalogue en Excel, puis les photos.</p>
         <p><strong>📋 Inventaire</strong> : le bouton en haut de l'onglet Produits ouvre le mode comptage — saisissez les quantités réelles ou scannez les codes-barres (+1 par scan), validez, et le stock est recalé avec un rapport des écarts.</p>
         <p><strong>🖼 Photos web</strong> : ce bouton cherche des images sur le web pour vos produits sans photo (marque + référence + nom), vous propose plusieurs candidates et n'assigne que celles que vous validez d'un clic. Configurez l'<strong>API Google officielle</strong> dans la modale (gratuite, 100 recherches/jour, guide inclus) pour des résultats fiables.</p>
         <p>Chaque opération est enregistrée dans l'onglet <em>Historique</em> — filtrable par produit, canal et période. C'est aussi là que le bouton <span class="tuto-btn">↩ Retour</span> enregistre un retour/remboursement : l'article revient en stock et la vente est retirée du CA et de la marge.</p>

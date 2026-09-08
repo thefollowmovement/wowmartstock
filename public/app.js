@@ -346,9 +346,10 @@ function variantGroupCard(group, items) {
   const photo = withPhoto
     ? `<img class="product-photo" src="${escapeHtml(withPhoto.photo)}" alt="" loading="lazy">`
     : `<div class="product-photo placeholder">📷</div>`;
-  const prices = [...new Set(items.map((p) => p.price))];
-  const priceTxt =
-    prices.length === 1
+  const prices = [...new Set(items.map((p) => p.price).filter((v) => v > 0))];
+  const priceTxt = !prices.length
+    ? '' // pas de prix de vente conseillé renseigné
+    : prices.length === 1
       ? `${euro(priceHt(prices[0]))} <small>HT</small><span class="price-ttc">${euro(prices[0])} TTC</span>`
       : `${euro(priceHt(Math.min(...prices)))}–${euro(priceHt(Math.max(...prices)))} <small>HT</small>
          <span class="price-ttc">${euro(Math.min(...prices))}–${euro(Math.max(...prices))} TTC</span>`;
@@ -2986,6 +2987,32 @@ window.deletePlateau = async (id) => {
 $('#btnLogout').addEventListener('click', async () => {
   await fetch('/api/auth/logout', { method: 'POST' });
   location.reload();
+});
+
+// ---- Photos par référence (fichiers nommés SKU.jpg) ----
+$('#btnBulkPhotos').addEventListener('click', () => $('#bulkPhotos').click());
+$('#bulkPhotos').addEventListener('change', async () => {
+  const files = [...$('#bulkPhotos').files];
+  if (!files.length) return;
+  const fd = new FormData();
+  files.forEach((f) => fd.append('photos', f, f.name));
+  $('#bulkPhotosStatus').textContent = `Envoi de ${files.length} photo(s)…`;
+  try {
+    const r = await api('/api/import/photos', { method: 'POST', body: fd });
+    $('#bulkPhotosStatus').textContent = '';
+    $('#bulkPhotosResult').innerHTML =
+      `✅ <strong>${r.assigned.length}</strong> photo(s) assignée(s)` +
+      (r.assigned.length ? ` : ${r.assigned.map((a) => escapeHtml(a.sku)).join(', ')}` : '') +
+      (r.unmatched.length
+        ? `<br>⚠ Aucun produit avec cette référence : ${r.unmatched.map(escapeHtml).join(', ')}`
+        : '');
+    toast(`🖼 ${r.assigned.length} photo(s) assignée(s)`);
+    loadProducts();
+  } catch (e) {
+    $('#bulkPhotosStatus').textContent = '';
+    toast(e.message, true);
+  }
+  $('#bulkPhotos').value = '';
 });
 
 $('#btnSaveBackupDir').addEventListener('click', async () => {
