@@ -2548,31 +2548,35 @@ app.post('/api/import/commit', (req, res) => {
       const ts = now();
 
       if (existing) {
+        // Produit déjà connu : une cellule VIDE du fichier ne touche pas à la
+        // fiche (on peut réassortir un produit sans écraser son nom, son prix
+        // de vente ou sa catégorie) — seules les cellules remplies s'appliquent
+        const filled = (field) => mapping[field] && String(get(field)).trim() !== '';
         const sets = [];
         const vals = [];
         if (name && name !== existing.name) { sets.push('name = ?'); vals.push(name); }
         if (sku && sku !== existing.sku) { sets.push('sku = ?'); vals.push(sku); }
         if (barcode && barcode !== existing.barcode) { sets.push('barcode = ?'); vals.push(barcode); }
-        if (mapping.variant_group) { sets.push('variant_group = ?'); vals.push(String(get('variant_group')).trim()); }
-        if (mapping.vat_intra) {
+        if (filled('variant_group')) { sets.push('variant_group = ?'); vals.push(String(get('variant_group')).trim()); }
+        if (filled('vat_intra')) {
           const v = String(get('vat_intra')).trim().toLowerCase();
           sets.push('vat_intra = ?');
-          vals.push(v && !['non', 'no', '0', 'false', 'faux'].includes(v) ? 1 : 0);
+          vals.push(!['non', 'no', '0', 'false', 'faux'].includes(v) ? 1 : 0);
         }
-        if (mapping.brand) {
+        if (filled('brand')) {
           const brandVal = String(get('brand')).trim();
           sets.push('brand = ?');
           vals.push(brandVal);
           // Les anciens imports rangeaient la marque dans la catégorie : si la
           // catégorie existante est justement cette marque, on la libère
-          if (brandVal && existing.category === brandVal && !mapping.category) {
+          if (existing.category === brandVal && !mapping.category) {
             sets.push(`category = ''`);
           }
         }
-        if (mapping.category) { sets.push('category = ?'); vals.push(String(get('category')).trim()); }
-        if (mapping.price) { sets.push('price = ?'); vals.push(toNum(get('price'))); }
-        if (mapping.cost) { sets.push('cost = ?'); vals.push(toNum(get('cost'))); }
-        if (mapping.min_stock) { sets.push('min_stock = ?'); vals.push(toInt(get('min_stock'))); }
+        if (filled('category')) { sets.push('category = ?'); vals.push(String(get('category')).trim()); }
+        if (filled('price')) { sets.push('price = ?'); vals.push(toNum(get('price'))); }
+        if (filled('cost')) { sets.push('cost = ?'); vals.push(toNum(get('cost'))); }
+        if (filled('min_stock')) { sets.push('min_stock = ?'); vals.push(toInt(get('min_stock'))); }
 
         if (mapping.stock) {
           const newVal = mode === 'add' ? existing.stock + stockVal : stockVal;
