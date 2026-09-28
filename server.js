@@ -586,6 +586,21 @@ const LIVEUR_ROUTES = [
   ['GET', /^\/uploads\//],
 ];
 
+// Photos PRODUITS accessibles sans connexion sous /photos/<fichier> : c'est ce
+// qui permet à TikTok Shop (ou une boutique en ligne) de récupérer les images
+// depuis les liens de l'export. Seuls les fichiers à la racine du dossier
+// uploads sont servis — jamais les photos de ventes (sous-dossier live-photos)
+// ni la base de données.
+app.get('/photos/:file', (req, res) => {
+  const file = req.params.file;
+  if (!/^[A-Za-z0-9._-]+$/.test(file) || file.includes('..') || !/\.(jpe?g|png|webp|gif)$/i.test(file)) {
+    return res.status(404).end();
+  }
+  res.sendFile(path.join(UPLOADS_DIR, file), { maxAge: '7d' }, (err) => {
+    if (err && !res.headersSent) res.status(404).end();
+  });
+});
+
 // Tout le reste (/api/* et /uploads/*) exige une session valide dès qu'un
 // compte existe ; le rôle décide ensuite des routes accessibles.
 app.use((req, res, next) => {
@@ -3575,6 +3590,44 @@ app.get('/api/export.csv', (req, res) => {
   res.setHeader('Content-Type', 'text/csv; charset=utf-8');
   res.setHeader('Content-Disposition', 'attachment; filename="stock-wowmart.csv"');
   res.send('﻿' + [header, ...lines].join('\n'));
+});
+
+// Export pour TikTok Shop (ou toute boutique en ligne) : une ligne par
+// produit, avec le LIEN PUBLIC de sa photo (/photos/…) que la plateforme peut
+// télécharger. Les variantes portent le nom du groupe + leur déclinaison, pour
+// être regroupées côté boutique. Colonnes nommées comme le modèle TikTok.
+app.get('/api/export/tiktok.csv', (req, res) => {
+  const base = `${req.protocol}://${req.get('host')}`;
+  const rows = db
+    .prepare(`SELECT * FROM products ORDER BY CASE WHEN variant_group = '' THEN name ELSE variant_group END COLLATE NOCASE, name COLLATE NOCASE`)
+    .all();
+  const esc = (v) => {
+    const s = String(v ?? '');
+    return /[;"\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+  // « T-shirt logo — M » dans le groupe « T-shirt logo » → déclinaison « M »
+  const variantLabel = (p) => {
+    const g = (p.variant_group || '').toLowerCase();
+    let label = p.name;
+    if (g && label.toLowerCase().startsWith(g)) label = label.slice(p.variant_group.length);
+    return label.replace(/^[\s—–\-·:,/]+/, '') || p.name;
+  };
+  const header = [
+    'Product Name', 'Variation', 'Seller SKU', 'Barcode (EAN)', 'Brand', 'Category',
+    'Price (EUR, TTC)', 'Quantity', 'Package Weight (g)', 'Main Image URL', 'Product Description',
+  ];
+  const lines = rows.map((p) => {
+    const group = (p.variant_group || '').trim();
+    const img = p.photo ? `${base}/photos/${path.basename(p.photo)}` : '';
+    const desc = [p.brand, group || p.name, p.category].filter(Boolean).join(' — ');
+    return [
+      group || p.name, group ? variantLabel(p) : '', p.sku || '', p.barcode || '', p.brand || '', p.category || '',
+      p.price ? Number(p.price).toFixed(2) : '', p.stock, '', img, desc,
+    ].map(esc).join(';');
+  });
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', 'attachment; filename="produits-tiktok-shop.csv"');
+  res.send('﻿' + [header.join(';'), ...lines].join('\n'));
 });
 
 // Gestion d'erreurs (multer, etc.)
